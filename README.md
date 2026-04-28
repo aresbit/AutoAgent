@@ -9,20 +9,23 @@ AutoAgent is an Electron-native desktop application that puts a full-featured AI
 ```
 Desktop (Electron)          Inference Engine (Bun)
 ┌──────────────────┐       ┌──────────────────────┐
-│  Renderer (TS)   │  IPC  │  cli.js               │
-│  Chat / MCP /    │◄─────►│  Stream-json output    │
-│  Skills / Git    │       │  Per-query subprocess  │
+│  Renderer (TS)   │  IPC  │  cli.js --server      │
+│  Chat / MCP /    │◄─────►│  JSON-RPC over stdio  │
+│  Skills / Git    │       │  Long-running process │
 └──────────────────┘       └──────────────────────┘
         │                          │
         ▼                          ▼
 ┌──────────────────┐       ┌──────────────────────┐
-│  SQLite + JSON   │       │  ~/.autoagent.json   │
-│  Session persist │       │  Provider config      │
-└──────────────────┘       └──────────────────────┘
+│  SQLite + JSON   │       │  ThreadManager        │
+│  Session persist │       │  └─ thread-1 (QE)     │
+└──────────────────┘       │  └─ thread-2 (QE)     │
+                           │  ~/.autoagent.json    │
+                           └──────────────────────┘
 ```
 
 - **Frontend**: TypeScript SPA with custom IPC bridge to Electron main process
-- **Engine**: Stateless per-query subprocess model — each agent invocation spawns a fresh Bun child process with stream-JSON output, eliminating state-stub bugs
+- **Engine**: Long-running JSON-RPC server — single `cli.js --server` process spawned at startup, multiplexes multiple conversation threads via `ThreadManager`. Each thread holds a persistent `QueryEngine` instance whose context (system prompt, tool schemas, message history, file cache) survives across turns without rebuilding
+- **Protocol**: JSON-RPC 2.0 semantics over newline-delimited JSON (JSONL) on stdio — `initialize`, `thread/start`, `turn/start`, `turn/interrupt`, `thread/list`
 - **Persistence**: SQLite for structured state (chats, messages, MCP servers), JSON for settings; automatic WAL-mode migration
 - **Distribution**: Single `.deb` package with bundled Bun runtime — zero external dependencies beyond `libc`
 
@@ -30,8 +33,8 @@ Desktop (Electron)          Inference Engine (Bun)
 
 ### Agent Core
 - **Multi-provider inference** — Anthropic Messages API, OpenAI-compatible backends, DeepSeek, and custom endpoints. Switch providers per session without restarting
-- **Stateless engine architecture** — each query is a fresh subprocess; no long-lived daemon state to corrupt
-- **Streaming output** — real-time token streaming with tool-use event passthrough
+- **Stateful thread architecture** — each conversation runs in a persistent server-side thread; context (system prompt, tools, message history, file cache) accumulates across turns without per-query cold start
+- **Streaming output** — real-time token streaming via `item/agentMessage/delta` JSON-RPC notifications; tool-use events passthrough
 - **Permission control** — bypass, accept-edits, auto, and default modes; configurable per session
 - **Configurable tool allowlist** — Read, Write, Edit, Glob, Grep, Bash, WebFetch, WebSearch
 - **Max-turns governor** — hard limit on agent loops to prevent runaway inference
@@ -72,7 +75,7 @@ Desktop (Electron)          Inference Engine (Bun)
 Download the latest `.deb` from [GitHub Releases](https://github.com/aresbit/AutoAgent/releases):
 
 ```bash
-sudo dpkg -i autoagent_0.2.0_amd64.deb
+sudo dpkg -i autoagent_0.3.0_amd64.deb
 ```
 
 This installs:
@@ -162,6 +165,10 @@ autoagent/
 │   │   └── style.css        # Dark-theme stylesheet
 │   └── providers/           # Built-in & custom provider configs
 ├── packages/opencc/         # Inference engine (Bun)
+│   ├── src/
+│   │   ├── entrypoints/
+│   │   │   ├── cli.tsx       # CLI entry (--server, -p, interactive)
+│   │   │   └── server.ts     # JSON-RPC App Server + ThreadManager
 ├── packaging/deb/           # .deb template
 │   ├── DEBIAN/              # control, postinst
 │   └── usr/                 # install tree
