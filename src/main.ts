@@ -738,7 +738,8 @@ async function runAgent(request: SendRequest): Promise<{ runId: string }> {
       })) {
         // Error events carry their message in ev.error, not in the event body
         const text = ev.type === 'error' ? (ev.error || 'Unknown error') : extractEngineText(ev);
-        if ((ev.type === 'assistant' || ev.type === 'text_delta') && text) assistantText += text;
+        if (ev.type === 'text_delta' && text) assistantText += text;
+        if (ev.type === 'assistant' && text) assistantText = text;
         if (abortController.signal.aborted) break;
 
         // Map server event types to renderer-friendly kinds
