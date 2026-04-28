@@ -1,114 +1,185 @@
-# AutoAgent (Desktop)
+# AutoAgent
 
-Electron 桌面版 AI 编码助手，基于 opencc (reverse-engineered Claude Code CLI) 构建。
+> A high-performance desktop AI coding agent — local-first, multi-model, extensible.
 
-## 环境要求
+AutoAgent is an Electron-native desktop application that puts a full-featured AI coding agent at your fingertips. It combines a reactive GUI with a high-throughput inference engine to deliver real-time code generation, multi-file refactoring, and autonomous tool orchestration — all running locally on your machine.
 
-- [Bun](https://bun.sh/) >= 1.2.0
-- Node.js (Electron 依赖) >= 18
-- Linux / macOS
+## Architecture
 
-## 快速开始
-
-```bash
-# 安装依赖
-bun install
-
-# 开发模式（构建并启动 Electron）
-bun run dev
-
-# 仅构建
-bun run build
-
-# 生产模式启动
-bun run start
+```
+Desktop (Electron)          Inference Engine (Bun)
+┌──────────────────┐       ┌──────────────────────┐
+│  Renderer (TS)   │  IPC  │  cli.js               │
+│  Chat / MCP /    │◄─────►│  Stream-json output    │
+│  Skills / Git    │       │  Per-query subprocess  │
+└──────────────────┘       └──────────────────────┘
+        │                          │
+        ▼                          ▼
+┌──────────────────┐       ┌──────────────────────┐
+│  SQLite + JSON   │       │  ~/.autoagent.json   │
+│  Session persist │       │  Provider config      │
+└──────────────────┘       └──────────────────────┘
 ```
 
-## 项目结构
+- **Frontend**: TypeScript SPA with custom IPC bridge to Electron main process
+- **Engine**: Stateless per-query subprocess model — each agent invocation spawns a fresh Bun child process with stream-JSON output, eliminating state-stub bugs
+- **Persistence**: SQLite for structured state (chats, messages, MCP servers), JSON for settings; automatic WAL-mode migration
+- **Distribution**: Single `.deb` package with bundled Bun runtime — zero external dependencies beyond `libc`
+
+## Features
+
+### Agent Core
+- **Multi-provider inference** — Anthropic Messages API, OpenAI-compatible backends, DeepSeek, and custom endpoints. Switch providers per session without restarting
+- **Stateless engine architecture** — each query is a fresh subprocess; no long-lived daemon state to corrupt
+- **Streaming output** — real-time token streaming with tool-use event passthrough
+- **Permission control** — bypass, accept-edits, auto, and default modes; configurable per session
+- **Configurable tool allowlist** — Read, Write, Edit, Glob, Grep, Bash, WebFetch, WebSearch
+- **Max-turns governor** — hard limit on agent loops to prevent runaway inference
+
+### Session Management
+- **Persistent chat sessions** — all conversations survive restarts; stored as JSON with SQLite metadata index
+- **Session branching** — fork any conversation at any point to explore alternative approaches
+- **Chat history browser** — sidebar navigation with inline delete and branch controls
+
+### MCP (Model Context Protocol)
+- **Full MCP client** — stdio, HTTP streamable, and SSE transports
+- **Server registry** — persisted server configurations with enable/disable toggles
+- **Tool discovery** — inspect MCP server tool manifests directly from the UI
+- **Bundled defaults** — ships with default MCP server definitions for common tools
+
+### Skills System
+- **Dual-source skill scanner** — system-level (`~/.claude/skills/`) and project-level (`.claude/skills/`)
+- **SKILL.md parser** — extracts YAML frontmatter descriptions and presents them in the UI
+- **Toggle per skill** — enable/disable individual skills; toggles persist across sessions
+- **Auto-append** — enabled skills are injected into the system prompt automatically
+
+### Workspace Integration
+- **Git awareness** — diff stats, branch listing, changed file inventory; all computed from the configured workspace directory
+- **Directory picker** — native OS directory chooser for selecting workspace
+- **File system tools** — glob pattern matching, regex grep with ripgrep, file read/write/edit
+
+### Desktop Experience
+- **Single-instance lock** — dock icon click focuses existing window instead of spawning duplicates
+- **Startup-optimized** — in-process GPU on Linux, lazy SQLite init, deferred config sync
+- **Dark theme** — `#0d0f12` background with system theme detection
+- **Linux-first packaging** — `.deb` with hicolor icon theme integration, `desktopFileName` WM_CLASS matching
+- **System notifications** — native OS notifications for long-running agent completions
+
+## Quick Start
+
+### Installation
+
+Download the latest `.deb` from [GitHub Releases](https://github.com/aresbit/AutoAgent/releases):
+
+```bash
+sudo dpkg -i autoagent_0.2.0_amd64.deb
+```
+
+This installs:
+- `/usr/bin/autoagent` — launcher script
+- `/usr/lib/autoagent/` — application bundle (bun runtime + JS bundles)
+- `/usr/share/applications/autoagent.desktop` — DE integration
+- `/usr/share/icons/hicolor/*/apps/autoagent.png` — app icons
+
+Launch from your application launcher, or run `autoagent` from the terminal.
+
+### First Launch
+
+1. Open AutoAgent from your app launcher (or run `autoagent` in a terminal)
+2. The settings panel opens on the right — click the **Agent** tab
+3. Configure your provider:
+
+| Field | What to enter |
+|---|---|
+| Provider | Select `anthropic` for Claude, `openai` for GPT, or a custom provider |
+| API type | Auto-selected based on provider; `anthropic-messages` or `openai-completions` |
+| Model | e.g. `claude-sonnet-4-6`, `gpt-4o`, `deepseek-chat` |
+| Base URL | Your API endpoint; auto-filled for known providers |
+| API key | Your provider API key; stored locally in `~/.autoagent/` |
+| Workspace | The project directory the agent will operate in |
+
+4. Click **Save**
+
+### Your First Session
+
+1. Click **New Session** in the sidebar
+2. Type a prompt in the composer at the bottom — e.g.:
+   > *"Explain the project structure and suggest improvements"*
+3. Press `Ctrl+Enter` (or `Cmd+Enter`) to send
+4. The agent streams its response in real time; tool invocations appear inline
+5. Click **Stop** to abort a running query at any time
+
+### Working with Skills
+
+AutoAgent scans two skill directories:
+- `~/.claude/skills/` — your personal, cross-project skills
+- `<workspace>/.claude/skills/` — project-specific skills
+
+Each skill is a directory containing a `SKILL.md` file with YAML frontmatter. Go to the **Skills** tab, click **Scan**, and toggle the skills you want active.
+
+### MCP Servers
+
+In the **MCP** tab:
+1. Enter a **Display ID** (e.g., `playwright`)
+2. Select the transport — `stdio` for CLI tools, `http`/`sse` for remote servers
+3. Fill in the command/URL and environment variables
+4. Click **Save MCP**, then **Discover** to verify tool availability
+
+### Keyboard Shortcuts
+
+| Shortcut | Action |
+|---|---|
+| `Ctrl+Enter` / `Cmd+Enter` | Send prompt |
+| `Ctrl+Shift+B` | Stop running agent |
+
+## Building from Source
+
+```bash
+# Prerequisites: bun >= 1.2.0, node >= 18
+bun install
+
+# Development (build + launch Electron)
+bun run dev
+
+# Production build only
+bun run build
+
+# Build .deb package
+bash scripts/build-deb.sh
+```
+
+## Project Structure
 
 ```
 autoagent/
 ├── src/
-│   ├── main.ts          # Electron 主进程
-│   ├── preload.ts       # 预加载脚本
-│   └── renderer/        # 渲染进程 (前端 UI)
-├── packages/
-│   └── opencc/          # opencc 核心 (reverse-engineered Claude Code CLI)
-├── packaging/           # .deb 打包配置
-├── assets/              # 应用图标
+│   ├── main.ts              # Electron main process
+│   ├── preload.ts           # Context bridge (IPC)
+│   ├── engine-client.ts     # cli.js subprocess manager
+│   ├── renderer/            # Frontend SPA
+│   │   ├── app.ts           # UI logic, state, IPC handlers
+│   │   ├── index.html       # Shell
+│   │   └── style.css        # Dark-theme stylesheet
+│   └── providers/           # Built-in & custom provider configs
+├── packages/opencc/         # Inference engine (Bun)
+├── packaging/deb/           # .deb template
+│   ├── DEBIAN/              # control, postinst
+│   └── usr/                 # install tree
+├── scripts/build-deb.sh     # One-shot .deb builder
+├── assets/                  # App icons (16x16 → 512x512)
 ├── package.json
 └── tsconfig.json
 ```
 
-## 如何编译
+## Contributing
+
+Feature branches off `master`:
 
 ```bash
-# 完整构建（Electron 主进程 + 预加载 + 渲染进程）
-bun run build
-
-# 构建产物
-# dist/main.js       - Electron 主进程
-# dist/preload.js    - 预加载脚本
-# dist/client/       - 渲染进程前端资源
+git checkout -b feat/<name>
+# ... implement, test
+git commit -m "feat: description"
+git checkout master && git merge feat/<name>
 ```
 
-### 打包 .deb
-
-```bash
-# 先构建应用，再打包为 .deb
-bun run build && cd packaging/deb && ./build.sh
-```
-
-## 如何测试
-
-```bash
-# 启动开发模式，手动验证功能
-bun run dev
-
-# 验证 CLI 核心（opencc）
-cd packages/opencc && echo "hello" | bun run src/entrypoints/cli.tsx -p
-```
-
-## 如何提交新 Feat
-
-采用 **feat 分支** 工作流：
-
-```bash
-# 1. 确认当前在 master 且工作区干净
-git checkout master
-git status
-
-# 2. 从 master 创建 feat 分支
-git checkout -b feat/<功能名称>
-
-# 示例
-git checkout -b feat/add-dark-mode
-
-# 3. 开发并提交
-git add <files>
-git commit -m "feat: 添加暗色模式支持"
-
-# 4. 合并回 master
-git checkout master
-git merge feat/<功能名称>
-
-# 5. 删除 feat 分支（可选）
-git branch -d feat/<功能名称>
-```
-
-### 分支命名规范
-
-| 前缀 | 用途 | 示例 |
-|------|------|------|
-| `feat/` | 新功能 | `feat/add-tray-icon` |
-| `fix/` | Bug 修复 | `fix/electron-crash` |
-| `refactor/` | 重构 | `refactor/ipc-module` |
-
-### Commit 规范
-
-```
-feat: 简要描述功能
-fix: 简要描述修复
-refactor: 简要描述重构内容
-chore: 构建/依赖等杂项变更
-```
+Keep commits atomic. Use `feat:`, `fix:`, `refactor:`, `chore:` prefixes.
