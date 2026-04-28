@@ -48,6 +48,8 @@ const api = {
   listProviders: () => ipcRenderer.invoke('provider:list'),
   saveProvider: (provider: unknown) => ipcRenderer.invoke('provider:save', provider),
   deleteProvider: (id: string) => ipcRenderer.invoke('provider:delete', { id }),
+  listSkills: (cwd?: string) => ipcRenderer.invoke('skill:list', cwd),
+  toggleSkill: (name: string, enabled: boolean) => ipcRenderer.invoke('skill:toggle', name, enabled),
   gitStatus: (workDir: string) => ipcRenderer.invoke('workspace:git-status', { workDir }),
   openExternal: (url: string) => ipcRenderer.invoke('shell:open-external', url),
   onAgentEvent: (handler: (payload: unknown) => void) => {

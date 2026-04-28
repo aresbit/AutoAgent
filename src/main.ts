@@ -980,6 +980,122 @@ ipcMain.handle('provider:delete', async (_event, input: { id: string }) => {
   const result = database.prepare('DELETE FROM provider WHERE id = ?').run(input.id);
   return { deleted: Number(result.changes || 0) };
 });
+// ---- Skill scanner ----
+interface SkillEntry {
+  name: string;
+  description: string;
+  path: string;
+  source: 'system' | 'project';
+  enabled: boolean;
+}
+
+const enabledSkills = new Set<string>();
+
+async function scanSkills(cwd: string): Promise<{ skills: SkillEntry[]; dirs: Array<{ path: string; source: 'system' | 'project'; exists: boolean }> }> {
+  const home = homedir();
+  const systemDirs = [
+    join(home, '.claude', 'skills'),
+    join(home, '.codex', 'skills'),
+  ];
+  const projectDir = join(cwd, '.claude', 'skills');
+
+  const dirs = [
+    ...systemDirs.map((path) => ({ path, source: 'system' as const, exists: existsSync(path) })),
+    { path: projectDir, source: 'project' as const, exists: existsSync(projectDir) },
+  ];
+
+  const skills: SkillEntry[] = [];
+
+  async function collectFromDir(baseDir: string, source: 'system' | 'project'): Promise<void> {
+    if (!existsSync(baseDir)) return;
+    let entries: any[];
+    try {
+      entries = await readdir(baseDir, { withFileTypes: true } as any);
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const fullPath = join(baseDir, entry.name);
+      if (entry.isDirectory()) {
+        // Directory with SKILL.md inside
+        const skillMd = join(fullPath, 'SKILL.md');
+        const altMd = join(fullPath, 'skill.md');
+        const mdPath = existsSync(skillMd) ? skillMd : existsSync(altMd) ? altMd : null;
+        if (mdPath) {
+          try {
+            const content = await readFile(mdPath, 'utf-8');
+            const name = entry.name;
+            const desc = extractSkillDescription(content);
+            skills.push({
+              name,
+              description: desc || 'Skill: ' + name,
+              path: fullPath,
+              source,
+              enabled: enabledSkills.has(name),
+            });
+          } catch {}
+        }
+      } else if (entry.isFile() && (entry.name === 'SKILL.md' || entry.name.endsWith('.md'))) {
+        try {
+          const content = await readFile(fullPath, 'utf-8');
+          const name = entry.name === 'SKILL.md'
+            ? baseDir.split('/').pop() || 'root-skill'
+            : entry.name.replace(/\.md$/i, '');
+          const desc = extractSkillDescription(content);
+          skills.push({
+            name,
+            description: desc || 'Skill: ' + name,
+            path: fullPath,
+            source,
+            enabled: enabledSkills.has(name),
+          });
+        } catch {}
+      }
+    }
+  }
+
+  for (const dir of dirs) {
+    if (dir.exists) await collectFromDir(dir.path, dir.source);
+  }
+
+  // Deduplicate by name (project skills override system skills)
+  const seen = new Set<string>();
+  const deduped: SkillEntry[] = [];
+  for (const skill of [...skills].reverse()) {
+    if (seen.has(skill.name)) continue;
+    seen.add(skill.name);
+    deduped.unshift(skill);
+  }
+
+  return { skills: deduped, dirs };
+}
+
+function extractSkillDescription(content: string): string {
+  // Extract description from YAML frontmatter or first heading
+  const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
+  if (frontmatterMatch) {
+    const descMatch = frontmatterMatch[1].match(/^description:\s*(.+)$/m);
+    if (descMatch) return descMatch[1].trim();
+  }
+  // Fallback: first non-empty line after frontmatter
+  const afterFM = content.replace(/^---\n[\s\S]*?\n---\n*/, '');
+  const firstLine = afterFM.split('\n').find((l) => l.trim() && !l.startsWith('#'));
+  return firstLine ? firstLine.trim().slice(0, 120) : '';
+}
+
+ipcMain.handle('skill:list', async (_event, cwd?: string) => {
+  return scanSkills(cwd || (await loadSettings()).cwd || process.cwd());
+});
+
+ipcMain.handle('skill:toggle', async (_event, name: string, enabled: boolean) => {
+  if (enabled) {
+    enabledSkills.add(name);
+  } else {
+    enabledSkills.delete(name);
+  }
+  return { ok: true };
+});
+
 ipcMain.handle('workspace:git-status', async (_event, input?: { cwd?: string; workDir?: string; base?: string }) => {
   const root = workDirFrom(input) || (await loadSettings()).cwd;
   const [statResult, branchesResult, filesResult] = await Promise.allSettled([

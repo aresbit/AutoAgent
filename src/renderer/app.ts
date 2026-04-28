@@ -103,6 +103,20 @@ interface GitStatus {
   errors: string[];
 }
 
+interface SkillInfo {
+  name: string;
+  description: string;
+  path: string;
+  source: 'system' | 'project';
+  enabled: boolean;
+}
+
+interface SkillDir {
+  path: string;
+  source: 'system' | 'project';
+  exists: boolean;
+}
+
 const state: {
   settings: Settings | null;
   chats: ChatRecord[];
@@ -112,6 +126,8 @@ const state: {
   mcpServers: McpServer[];
   providers: ProviderInfo[];
   managedProviders: ProviderRecord[];
+  skills: SkillInfo[];
+  skillDirs: SkillDir[];
 } = {
   settings: null,
   chats: [],
@@ -121,6 +137,8 @@ const state: {
   mcpServers: [],
   providers: [],
   managedProviders: [],
+  skills: [],
+  skillDirs: [],
 };
 
 const $ = <T extends HTMLElement>(selector: string): T => {
@@ -182,6 +200,10 @@ const elements = {
   gitSummary: $('#git-summary'),
   branchList: $('#branch-list'),
   diffFiles: $('#diff-files'),
+  refreshSkills: $('#refresh-skills') as HTMLButtonElement,
+  skillCount: $('#skill-count'),
+  skillList: $('#skill-list'),
+  skillDirs: $('#skill-dirs'),
 };
 
 function setActivePanel(panelId: string): void {
@@ -661,6 +683,77 @@ function renderGitStatus(payload: GitStatus): void {
   );
 }
 
+function renderSkills(): void {
+  const enabled = state.skills.filter((s) => s.enabled).length;
+  elements.skillCount.textContent = `${enabled} enabled / ${state.skills.length} total`;
+
+  elements.skillList.replaceChildren(
+    ...state.skills.map((skill) => {
+      const row = document.createElement('div');
+      row.className = 'skill-row';
+
+      const check = document.createElement('input');
+      check.type = 'checkbox';
+      check.checked = skill.enabled;
+      check.onchange = () => void toggleSkill(skill);
+
+      const meta = document.createElement('div');
+      meta.className = 'skill-meta';
+      const title = document.createElement('strong');
+      title.textContent = skill.name;
+      const desc = document.createElement('span');
+      desc.textContent = skill.description || 'No description';
+      const source = document.createElement('em');
+      source.textContent = `${skill.source} · ${skill.path}`;
+
+      meta.append(title, desc, source);
+      row.append(check, meta);
+      return row;
+    }),
+  );
+
+  elements.skillDirs.replaceChildren(
+    ...state.skillDirs.map((dir) => {
+      const row = document.createElement('div');
+      row.className = 'skill-dir-row';
+      const badge = document.createElement('span');
+      badge.className = 'badge';
+      badge.textContent = dir.source;
+      row.append(badge, document.createTextNode(dir.exists ? dir.path : `${dir.path} (not found)`));
+      return row;
+    }),
+  );
+}
+
+async function toggleSkill(skill: SkillInfo): Promise<void> {
+  skill.enabled = !skill.enabled;
+  await window.autoagent.toggleSkill(skill.name, skill.enabled);
+  // Rebuild system append from enabled skills
+  const enabledSkills = state.skills.filter((s) => s.enabled).map((s) => s.name);
+  if (state.skills.length > 0) {
+    const current = elements.systemAppend.value;
+    // Remove old skill lines and append enabled ones
+    const lines = current.split('\n').filter((l) => !l.startsWith('# skill:'));
+    if (enabledSkills.length > 0) {
+      lines.push(`# skill: ${enabledSkills.join(', ')}`);
+    }
+    elements.systemAppend.value = lines.join('\n').trim();
+  }
+  renderSkills();
+}
+
+async function refreshSkills(): Promise<void> {
+  elements.skillList.textContent = 'Scanning...';
+  const result = (await window.autoagent.listSkills(elements.cwd.value.trim())) as {
+    skills: SkillInfo[];
+    dirs: SkillDir[];
+  };
+  state.skills = result.skills;
+  state.skillDirs = result.dirs;
+  renderSkills();
+  setStatus(`${result.skills.length} skills found`);
+}
+
 async function refreshWorkspace(): Promise<void> {
   const workDir = elements.cwd.value.trim();
   if (!workDir) return;
@@ -729,9 +822,10 @@ async function boot(): Promise<void> {
 
   window.autoagent.onAgentEvent(handleAgentEvent);
   void refreshWorkspace();
+  void refreshSkills();
 }
 
-for (const tab of elements.panelTabs) tab.onclick = () => setActivePanel(tab.dataset.panelTab || 'runtime');
+for (const tab of elements.panelTabs) tab.onclick = () => setActivePanel(tab.dataset.panelTab || 'skills');
 elements.newChat.onclick = () => void createChat();
 elements.saveSettings.onclick = () => void saveSettings();
 elements.pickCwd.onclick = async () => {
@@ -768,6 +862,7 @@ elements.resetMcp.onclick = clearMcpForm;
 elements.discoverMcp.onclick = () => void discoverMcpTools({ enabledOnly: true });
 elements.saveProvider.onclick = () => void saveProviderForm();
 elements.resetProvider.onclick = clearProviderForm;
+elements.refreshSkills.onclick = () => void refreshSkills();
 elements.refreshWorkspace.onclick = () => void refreshWorkspace();
 elements.composer.onsubmit = (event) => {
   event.preventDefault();

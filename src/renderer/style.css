@@ -614,6 +614,75 @@ textarea:focus {
   text-align: right;
 }
 
+.skill-list,
+.skill-dirs {
+  display: grid;
+  gap: 6px;
+}
+
+.skill-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #101418;
+  padding: 8px 10px;
+}
+
+.skill-row input {
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  padding: 0;
+}
+
+.skill-meta {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.skill-meta strong {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.skill-meta span {
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skill-meta em {
+  color: var(--faint);
+  font-size: 10px;
+  font-style: normal;
+}
+
+.skill-dir-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.skill-dir-row .badge {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: #101418;
+  padding: 2px 6px;
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 600;
+}
+
 @media (max-width: 1080px) {
   body {
     grid-template-columns: 220px minmax(380px, 1fr);

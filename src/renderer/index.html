@@ -48,38 +48,24 @@
       </div>
 
       <div class="panel-tabs" role="tablist" aria-label="Control panels">
-        <button class="active" type="button" data-panel-tab="runtime">Runtime</button>
+        <button class="active" type="button" data-panel-tab="skills">Skills</button>
         <button type="button" data-panel-tab="providers">Providers</button>
         <button type="button" data-panel-tab="agent">Agent</button>
         <button type="button" data-panel-tab="mcp">MCP</button>
         <button type="button" data-panel-tab="workspace">Workspace</button>
       </div>
 
-      <section id="panel-runtime" class="settings-panel active">
-        <label>
-          Provider
-          <select id="provider"></select>
-        </label>
-        <label>
-          API type
-          <select id="api-type">
-            <option value="openai-completions">OpenAI compatible</option>
-            <option value="anthropic-messages">Anthropic messages</option>
-          </select>
-        </label>
-        <label>
-          Model
-          <input id="model" spellcheck="false" list="model-options" />
-          <datalist id="model-options"></datalist>
-        </label>
-        <label>
-          Base URL
-          <input id="base-url" spellcheck="false" />
-        </label>
-        <label>
-          API key
-          <input id="api-key" type="password" spellcheck="false" />
-        </label>
+      <section id="panel-skills" class="settings-panel active">
+        <div class="section-title">
+          <strong>Skills</strong>
+          <button id="refresh-skills" class="ghost" type="button">Scan</button>
+        </div>
+        <span id="skill-count" class="subtle-count">0 loaded</span>
+        <div id="skill-list" class="skill-list"></div>
+        <div class="section-title compact">
+          <strong>Skill dirs</strong>
+        </div>
+        <div id="skill-dirs" class="skill-dirs"></div>
       </section>
 
       <section id="panel-providers" class="settings-panel">
@@ -125,6 +111,30 @@
       </section>
 
       <section id="panel-agent" class="settings-panel">
+        <label>
+          Provider
+          <select id="provider"></select>
+        </label>
+        <label>
+          API type
+          <select id="api-type">
+            <option value="openai-completions">OpenAI compatible</option>
+            <option value="anthropic-messages">Anthropic messages</option>
+          </select>
+        </label>
+        <label>
+          Model
+          <input id="model" spellcheck="false" list="model-options" />
+          <datalist id="model-options"></datalist>
+        </label>
+        <label>
+          Base URL
+          <input id="base-url" spellcheck="false" />
+        </label>
+        <label>
+          API key
+          <input id="api-key" type="password" spellcheck="false" />
+        </label>
         <label>
           Workspace
           <div class="inline-field">
