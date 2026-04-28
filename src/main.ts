@@ -85,15 +85,39 @@ interface McpServerRecord {
   updatedAt: number;
 }
 
+// ---- Startup performance tracing ----
+const t0 = performance.now();
+let tPrev = t0;
+function perfMark(label: string): void {
+  const now = performance.now();
+  console.error(`[perf] +${(now - t0).toFixed(0)}ms (Δ${(now - tPrev).toFixed(0)}ms) ${label}`);
+  tPrev = now;
+}
+
+// Startup optimizations: avoid GPU process spawn overhead on Linux
+if (process.platform === 'linux') {
+  app.commandLine.appendSwitch('in-process-gpu');
+}
+
+// Set app name BEFORE ready — required for WM_CLASS desktop icon matching
+app.setName('autoagent');
+// Set Wayland desktop name — required for compositor to match .desktop file
+if (process.platform === 'linux') app.setDesktopName('autoagent');
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const clientDir = join(__dirname, 'client');
+perfMark('module init done');
 
 let mainWindow: BrowserWindow | null = null;
 const activeRuns = new Map<string, AbortController>();
 let sqliteDatabase: any | null = null;
 
-// ---- Engine (opencc CLI as subprocess) ----
+// ---- Engine (long-running JSON-RPC server) ----
+// Spawned once at startup, persists across all queries.
+// Each chat session maps to a server-side "thread" (QueryEngine instance).
+// Context (system prompt, tools, message history, file cache) survives
+// across turns without rebuilding.
 let engine: EngineClient | null = null;
 
 async function getEngine(): Promise<EngineClient> {
@@ -239,22 +263,36 @@ async function appendMessage(chatId: string, message: Omit<ChatMessage, 'id' | '
 }
 
 function extractEngineText(event: any): string {
-  if (!event?.event) return '';
-  const ev = event.event;
-  // Assistant message with content blocks
-  if (ev.type === 'assistant' && ev.message?.content) {
-    return ev.message.content
-      .map((block: any) => {
-        if (block.type === 'text') return block.text || '';
-        if (block.type === 'tool_use') return `[tool:${block.name}] ${JSON.stringify(block.input)}`;
-        if (block.type === 'thinking') return block.thinking || '';
-        return '';
-      })
-      .filter(Boolean)
-      .join('\n');
+  if (!event) return '';
+  // Direct text from text_delta stream events
+  if (event.type === 'text_delta') {
+    if (event.event?.delta) return event.event.delta;
+    if (event.text) return event.text;
   }
-  // Text delta from streaming
-  if (ev.type === 'text_delta') return ev.text || '';
+  // Direct text from a completed item
+  if (event.type === 'assistant' || event.type === 'tool_result') {
+    if (event.event?.item?.text) return event.event.item.text;
+    if (event.event?.item?.content) {
+      const c = event.event.item.content;
+      if (typeof c === 'string') return c;
+    }
+  }
+  // Legacy format fallback
+  if (event?.event) {
+    const ev = event.event;
+    if (ev.type === 'assistant' && ev.message?.content) {
+      return ev.message.content
+        .map((block: any) => {
+          if (block.type === 'text') return block.text || '';
+          if (block.type === 'tool_use') return `[tool:${block.name}] ${JSON.stringify(block.input)}`;
+          if (block.type === 'thinking') return block.thinking || '';
+          return '';
+        })
+        .filter(Boolean)
+        .join('\n');
+    }
+    if (ev.type === 'text_delta') return ev.text || ev.delta || '';
+  }
   return '';
 }
 
@@ -683,22 +721,35 @@ async function runAgent(request: SendRequest): Promise<{ runId: string }> {
       const eng = await getEngine();
       sendToWindow('agent:event', { runId, chatId: request.chatId, kind: 'start' });
 
-      const messages = [
-        { role: 'user', content: request.prompt },
-      ];
-
+      // The engine persists a thread across queries — context accumulates
+      // across turns within the server process (system prompt, tools, message
+      // history, file cache). We only send the latest prompt; the server's
+      // QueryEngine appends it to its mutableMessages.
       for await (const ev of eng.query({
         model: settings.model,
         maxTurns: settings.maxTurns,
         cwd: settings.cwd,
         appendSystemPrompt: settings.appendSystemPrompt,
-        messages,
+        apiKey: settings.apiKey,
+        baseURL: settings.baseURL,
+        providerId: settings.providerId,
+        messages: [{ role: 'user', content: request.prompt }],
         signal: abortController.signal,
       })) {
         const text = extractEngineText(ev);
-        if (ev.type === 'assistant' && text) assistantText = text;
+        if ((ev.type === 'assistant' || ev.type === 'text_delta') && text) assistantText += text;
         if (abortController.signal.aborted) break;
-        sendToWindow('agent:event', { runId, chatId: request.chatId, kind: ev.type, text, event: ev });
+
+        // Map server event types to renderer-friendly kinds
+        const kind =
+          ev.type === 'text_delta' ? 'partial_message' :
+          ev.type === 'assistant' ? 'assistant' :
+          ev.type === 'tool_start' || ev.type === 'tool_result' ? 'tool_result' :
+          ev.type === 'result' ? 'done' :
+          ev.type === 'interrupted' ? 'done' :
+          ev.type === 'error' ? 'error' :
+          ev.type;
+        sendToWindow('agent:event', { runId, chatId: request.chatId, kind, text, event: ev });
       }
 
       if (assistantText.trim()) {
@@ -747,39 +798,101 @@ async function createWindow(): Promise<void> {
     minWidth: 960,
     minHeight: 640,
     title: 'AutoAgent',
-    icon: join(__dirname, '../assets/icon.png'),
+    icon: join(__dirname, 'icon.png'),
+    // Required for Linux desktop environments to match the window
+    // to autoagent.desktop for the correct dock/taskbar icon
+    ...(process.platform === 'linux' ? { desktopFileName: 'autoagent' } : {}),
     autoHideMenuBar: true,
-    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
-    trafficLightPosition: { x: 14, y: 18 },
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
+    ...(process.platform === 'darwin' ? { trafficLightPosition: { x: 14, y: 18 } } : {}),
+    // Hide until fully rendered — avoids flash, feels faster
+    show: false,
+    backgroundColor: '#0d0f12',
     webPreferences: {
-      preload: join(__dirname, 'preload.js'),
+      preload: join(__dirname, 'preload.mjs'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
     },
   });
+  perfMark('BrowserWindow created');
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     void shell.openExternal(url);
     return { action: 'deny' };
   });
 
-  await mainWindow.loadURL('client://app/');
+  // Show window once fully rendered (GPU paint done)
+  mainWindow.once('ready-to-show', () => {
+    console.error(`[perf] +${(performance.now() - t0).toFixed(0)}ms ready-to-show`);
+    mainWindow!.show();
+  });
+
+  // Fine-grained load timing
+  mainWindow.webContents.on('did-start-loading', () => {
+    console.error(`[perf] +${(performance.now() - t0).toFixed(0)}ms did-start-loading`);
+  });
+  mainWindow.webContents.on('dom-ready', () => {
+    console.error(`[perf] +${(performance.now() - t0).toFixed(0)}ms dom-ready`);
+  });
+  mainWindow.webContents.on('did-finish-load', () => {
+    console.error(`[perf] +${(performance.now() - t0).toFixed(0)}ms did-finish-load`);
+  });
+
+  // Use loadFile instead of loadURL — avoids custom protocol handler overhead
+  const loadStart = performance.now();
+  await mainWindow.loadFile(join(clientDir, 'index.html'));
+  console.error(`[perf] +${(performance.now() - t0).toFixed(0)}ms (Δ${(performance.now() - loadStart).toFixed(0)}ms) loadFile done`);
 }
 
-ipcMain.handle('app:bootstrap', async () => ({
-  settings: await loadSettings(),
-  providers: providerCatalog(),
-  chats: await listChats(),
-  mcpServers: await listMcpServersFromDatabase(),
-  chatwise: {
-    defaultMcpServers,
-  },
-}));
+// Sync provider settings to ~/.autoagent.json so the CLI engine can read them
+async function syncEngineConfig(settings: DesktopSettings): Promise<void> {
+  const t = performance.now();
+  const configPath = join(homedir(), '.autoagent.json');
+  try {
+    let existing: Record<string, unknown> = {};
+    try {
+      const raw = await readFile(configPath, 'utf8');
+      existing = JSON.parse(raw);
+    } catch {}
+    const merged = {
+      ...existing,
+      primaryApiKey: settings.apiKey || existing.primaryApiKey || '',
+      env: {
+        ...((existing.env as Record<string, string>) || {}),
+        ANTHROPIC_API_KEY: settings.apiKey || '',
+        ANTHROPIC_BASE_URL: settings.baseURL || '',
+      },
+    };
+    await mkdir(dirname(configPath), { recursive: true });
+    await writeFile(configPath, JSON.stringify(merged, null, 2) + '\n', 'utf8');
+    console.error(`[perf] syncEngineConfig done in ${(performance.now() - t).toFixed(0)}ms`);
+  } catch (err) {
+    console.error('[config] failed to sync engine config:', err);
+  }
+}
+
+ipcMain.handle('app:bootstrap', async () => {
+  const t = performance.now();
+  const [settings, chats, mcpServers] = await Promise.all([
+    loadSettings(),
+    listChats(),
+    listMcpServersFromDatabase(),
+  ]);
+  console.error(`[perf] bootstrap IPC: loadSettings=${(performance.now() - t).toFixed(0)}ms`);
+  return {
+    settings,
+    providers: providerCatalog(),
+    chats,
+    mcpServers,
+    chatwise: { defaultMcpServers },
+  };
+});
 
 ipcMain.handle('settings:save', async (_event, settings: Partial<DesktopSettings>) => {
   const normalized = normalizeSettings(settings);
   await writeJson(userDataPath('settings.json'), normalized);
+  await syncEngineConfig(normalized);
   return normalized;
 });
 
@@ -861,6 +974,17 @@ interface SkillEntry {
 }
 
 const enabledSkills = new Set<string>();
+
+// Persist enabled skills to disk
+async function loadEnabledSkills(): Promise<void> {
+  try {
+    const data = await readFile(userDataPath('skills.json'), 'utf8');
+    for (const name of JSON.parse(data)) enabledSkills.add(name);
+  } catch {}
+}
+async function saveEnabledSkills(): Promise<void> {
+  await writeJson(userDataPath('skills.json'), [...enabledSkills]);
+}
 
 async function scanSkills(cwd: string): Promise<{ skills: SkillEntry[]; dirs: Array<{ path: string; source: 'system' | 'project'; exists: boolean }> }> {
   const home = homedir();
@@ -964,6 +1088,7 @@ ipcMain.handle('skill:toggle', async (_event, name: string, enabled: boolean) =>
   } else {
     enabledSkills.delete(name);
   }
+  await saveEnabledSkills();
   return { ok: true };
 });
 
@@ -1245,19 +1370,50 @@ ipcMain.handle('setWindowProp', async (event, input: { type: 'minimize' | 'maxim
 });
 ipcMain.handle('closeWindow', async (event) => BrowserWindow.fromWebContents(event.sender)?.close());
 
+// Single-instance lock: clicking the dock icon focuses the existing window
+// instead of launching a second instance
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
+}
+
 app.whenReady().then(async () => {
+  perfMark('app.ready fired');
   Menu.setApplicationMenu(null);
   registerElectronFetchIpc(ipcMain);
   registerElectronExecIpc(ipcMain);
+  perfMark('ipc registered');
+  // Restore persisted skill toggles
+  loadEnabledSkills().catch(() => {});
+  // Sync engine config from stored settings — defer to avoid IO contention
+  setTimeout(() => loadSettings().then(syncEngineConfig).catch((err) => console.error('[config] sync failed:', err)), 500);
   // Start opencc engine subprocess (pre-warm)
   getEngine().catch((err) => console.error('[engine] failed to start:', err));
   registerClientProtocol();
-  await getSqliteDatabase();
+  perfMark('protocol registered');
+  // Fire-and-forget: theme load is not on the critical path
+  readJson<{ theme?: 'system' | 'light' | 'dark' }>(userDataPath('local-settings.json'), {})
+    .then((cfg) => { nativeTheme.themeSource = cfg.theme || 'system'; })
+    .catch(() => {});
+  // Create window immediately — DB init is lazy, kicks in on first IPC call
   await createWindow();
-  nativeTheme.themeSource = (await readJson<{ theme?: 'system' | 'light' | 'dark' }>(userDataPath('local-settings.json'), {})).theme || 'system';
+  perfMark('window created');
+  // Defer heavy SQLite init to avoid blocking the UI
+  getSqliteDatabase().catch((err) => console.error('[db] init failed:', err));
 });
 app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) void createWindow();
+  if (mainWindow) {
+    mainWindow.focus();
+  } else if (BrowserWindow.getAllWindows().length === 0) {
+    void createWindow();
+  }
 });
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();

@@ -1,0 +1,665 @@
+/**
+ * App Server — JSON-RPC over stdio (JSONL) server entrypoint.
+ *
+ * Started via `cli.js --server`. Spawns once, stays alive, multiplexes multiple
+ * QueryEngine instances (Threads) within a single long-running process.
+ *
+ * Protocol: JSON-RPC 2.0 semantics without the "jsonrpc" header on the wire.
+ * Wire format: newline-delimited JSON (JSONL). One message per line.
+ * Requests carry `id` and `method`; responses echo `id` with `result` or `error`.
+ * Notifications carry no `id`.
+ *
+ * Lifecycle:
+ *   1. Client spawns `bun cli.js --server` with stdio pipes
+ *   2. Client sends `initialize` → Server responds with metadata
+ *   3. Client sends `initialized` (notification)
+ *   4. Client sends `thread/start` to create a conversation session
+ *   5. Client sends `turn/start` to submit user input and begin the agent loop
+ *   6. Server streams `item/*` and `turn/*` notifications back
+ *   7. On SIGTERM or stdin EOF, server drains active turns and exits
+ */
+
+import { randomUUID } from 'node:crypto';
+import type { SDKMessage } from './sdk/coreTypes.js';
+
+// ============================================================================
+// Types
+// ============================================================================
+
+type JsonRpcRequest = {
+  id?: number | string;
+  method: string;
+  params?: Record<string, unknown>;
+};
+
+type JsonRpcResponse = {
+  id: number | string;
+  result?: unknown;
+  error?: { code: number; message: string; data?: string };
+};
+
+type JsonRpcNotification = {
+  method: string;
+  params?: Record<string, unknown>;
+};
+
+type ThreadState = {
+  threadId: string;
+  createdAt: number;
+  config: ThreadConfig;
+  queryEngine: any; // QueryEngine — dynamically instantiated
+  messages: any[];   // accumulated SDKMessage history
+  aborter: AbortController;
+  activeTurnId: string | null;
+};
+
+type ThreadConfig = {
+  model: string;
+  cwd: string;
+  maxTurns: number;
+  permissionMode: string;
+  allowedTools: string[];
+  appendSystemPrompt: string;
+  apiKey: string;
+  baseURL: string;
+  providerId: string;
+};
+
+interface ThreadInfo {
+  id: string;
+  createdAt: number;
+  model: string;
+  cwd: string;
+  activeTurnId: string | null;
+}
+
+// ============================================================================
+// JSONL Transport
+// ============================================================================
+
+function send(response: JsonRpcResponse | JsonRpcNotification): void {
+  process.stdout.write(JSON.stringify(response) + '\n');
+}
+
+function sendError(id: number | string, code: number, message: string, data?: string): void {
+  send({ id, error: { code, message, data } });
+}
+
+function notify(method: string, params?: Record<string, unknown>): void {
+  send({ method, params });
+}
+
+// ============================================================================
+// ThreadManager
+// ============================================================================
+
+class ThreadManager {
+  private threads = new Map<string, ThreadState>();
+  private initialized = false;
+  private clientName = '';
+
+  constructor(private serverVersion: string) {}
+
+  markInitialized(clientName: string): void {
+    this.initialized = true;
+    this.clientName = clientName;
+  }
+
+  isInitialized(): boolean {
+    return this.initialized;
+  }
+
+  async handleInitialize(
+    id: number | string,
+    params: Record<string, unknown> | undefined,
+  ): Promise<void> {
+    if (this.initialized) {
+      sendError(id, -32000, 'Already initialized');
+      return;
+    }
+    const clientInfo = (params?.clientInfo as Record<string, string>) || {};
+    this.markInitialized(clientInfo.name || 'unknown');
+
+    send({
+      id,
+      result: {
+        platformFamily: process.platform,
+        platformOs: process.platform,
+        serverVersion: this.serverVersion,
+        capabilities: {
+          threads: true,
+          streaming: true,
+        },
+      },
+    });
+  }
+
+  async handleThreadStart(
+    id: number | string,
+    params: Record<string, unknown> | undefined,
+  ): Promise<void> {
+    const config: ThreadConfig = {
+      model: (params?.model as string) || 'claude-sonnet-4-6',
+      cwd: (params?.cwd as string) || process.cwd(),
+      maxTurns: (params?.maxTurns as number) || 10,
+      permissionMode: (params?.permissionMode as string) || 'bypassPermissions',
+      allowedTools: Array.isArray(params?.allowedTools)
+        ? (params.allowedTools as string[])
+        : ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'WebFetch', 'WebSearch'],
+      appendSystemPrompt: (params?.appendSystemPrompt as string) || '',
+      apiKey: (params?.apiKey as string) || process.env.ANTHROPIC_API_KEY || '',
+      baseURL: (params?.baseURL as string) || process.env.ANTHROPIC_BASE_URL || '',
+      providerId: (params?.providerId as string) || 'anthropic',
+    };
+
+    const threadId = randomUUID();
+    const thread: ThreadState = {
+      threadId,
+      createdAt: Date.now(),
+      config,
+      queryEngine: null, // lazily created on first turn
+      messages: [],
+      aborter: new AbortController(),
+      activeTurnId: null,
+    };
+
+    this.threads.set(threadId, thread);
+
+    send({
+      id,
+      result: {
+        thread: {
+          id: threadId,
+          createdAt: thread.createdAt,
+          model: config.model,
+          cwd: config.cwd,
+          status: 'idle',
+        },
+      },
+    });
+
+    // Notify subscribers
+    notify('thread/started', {
+      threadId,
+      model: config.model,
+      cwd: config.cwd,
+    });
+  }
+
+  async handleTurnStart(
+    id: number | string,
+    params: Record<string, unknown> | undefined,
+  ): Promise<void> {
+    const threadId = params?.threadId as string;
+    const input = params?.input as string;
+
+    if (!threadId || !input) {
+      sendError(id, -32602, 'Missing required params: threadId, input');
+      return;
+    }
+
+    const thread = this.threads.get(threadId);
+    if (!thread) {
+      sendError(id, -32001, `Thread not found: ${threadId}`);
+      return;
+    }
+
+    if (thread.activeTurnId) {
+      sendError(id, -32002, `Thread ${threadId} already has an active turn`);
+      return;
+    }
+
+    const turnId = randomUUID();
+    thread.activeTurnId = turnId;
+
+    // Reset aborter for new turn
+    if (thread.aborter.signal.aborted) {
+      thread.aborter = new AbortController();
+    }
+
+    // Send the turn acknowledgment
+    send({
+      id,
+      result: {
+        turn: {
+          id: turnId,
+          status: 'inProgress',
+          items: [],
+        },
+      },
+    });
+
+    // Notify turn started
+    notify('turn/started', {
+      threadId,
+      turn: { id: turnId, status: 'inProgress', items: [] },
+    });
+
+    // Fire-and-forget: run the agent loop asynchronously
+    this.runAgentLoop(thread, turnId, input)
+      .then(() => {
+        thread.activeTurnId = null;
+        notify('thread/status/changed', { threadId, status: { type: 'idle' } });
+      })
+      .catch((err) => {
+        thread.activeTurnId = null;
+        notify('turn/completed', {
+          threadId,
+          turn: {
+            id: turnId,
+            status: 'failed',
+            items: [],
+            error: { message: err instanceof Error ? err.message : String(err) },
+          },
+        });
+        notify('thread/status/changed', {
+          threadId,
+          status: { type: 'systemError', message: err instanceof Error ? err.message : String(err) },
+        });
+      });
+  }
+
+  async handleTurnInterrupt(
+    id: number | string,
+    params: Record<string, unknown> | undefined,
+  ): Promise<void> {
+    const threadId = params?.threadId as string;
+    if (!threadId) {
+      sendError(id, -32602, 'Missing required param: threadId');
+      return;
+    }
+
+    const thread = this.threads.get(threadId);
+    if (!thread) {
+      sendError(id, -32001, `Thread not found: ${threadId}`);
+      return;
+    }
+
+    if (!thread.activeTurnId) {
+      sendError(id, -32003, `No active turn on thread ${threadId}`);
+      return;
+    }
+
+    thread.aborter.abort();
+    send({ id, result: {} });
+  }
+
+  handleThreadList(id: number | string): void {
+    const threads: ThreadInfo[] = [];
+    for (const t of this.threads.values()) {
+      threads.push({
+        id: t.threadId,
+        createdAt: t.createdAt,
+        model: t.config.model,
+        cwd: t.config.cwd,
+        activeTurnId: t.activeTurnId,
+      });
+    }
+    send({ id, result: { threads } });
+  }
+
+  handleThreadResume(
+    id: number | string,
+    params: Record<string, unknown> | undefined,
+  ): void {
+    const threadId = params?.threadId as string;
+    if (!threadId) {
+      sendError(id, -32602, 'Missing required param: threadId');
+      return;
+    }
+
+    const thread = this.threads.get(threadId);
+    if (!thread) {
+      sendError(id, -32001, `Thread not found: ${threadId}`);
+      return;
+    }
+
+    send({
+      id,
+      result: {
+        thread: {
+          id: thread.threadId,
+          createdAt: thread.createdAt,
+          model: thread.config.model,
+          cwd: thread.config.cwd,
+          status: thread.activeTurnId ? 'active' : 'idle',
+        },
+      },
+    });
+  }
+
+  async shutdown(): Promise<void> {
+    // Abort all active turns
+    for (const thread of this.threads.values()) {
+      if (thread.activeTurnId) {
+        thread.aborter.abort();
+      }
+    }
+    // Wait a tick for graceful cleanup
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    this.threads.clear();
+  }
+
+  // ============================================================================
+  // Agent Loop — maps QueryEngine SDKMessage stream to JSON-RPC notifications
+  // ============================================================================
+
+  private async runAgentLoop(
+    thread: ThreadState,
+    turnId: string,
+    input: string,
+  ): Promise<void> {
+    // Dynamically import the heavy modules only when needed
+    const { QueryEngine } = await import('../QueryEngine.js');
+    const { createAppState, createCanUseTool } = await import('./server/headlessState.js');
+
+    const { appState, setAppStateFn } = createAppState({
+      cwd: thread.config.cwd,
+      permissionMode: thread.config.permissionMode as any,
+      allowedTools: thread.config.allowedTools,
+      model: thread.config.model,
+      apiKey: thread.config.apiKey,
+      baseURL: thread.config.baseURL,
+    });
+
+    const canUseTool = createCanUseTool(appState, setAppStateFn);
+
+    const engine = new QueryEngine({
+      cwd: thread.config.cwd,
+      tools: appState.tools,
+      commands: [],
+      mcpClients: [],
+      agents: [],
+      canUseTool,
+      getAppState: () => appState,
+      setAppState: setAppStateFn,
+      initialMessages: thread.messages,
+      readFileCache: appState.readFileCache || {},
+      customSystemPrompt: undefined,
+      appendSystemPrompt: thread.config.appendSystemPrompt,
+      userSpecifiedModel: thread.config.model,
+      maxTurns: thread.config.maxTurns,
+      verbose: true,
+      abortController: thread.aborter,
+    });
+
+    thread.queryEngine = engine;
+
+    let currentAssistantItemId: string | null = null;
+
+    try {
+      for await (const msg of engine.submitMessage(input)) {
+        // Map SDKMessage → JSON-RPC notifications
+        switch (msg.type) {
+          case 'user': {
+            const itemId = randomUUID();
+            notify('item/started', {
+              threadId: thread.threadId,
+              turnId,
+              item: {
+                id: itemId,
+                type: 'userMessage',
+                content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
+                status: 'inProgress',
+              },
+            });
+            notify('item/completed', {
+              threadId: thread.threadId,
+              turnId,
+              item: {
+                id: itemId,
+                type: 'userMessage',
+                content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
+                status: 'completed',
+              },
+            });
+            break;
+          }
+
+          case 'partial_assistant': {
+            if (!currentAssistantItemId) {
+              currentAssistantItemId = randomUUID();
+              notify('item/started', {
+                threadId: thread.threadId,
+                turnId,
+                item: {
+                  id: currentAssistantItemId,
+                  type: 'agentMessage',
+                  text: '',
+                  status: 'inProgress',
+                },
+              });
+            }
+            const event = msg.event as any;
+            const delta =
+              event?.type === 'text_delta'
+                ? event.text || ''
+                : event?.type === 'thinking'
+                  ? event.thinking || ''
+                  : '';
+            if (delta) {
+              notify('item/agentMessage/delta', {
+                threadId: thread.threadId,
+                turnId,
+                itemId: currentAssistantItemId,
+                delta,
+              });
+            }
+            break;
+          }
+
+          case 'assistant': {
+            // Full assistant message — close current item or create new
+            if (!currentAssistantItemId) {
+              currentAssistantItemId = randomUUID();
+              notify('item/started', {
+                threadId: thread.threadId,
+                turnId,
+                item: {
+                  id: currentAssistantItemId,
+                  type: 'agentMessage',
+                  text: '',
+                  status: 'inProgress',
+                },
+              });
+            }
+            const content = msg.message?.content;
+            const text = this.extractText(content);
+            notify('item/completed', {
+              threadId: thread.threadId,
+              turnId,
+              item: {
+                id: currentAssistantItemId,
+                type: 'agentMessage',
+                text,
+                status: 'completed',
+              },
+            });
+            currentAssistantItemId = null;
+            break;
+          }
+
+          case 'assistant_error': {
+            notify('turn/completed', {
+              threadId: thread.threadId,
+              turn: {
+                id: turnId,
+                status: 'failed',
+                items: [],
+                error: {
+                  message: String(msg.error || 'Assistant error'),
+                  codexErrorInfo: 'Other',
+                },
+              },
+            });
+            return; // Stop processing
+          }
+
+          case 'result': {
+            notify('turn/completed', {
+              threadId: thread.threadId,
+              turn: {
+                id: turnId,
+                status: 'completed',
+                items: [],
+                result: msg.result || msg.subtype || 'success',
+              },
+            });
+            break;
+          }
+
+          case 'system':
+          case 'status':
+          case 'compact_boundary':
+          case 'tool_progress':
+            // Internal messages — forward as generic items for debugging
+            break;
+
+          default:
+            // Unknown message types — log to stderr for debugging
+            if (process.env.OPENCC_SERVER_VERBOSE) {
+              process.stderr.write(
+                `[server] unknown SDKMessage type: ${msg.type} ${JSON.stringify(msg).slice(0, 200)}\n`,
+              );
+            }
+        }
+
+        // Accumulate message history for context persistence
+        thread.messages.push(msg);
+      }
+    } catch (err) {
+      // Check if this was an abort
+      if (thread.aborter.signal.aborted) {
+        notify('turn/completed', {
+          threadId: thread.threadId,
+          turn: {
+            id: turnId,
+            status: 'interrupted',
+            items: [],
+          },
+        });
+      } else {
+        throw err;
+      }
+    } finally {
+      if (currentAssistantItemId) {
+        notify('item/completed', {
+          threadId: thread.threadId,
+          turnId,
+          item: {
+            id: currentAssistantItemId,
+            type: 'agentMessage',
+            text: '',
+            status: 'interrupted',
+          },
+        });
+      }
+    }
+  }
+
+  private extractText(content: unknown): string {
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+      return content
+        .filter((block: any) => block?.type === 'text' && typeof block?.text === 'string')
+        .map((block: any) => block.text)
+        .join('\n');
+    }
+    if (content && typeof content === 'object' && 'text' in (content as any)) {
+      return String((content as any).text);
+    }
+    return '';
+  }
+}
+
+// ============================================================================
+// JSONL Reader & Router
+// ============================================================================
+
+export async function main(): Promise<void> {
+  const VERSION = (globalThis as any).MACRO?.VERSION || '0.2.0';
+  const manager = new ThreadManager(VERSION);
+
+  // Graceful shutdown on SIGTERM / SIGINT
+  let shuttingDown = false;
+  const doShutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    await manager.shutdown();
+    process.exit(0);
+  };
+  process.on('SIGTERM', doShutdown);
+  process.on('SIGINT', doShutdown);
+
+  // Use raw stdin buffering — bun's createInterface can double-emit lines
+  let buffer = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.resume();
+
+  for await (const chunk of process.stdin) {
+    buffer += typeof chunk === 'string' ? chunk : chunk.toString();
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+
+      let request: JsonRpcRequest;
+      try {
+        request = JSON.parse(trimmed);
+      } catch {
+        process.stderr.write(`[server] invalid JSON: ${trimmed.slice(0, 100)}\n`);
+        continue;
+      }
+
+      if (!request.method) continue;
+
+      const { id, method, params } = request;
+
+      try {
+        if (method === 'initialized') continue;
+        if (!id) continue;
+
+        switch (method) {
+          case 'initialize':
+            await manager.handleInitialize(id, params);
+            break;
+          case 'thread/start':
+            await manager.handleThreadStart(id, params);
+            break;
+          case 'turn/start':
+            await manager.handleTurnStart(id, params);
+            break;
+          case 'turn/interrupt':
+            await manager.handleTurnInterrupt(id, params);
+            break;
+          case 'thread/list':
+            manager.handleThreadList(id);
+            break;
+          case 'thread/resume':
+            manager.handleThreadResume(id, params);
+            break;
+          case 'shutdown':
+            send({ id, result: {} });
+            await doShutdown();
+            return;
+          default:
+            sendError(id, -32601, `Method not found: ${method}`);
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[server] error processing ${method}: ${message}\n`);
+        if (id) sendError(id, -32603, message, 'Internal server error');
+      }
+    }
+  }
+
+  await doShutdown();
+}
+
+// eslint-disable-next-line custom-rules/no-top-level-side-effects
+void main().catch((err) => {
+  process.stderr.write(`[server] fatal: ${err instanceof Error ? err.message : String(err)}\n`);
+  process.exit(1);
+});
