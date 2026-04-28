@@ -51,6 +51,7 @@ type ThreadState = {
   messages: any[];   // accumulated SDKMessage history
   aborter: AbortController;
   activeTurnId: string | null;
+  _activeTool?: { name: string; input: string }; // per-turn tool tracking
 };
 
 type ThreadConfig = {
@@ -399,26 +400,37 @@ class ThreadManager {
         // Map SDKMessage → JSON-RPC notifications
         switch (msg.type) {
           case 'user': {
+            // Tool result — show inline on the agent message stream
+            const toolInput = thread._activeTool?.input || '';
+            const toolName = thread._activeTool?.name || 'tool';
+            const resultText = typeof msg.content === 'string'
+              ? msg.content
+              : JSON.stringify(msg.content);
+            // Emit tool call as a delta on the agent message (visible to user)
+            if (currentAssistantItemId && thread._activeTool) {
+              const toolDelta = toolInput
+                ? ` ${toolInput}\n[result:${toolName}] ${resultText.slice(0, 500)}`
+                : `\n[result:${toolName}] ${resultText.slice(0, 500)}`;
+              notify('item/agentMessage/delta', {
+                threadId: thread.threadId,
+                turnId,
+                itemId: currentAssistantItemId,
+                delta: toolDelta,
+              });
+            }
+            thread._activeTool = undefined;
+
+            // Also emit as a structured item for the client
             const itemId = randomUUID();
             notify('item/started', {
               threadId: thread.threadId,
               turnId,
-              item: {
-                id: itemId,
-                type: 'userMessage',
-                content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
-                status: 'inProgress',
-              },
+              item: { id: itemId, type: 'tool_result', toolName, content: resultText.slice(0, 1000), status: 'inProgress' },
             });
             notify('item/completed', {
               threadId: thread.threadId,
               turnId,
-              item: {
-                id: itemId,
-                type: 'userMessage',
-                content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
-                status: 'completed',
-              },
+              item: { id: itemId, type: 'tool_result', toolName, content: resultText.slice(0, 1000), status: 'completed' },
             });
             break;
           }
@@ -438,12 +450,32 @@ class ThreadManager {
               });
             }
             const event = msg.event as any;
-            const delta =
-              event?.type === 'text_delta'
-                ? event.text || ''
-                : event?.type === 'thinking'
-                  ? event.thinking || ''
-                  : '';
+            let delta = '';
+
+            // text_delta — normal streaming text
+            if (event?.type === 'text_delta' && event.text) {
+              delta = event.text;
+            }
+            // thinking — reasoning/thinking output
+            else if (event?.type === 'thinking' && event.thinking) {
+              delta = event.thinking;
+            }
+            // content_block_start — tool invocation begins
+            else if (event?.type === 'content_block_start' && event.content_block?.type === 'tool_use') {
+              const blk = event.content_block;
+              delta = `\n[tool:${blk.name}]`;
+              // Store partial tool info for the delta phase
+              if (!thread._activeTool) thread._activeTool = { name: blk.name, input: '' };
+            }
+            // content_block_delta — tool input JSON streaming
+            else if (event?.type === 'content_block_delta' && event.delta?.type === 'input_json_delta') {
+              if (thread._activeTool) {
+                thread._activeTool.input += event.delta.partial_json || '';
+              }
+              // Don't stream partial JSON — only show on completion
+              delta = '';
+            }
+
             if (delta) {
               notify('item/agentMessage/delta', {
                 threadId: thread.threadId,
