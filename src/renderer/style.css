@@ -343,7 +343,7 @@ textarea:focus {
 
 .panel-tabs {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 4px;
   margin-bottom: 14px;
   padding: 4px;
@@ -389,7 +389,6 @@ textarea:focus {
 }
 
 .mcp-list,
-.provider-list,
 .discovery-list,
 .branch-list,
 .diff-files {
@@ -397,8 +396,7 @@ textarea:focus {
   gap: 8px;
 }
 
-.mcp-row,
-.provider-row {
+.mcp-row {
   display: grid;
   grid-template-columns: 22px minmax(0, 1fr) 54px 56px;
   gap: 8px;
@@ -414,10 +412,6 @@ textarea:focus {
   width: 16px;
   height: 16px;
   padding: 0;
-}
-
-.provider-row {
-  grid-template-columns: minmax(0, 1fr) 56px;
 }
 
 .mcp-meta {

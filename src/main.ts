@@ -85,19 +85,6 @@ interface McpServerRecord {
   updatedAt: number;
 }
 
-interface ProviderRecord {
-  id: string;
-  name: string;
-  baseUrl: string;
-  models: string[];
-  apiKey: string;
-  type: string;
-  config: Record<string, unknown>;
-  icon: string;
-  createdAt: number;
-  updatedAt: number;
-}
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const clientDir = join(__dirname, 'client');
@@ -190,32 +177,19 @@ function inferApiType(model: string): ApiType {
   return model.toLowerCase().includes('claude') ? 'anthropic-messages' : 'openai-completions';
 }
 
-async function providerCatalog() {
-  const stored = await listProvidersFromDatabase().catch(() => []);
-  const custom = [...CUSTOM_PROVIDERS.map((provider) => ({
-    id: provider.id,
-    name: provider.name,
-    type: provider.type,
-    baseUrl: provider.baseUrl,
-    models: provider.models,
-    allowCustomModels: provider.allowCustomModels,
-  }))];
-  for (const provider of stored) {
-    const index = custom.findIndex((entry) => entry.id === provider.id);
-    const entry = {
-      id: provider.id,
-      name: provider.name,
-      type: provider.type,
-      baseUrl: provider.baseUrl,
-      models: provider.models,
-      allowCustomModels: true,
-    };
-    if (index >= 0) custom[index] = { ...custom[index], ...entry };
-    else custom.push(entry);
-  }
+function providerCatalog() {
+  // Static provider catalog — no DB registry needed.
+  // Agent tab's Provider dropdown reads builtin + custom directly.
   return {
-    builtin: BUILTIN_PROVIDERS,
-    custom,
+    builtin: BUILTIN_PROVIDERS.map(p => ({ id: p.id, name: p.name })),
+    custom: CUSTOM_PROVIDERS.map(p => ({
+      id: p.id,
+      name: p.name,
+      type: p.type,
+      baseUrl: p.baseUrl,
+      models: p.models,
+      allowCustomModels: p.allowCustomModels,
+    })),
   };
 }
 
@@ -632,98 +606,6 @@ async function toggleMcpServer(input: { id?: string; displayId?: string; enabled
   return parseMcpRow(row);
 }
 
-function parseProviderModels(value: unknown): string[] {
-  if (Array.isArray(value)) return value.map(String).filter(Boolean);
-  if (typeof value !== 'string' || !value.trim()) return [];
-  try {
-    const parsed = JSON.parse(value);
-    if (Array.isArray(parsed)) {
-      return parsed
-        .map((model) => {
-          if (typeof model === 'string') return model;
-          if (model && typeof model === 'object') return String((model as { id?: unknown; modelId?: unknown }).id || (model as any).modelId || '');
-          return '';
-        })
-        .filter(Boolean);
-    }
-  } catch {}
-  return value
-    .split(/\r?\n|,/)
-    .map((model) => model.trim())
-    .filter(Boolean);
-}
-
-function parseProviderRow(row: any): ProviderRecord {
-  return {
-    id: String(row.id),
-    name: String(row.name || row.id),
-    baseUrl: String(row.baseUrl || ''),
-    models: parseProviderModels(row.models),
-    apiKey: String(row.apiKey || ''),
-    type: String(row.type || 'openai'),
-    config: safeJsonObject(row.config, {}),
-    icon: String(row.icon || ''),
-    createdAt: Number(row.createdAt || 0),
-    updatedAt: Number(row.updatedAt || row.createdAt || 0),
-  };
-}
-
-async function listProvidersFromDatabase(): Promise<ProviderRecord[]> {
-  const database = await getSqliteDatabase();
-  return database
-    .prepare('SELECT id, createdAt, updatedAt, name, baseUrl, models, apiKey, type, config, icon FROM provider ORDER BY createdAt ASC')
-    .all()
-    .map(parseProviderRow);
-}
-
-async function getProviderFromDatabase(providerId: string): Promise<ProviderRecord | null> {
-  const database = await getSqliteDatabase();
-  const row = database
-    .prepare('SELECT id, createdAt, updatedAt, name, baseUrl, models, apiKey, type, config, icon FROM provider WHERE id = ? OR type = ?')
-    .get(providerId, providerId);
-  return row ? parseProviderRow(row) : null;
-}
-
-async function saveProvider(input: Partial<ProviderRecord>): Promise<ProviderRecord> {
-  const database = await getSqliteDatabase();
-  const now = Date.now();
-  const id = String(input.id || '').trim();
-  if (!id) throw new Error('Provider id is required');
-  const name = String(input.name || id).trim();
-  const type = String(input.type || (id.startsWith('cus_') ? id.slice(4) : id)).trim();
-  const baseUrl = String(input.baseUrl || '').trim().replace(/\/chat\/completions$/, '');
-  const models = parseProviderModels(input.models).sort();
-  database
-    .prepare(
-      `INSERT INTO provider (id, createdAt, updatedAt, name, baseUrl, models, apiKey, type, config, icon)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET
-         updatedAt=excluded.updatedAt,
-         name=excluded.name,
-         baseUrl=excluded.baseUrl,
-         models=excluded.models,
-         apiKey=excluded.apiKey,
-         type=excluded.type,
-         config=excluded.config,
-         icon=excluded.icon`,
-    )
-    .run(
-      id,
-      now,
-      now,
-      name,
-      baseUrl,
-      JSON.stringify(models),
-      String(input.apiKey || ''),
-      type,
-      JSON.stringify(input.config || {}),
-      String(input.icon || 'terminal'),
-    );
-  const saved = await getProviderFromDatabase(id);
-  if (!saved) throw new Error(`Provider not found after save: ${id}`);
-  return saved;
-}
-
 async function discoverMcpTools(input?: { id?: string; displayId?: string; enabledOnly?: boolean }) {
   const servers = await listMcpServersFromDatabase();
   const selected = servers.filter((server) => {
@@ -887,10 +769,9 @@ async function createWindow(): Promise<void> {
 
 ipcMain.handle('app:bootstrap', async () => ({
   settings: await loadSettings(),
-  providers: await providerCatalog(),
+  providers: providerCatalog(),
   chats: await listChats(),
   mcpServers: await listMcpServersFromDatabase(),
-  managedProviders: await listProvidersFromDatabase(),
   chatwise: {
     defaultMcpServers,
   },
@@ -903,24 +784,21 @@ ipcMain.handle('settings:save', async (_event, settings: Partial<DesktopSettings
 });
 
 ipcMain.handle('provider:resolve', async (_event, providerId: string, current: Partial<DesktopSettings> = {}) => {
-  const stored = await getProviderFromDatabase(providerId);
-  if (stored) {
-    return {
-      providerId: stored.id,
-      apiType: stored.type === 'anthropic' ? 'anthropic-messages' : 'openai-completions',
-      baseURL: stored.baseUrl,
-      apiKey: stored.apiKey || current.apiKey,
-      models: stored.models,
-    };
-  }
+  // Use built-in/custom provider config directly — no DB registry needed.
+  // Agent tab's Provider dropdown reads from BUILTIN_PROVIDERS + CUSTOM_PROVIDERS.
   const endpoint = resolveProviderEndpoint(providerId, {
     apiKey: current.apiKey,
     [`${providerId}_api_url`]: current.baseURL,
   });
+  // Determine API type: Anthropic uses messages format, everything else is OpenAI-compatible
+  const apiType = providerId === 'anthropic' ? 'anthropic-messages' : 'openai-completions';
+  // Collect models from CUSTOM_PROVIDERS if available
+  const custom = CUSTOM_PROVIDERS.find(p => p.id === providerId || p.type === providerId);
   return {
     providerId,
-    apiType: providerId === 'anthropic' ? 'anthropic-messages' : 'openai-completions',
-    baseURL: endpoint.url,
+    apiType,
+    baseURL: endpoint.url || current.baseURL || '',
+    models: custom?.models || [],
   };
 });
 
@@ -971,13 +849,6 @@ ipcMain.handle('mcp:delete', async (_event, input: { id?: string; displayId?: st
   const key = input.id || input.displayId;
   if (!key) throw new Error('MCP server id is required');
   const result = database.prepare('DELETE FROM tool WHERE id = ? OR displayId = ?').run(key, key);
-  return { deleted: Number(result.changes || 0) };
-});
-ipcMain.handle('provider:list', async () => listProvidersFromDatabase());
-ipcMain.handle('provider:save', async (_event, input: Partial<ProviderRecord>) => saveProvider(input));
-ipcMain.handle('provider:delete', async (_event, input: { id: string }) => {
-  const database = await getSqliteDatabase();
-  const result = database.prepare('DELETE FROM provider WHERE id = ?').run(input.id);
   return { deleted: Number(result.changes || 0) };
 });
 // ---- Skill scanner ----

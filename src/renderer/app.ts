@@ -36,23 +36,14 @@ interface Settings {
   appendSystemPrompt: string;
 }
 
-interface ProviderInfo {
-  id: string;
-  name: string;
-  baseUrl?: string;
-  models?: string[];
-  type?: string;
-}
-
 interface BootstrapPayload {
   settings: Settings;
   providers: {
-    builtin: ProviderInfo[];
-    custom: ProviderInfo[];
+    builtin: Array<{ id: string; name: string }>;
+    custom: Array<{ id: string; name: string; type: string; baseUrl: string; models: string[]; allowCustomModels?: boolean }>;
   };
   chats: ChatRecord[];
   mcpServers: McpServer[];
-  managedProviders: ProviderRecord[];
 }
 
 interface AgentEvent {
@@ -83,19 +74,6 @@ interface McpDiscoveryResult {
   error?: string;
 }
 
-interface ProviderRecord {
-  id: string;
-  name: string;
-  baseUrl: string;
-  models: string[];
-  apiKey: string;
-  type: string;
-  config: Record<string, unknown>;
-  icon: string;
-  createdAt: number;
-  updatedAt: number;
-}
-
 interface GitStatus {
   stat: { isGitRepo: boolean; additions: number; deletions: number; changedFiles: number } | null;
   branches: Array<{ name: string; isRemote: boolean }>;
@@ -124,8 +102,6 @@ const state: {
   activeRunId: string | null;
   draftAssistant: HTMLElement | null;
   mcpServers: McpServer[];
-  providers: ProviderInfo[];
-  managedProviders: ProviderRecord[];
   skills: SkillInfo[];
   skillDirs: SkillDir[];
 } = {
@@ -135,8 +111,6 @@ const state: {
   activeRunId: null,
   draftAssistant: null,
   mcpServers: [],
-  providers: [],
-  managedProviders: [],
   skills: [],
   skillDirs: [],
 };
@@ -186,16 +160,6 @@ const elements = {
   resetMcp: $('#reset-mcp') as HTMLButtonElement,
   discoverMcp: $('#discover-mcp') as HTMLButtonElement,
   mcpDiscovery: $('#mcp-discovery'),
-  providerCount: $('#provider-count'),
-  providerList: $('#provider-list'),
-  providerId: $('#provider-id') as HTMLInputElement,
-  providerName: $('#provider-name') as HTMLInputElement,
-  providerType: $('#provider-type') as HTMLSelectElement,
-  providerBaseUrl: $('#provider-base-url') as HTMLInputElement,
-  providerApiKey: $('#provider-api-key') as HTMLInputElement,
-  providerModels: $('#provider-models') as HTMLTextAreaElement,
-  saveProvider: $('#save-provider') as HTMLButtonElement,
-  resetProvider: $('#reset-provider') as HTMLButtonElement,
   refreshWorkspace: $('#refresh-workspace') as HTMLButtonElement,
   gitSummary: $('#git-summary'),
   branchList: $('#branch-list'),
@@ -211,30 +175,31 @@ function setActivePanel(panelId: string): void {
   for (const panel of elements.panels) panel.classList.toggle('active', panel.id === `panel-${panelId}`);
 }
 
+// Static provider catalog — populated once from bootstrap, no registry management
+let providerCatalog: BootstrapPayload['providers'] = { builtin: [], custom: [] };
+
 function renderProviderOptions(payload: BootstrapPayload): void {
-  const map = new Map<string, ProviderInfo>();
-  for (const provider of [...payload.providers.builtin, ...payload.providers.custom]) map.set(provider.id, provider);
-  const providers = [...map.values()];
-  state.providers = providers;
+  providerCatalog = payload.providers;
+  const all = [...payload.providers.builtin, ...payload.providers.custom.map(p => ({ id: p.id, name: p.name }))];
+  // Deduplicate by id
+  const seen = new Set<string>();
+  const deduped = all.filter(p => seen.has(p.id) ? false : (seen.add(p.id), true));
   elements.provider.replaceChildren(
-    ...providers.map((provider) => {
-      const option = document.createElement('option');
-      option.value = provider.id;
-      option.textContent = provider.name;
-      return option;
+    ...deduped.map((p) => {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = p.name;
+      return opt;
     }),
   );
   renderModelOptions(elements.provider.value);
 }
 
 function renderModelOptions(providerId: string): void {
-  const provider = state.providers.find((entry) => entry.id === providerId);
+  const custom = providerCatalog.custom.find(p => p.id === providerId);
+  const models = custom?.models || [];
   elements.modelOptions.replaceChildren(
-    ...((provider?.models || []).map((model) => {
-      const option = document.createElement('option');
-      option.value = model;
-      return option;
-    })),
+    ...models.map(m => { const o = document.createElement('option'); o.value = m; return o; }),
   );
 }
 
@@ -413,94 +378,6 @@ async function discoverMcpTools(input?: { id?: string; enabledOnly?: boolean }):
   const results = (await window.autoagent.discoverMcpTools(input || { enabledOnly: true })) as McpDiscoveryResult[];
   renderMcpDiscovery(results);
   setStatus('MCP discovery complete');
-}
-
-function renderProviders(): void {
-  elements.providerCount.textContent = `${state.managedProviders.length} managed`;
-  elements.providerList.replaceChildren(
-    ...state.managedProviders.map((provider) => {
-      const row = document.createElement('div');
-      row.className = 'provider-row';
-      const meta = document.createElement('div');
-      meta.className = 'mcp-meta';
-      const title = document.createElement('strong');
-      title.textContent = provider.name;
-      const detail = document.createElement('span');
-      detail.textContent = `${provider.id} · ${provider.baseUrl || 'no base URL'} · ${provider.models.length} models`;
-      meta.append(title, detail);
-
-      const edit = document.createElement('button');
-      edit.type = 'button';
-      edit.className = 'ghost icon-button';
-      edit.textContent = 'Edit';
-      edit.onclick = () => loadProviderForm(provider);
-      row.append(meta, edit);
-      return row;
-    }),
-  );
-}
-
-async function refreshProviders(): Promise<void> {
-  state.managedProviders = (await window.autoagent.listProviders()) as ProviderRecord[];
-  const payload = {
-    settings: collectSettings(),
-    providers: {
-      builtin: state.providers.filter((provider) => !provider.id.startsWith('cus_')),
-      custom: [
-        ...state.providers.filter((provider) => provider.id.startsWith('cus_')),
-        ...state.managedProviders.map((provider) => ({
-          id: provider.id,
-          name: provider.name,
-          baseUrl: provider.baseUrl,
-          models: provider.models,
-          type: provider.type,
-        })),
-      ],
-    },
-    chats: state.chats,
-    mcpServers: state.mcpServers,
-    managedProviders: state.managedProviders,
-  } satisfies BootstrapPayload;
-  renderProviderOptions(payload);
-  elements.provider.value = state.settings?.providerId || elements.provider.value;
-  renderModelOptions(elements.provider.value);
-  renderProviders();
-}
-
-function loadProviderForm(provider: ProviderRecord): void {
-  elements.providerId.value = provider.id;
-  elements.providerName.value = provider.name;
-  elements.providerType.value = provider.type === 'anthropic' ? 'anthropic' : 'openai';
-  elements.providerBaseUrl.value = provider.baseUrl;
-  elements.providerApiKey.value = provider.apiKey;
-  elements.providerModels.value = provider.models.join('\n');
-}
-
-function clearProviderForm(): void {
-  elements.providerId.value = '';
-  elements.providerName.value = '';
-  elements.providerType.value = 'openai';
-  elements.providerBaseUrl.value = '';
-  elements.providerApiKey.value = '';
-  elements.providerModels.value = '';
-}
-
-async function saveProviderForm(): Promise<void> {
-  const id = elements.providerId.value.trim();
-  await window.autoagent.saveProvider({
-    id,
-    name: elements.providerName.value.trim() || id,
-    type: elements.providerType.value,
-    baseUrl: elements.providerBaseUrl.value.trim(),
-    apiKey: elements.providerApiKey.value.trim(),
-    models: elements.providerModels.value
-      .split(/\r?\n|,/)
-      .map((model) => model.trim())
-      .filter(Boolean),
-  });
-  clearProviderForm();
-  await refreshProviders();
-  setStatus('Provider saved');
 }
 
 function collectSettings(): Settings {
@@ -808,10 +685,8 @@ async function boot(): Promise<void> {
   renderSettings(payload.settings);
   state.chats = payload.chats;
   state.mcpServers = payload.mcpServers || [];
-  state.managedProviders = payload.managedProviders || [];
   renderChats();
   renderMcpServers();
-  renderProviders();
   updateMcpEditorMode();
 
   if (state.chats[0]) {
@@ -860,8 +735,6 @@ elements.mcpType.onchange = updateMcpEditorMode;
 elements.saveMcp.onclick = () => void saveMcpForm();
 elements.resetMcp.onclick = clearMcpForm;
 elements.discoverMcp.onclick = () => void discoverMcpTools({ enabledOnly: true });
-elements.saveProvider.onclick = () => void saveProviderForm();
-elements.resetProvider.onclick = clearProviderForm;
 elements.refreshSkills.onclick = () => void refreshSkills();
 elements.refreshWorkspace.onclick = () => void refreshWorkspace();
 elements.composer.onsubmit = (event) => {
