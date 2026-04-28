@@ -95,7 +95,12 @@ export class EngineClient {
       args.push('--max-turns', String(params.maxTurns));
     }
 
-    const proc = spawn('bun', args, {
+    // Auto-detect bun: bundled (installed) or system PATH
+    const bunExe = existsSync(join(dirname(this.enginePath), 'bun'))
+      ? join(dirname(this.enginePath), 'bun')
+      : this.bunPath;
+
+    const proc = spawn(bunExe, args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: {
         ...process.env,
@@ -183,6 +188,9 @@ export class EngineClient {
 /** Resolve the path to the cli.js bundle */
 export function resolveEnginePath(): string {
   const __dirname = dirname(fileURLToPath(import.meta.url));
-  // In dev: packages/opencc/dist/cli.js
+  // Installed: /usr/lib/autoagent/cli.js (same dir as main.js)
+  const installed = join(__dirname, 'cli.js');
+  if (existsSync(installed)) return installed;
+  // Dev: packages/opencc/dist/cli.js
   return join(__dirname, '..', 'packages', 'opencc', 'dist', 'cli.js');
 }
