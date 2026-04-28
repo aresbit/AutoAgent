@@ -350,14 +350,15 @@ class ThreadManager {
     turnId: string,
     input: string,
   ): Promise<void> {
-    try {
-      // Bootstrap: enable config before QueryEngine touches it.
-      // The CLI path does this in main.tsx → init() → enableConfigs().
-      // Server path skips CLI machinery, so we must do it here.
+    // Reuse existing QueryEngine across turns — submitMessage() is designed
+    // to be called multiple times on the same instance, appending new user
+    // input to mutableMessages. Creating a new engine each turn would pass
+    // SDKMessage[] as initialMessages (Message[] expected), corrupting state.
+    if (!thread.queryEngine) {
+      // First turn: bootstrap config, import modules, create engine
       const { enableConfigs } = await import('../utils/config.js');
       enableConfigs();
 
-      // Dynamically import the heavy modules only when needed
       const { QueryEngine } = await import('../QueryEngine.js');
       const { createAppState, createCanUseTool } = await import('./server/headlessState.js');
 
@@ -372,26 +373,29 @@ class ThreadManager {
 
       const canUseTool = createCanUseTool(appState, setAppStateFn);
 
-    const engine = new QueryEngine({
-      cwd: thread.config.cwd,
-      tools: appState.tools,
-      commands: [],
-      mcpClients: [],
-      agents: [],
-      canUseTool,
-      getAppState: () => appState,
-      setAppState: setAppStateFn,
-      initialMessages: thread.messages,
-      readFileCache: appState.readFileCache || {},
-      customSystemPrompt: undefined,
-      appendSystemPrompt: thread.config.appendSystemPrompt,
-      userSpecifiedModel: thread.config.model,
-      maxTurns: thread.config.maxTurns,
-      verbose: true,
-      abortController: thread.aborter,
-    });
+      const engine = new QueryEngine({
+        cwd: thread.config.cwd,
+        tools: appState.tools,
+        commands: [],
+        mcpClients: [],
+        agents: [],
+        canUseTool,
+        getAppState: () => appState,
+        setAppState: setAppStateFn,
+        initialMessages: [],
+        readFileCache: appState.readFileCache || {},
+        customSystemPrompt: undefined,
+        appendSystemPrompt: thread.config.appendSystemPrompt,
+        userSpecifiedModel: thread.config.model,
+        maxTurns: thread.config.maxTurns,
+        verbose: true,
+        abortController: thread.aborter,
+      });
 
-    thread.queryEngine = engine;
+      thread.queryEngine = engine;
+    }
+
+    const engine = thread.queryEngine;
 
     let currentAssistantItemId: string | null = null;
 
@@ -598,20 +602,6 @@ class ThreadManager {
           },
         });
       }
-    }
-    } catch (outerErr) {
-      // Catch errors from module imports / QueryEngine construction / outer setup
-      const msg = outerErr instanceof Error ? outerErr.message : String(outerErr);
-      process.stderr.write(`[server] runAgentLoop setup error: ${msg}\n`);
-      notify('turn/completed', {
-        threadId: thread.threadId,
-        turn: {
-          id: turnId,
-          status: 'failed',
-          items: [],
-          error: { message: msg, codexErrorInfo: 'InternalServerError' },
-        },
-      });
     }
   }
 
