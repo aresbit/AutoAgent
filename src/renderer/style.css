@@ -210,7 +210,7 @@ p {
 }
 
 h1 {
-  max-width: 58vw;
+  max-width: 320px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
