@@ -1,0 +1,26 @@
+{
+  "name": "autoagent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/main.js",
+  "workspaces": [
+    "packages/*",
+    "packages/opencc/packages/*",
+    "packages/opencc/packages/@ant/*"
+  ],
+  "scripts": {
+    "build": "bun run build:desktop",
+    "build:desktop": "bun build src/main.ts --outdir dist --target node --external electron --external @anthropic-ai/sdk && bun build src/preload.ts --outdir dist --target node --external electron && rm -rf dist/client && mkdir -p dist/client && bun build src/renderer/app.ts --outdir dist/client --target browser --format esm && cp src/renderer/index.html src/renderer/style.css dist/client/",
+    "dev": "bun run build:desktop && electron --no-sandbox .",
+    "start": "bun run build:desktop && electron --no-sandbox ."
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.91.1"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.11",
+    "electron": "^41.3.0",
+    "typescript": "^5.8.3"
+  }
+}

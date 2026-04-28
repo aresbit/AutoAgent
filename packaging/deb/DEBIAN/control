@@ -1,0 +1,22 @@
+Package: autoagent
+Version: 0.1.0
+Section: devel
+Priority: optional
+Architecture: amd64
+Maintainer: AutoAgent Team <autoagent@example.com>
+Homepage: https://github.com/autoagent/autoagent
+Description: AI-powered coding agent CLI
+ AutoAgent is an AI coding assistant that runs in your terminal.
+ It provides intelligent code generation, refactoring, debugging,
+ and file manipulation through natural language interaction.
+ .
+ Powered by a reverse-engineered Claude Code compatible engine
+ with support for Anthropic, OpenAI, and DeepSeek APIs.
+ .
+ Features:
+  - Interactive terminal UI
+  - Non-interactive mode (-p/--print)
+  - Multi-tool orchestration (Bash, Read, Write, Glob, Grep, etc.)
+  - MCP server support
+  - Session persistence and resumption
+  - Plugin and skill system

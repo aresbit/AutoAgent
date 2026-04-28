@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AutoAgent</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">A</div>
+        <div>
+          <strong>AutoAgent</strong>
+          <span>New Provider</span>
+        </div>
+      </div>
+      <button id="new-chat" class="primary">New Session</button>
+      <nav id="chat-list" class="chat-list"></nav>
+    </aside>
+
+    <main class="workspace">
+      <header class="topbar">
+        <div>
+          <h1 id="chat-title">New session</h1>
+          <p id="status">Idle</p>
+        </div>
+        <button id="stop-run" class="ghost" disabled>Stop</button>
+      </header>
+
+      <section id="messages" class="messages"></section>
+
+      <form id="composer" class="composer">
+        <textarea id="prompt" rows="4" placeholder="Message AutoAgent"></textarea>
+        <div class="composer-actions">
+          <span id="cwd-label"></span>
+          <button type="submit" class="primary">Send</button>
+        </div>
+      </form>
+    </main>
+
+    <aside class="settings">
+      <div class="settings-head">
+        <h2>Control</h2>
+        <button id="save-settings" class="primary">Save</button>
+      </div>
+
+      <div class="panel-tabs" role="tablist" aria-label="Control panels">
+        <button class="active" type="button" data-panel-tab="runtime">Runtime</button>
+        <button type="button" data-panel-tab="providers">Providers</button>
+        <button type="button" data-panel-tab="agent">Agent</button>
+        <button type="button" data-panel-tab="mcp">MCP</button>
+        <button type="button" data-panel-tab="workspace">Workspace</button>
+      </div>
+
+      <section id="panel-runtime" class="settings-panel active">
+        <label>
+          Provider
+          <select id="provider"></select>
+        </label>
+        <label>
+          API type
+          <select id="api-type">
+            <option value="openai-completions">OpenAI compatible</option>
+            <option value="anthropic-messages">Anthropic messages</option>
+          </select>
+        </label>
+        <label>
+          Model
+          <input id="model" spellcheck="false" list="model-options" />
+          <datalist id="model-options"></datalist>
+        </label>
+        <label>
+          Base URL
+          <input id="base-url" spellcheck="false" />
+        </label>
+        <label>
+          API key
+          <input id="api-key" type="password" spellcheck="false" />
+        </label>
+      </section>
+
+      <section id="panel-providers" class="settings-panel">
+        <div class="section-title">
+          <strong>Provider registry</strong>
+          <span id="provider-count">0 custom</span>
+        </div>
+        <div id="provider-list" class="provider-list"></div>
+
+        <div class="editor-card">
+          <label>
+            Provider ID
+            <input id="provider-id" spellcheck="false" placeholder="cus_myprovider" />
+          </label>
+          <label>
+            Name
+            <input id="provider-name" spellcheck="false" placeholder="New Provider" />
+          </label>
+          <label>
+            API type
+            <select id="provider-type">
+              <option value="openai">OpenAI compatible</option>
+              <option value="anthropic">Anthropic</option>
+            </select>
+          </label>
+          <label>
+            Base URL
+            <input id="provider-base-url" spellcheck="false" placeholder="https://api.example.com/v1" />
+          </label>
+          <label>
+            API key
+            <input id="provider-api-key" type="password" spellcheck="false" />
+          </label>
+          <label>
+            Models
+            <textarea id="provider-models" rows="7" spellcheck="false" placeholder="gpt-4o&#10;claude-sonnet-4-6"></textarea>
+          </label>
+          <div class="button-row">
+            <button id="save-provider" class="primary" type="button">Save Provider</button>
+            <button id="reset-provider" class="ghost" type="button">Clear</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="panel-agent" class="settings-panel">
+        <label>
+          Workspace
+          <div class="inline-field">
+            <input id="cwd" spellcheck="false" />
+            <button id="pick-cwd" type="button" class="ghost">Choose</button>
+          </div>
+        </label>
+        <label>
+          Permission
+          <select id="permission">
+            <option value="bypassPermissions">Bypass</option>
+            <option value="acceptEdits">Accept edits</option>
+            <option value="auto">Auto</option>
+            <option value="default">Default</option>
+          </select>
+        </label>
+        <label>
+          Max turns
+          <input id="max-turns" type="number" min="1" max="50" />
+        </label>
+        <label>
+          Allowed tools
+          <input id="allowed-tools" spellcheck="false" />
+        </label>
+        <label>
+          System append
+          <textarea id="system-append" rows="7" spellcheck="false"></textarea>
+        </label>
+      </section>
+
+      <section id="panel-mcp" class="settings-panel">
+        <div class="section-title">
+          <strong>MCP servers</strong>
+          <button id="discover-mcp" class="ghost" type="button">Discover</button>
+        </div>
+        <span id="mcp-count" class="subtle-count">0 enabled</span>
+        <div id="mcp-list" class="mcp-list"></div>
+        <div id="mcp-discovery" class="discovery-list"></div>
+
+        <div class="editor-card">
+          <input id="mcp-id" type="hidden" />
+          <label>
+            Display ID
+            <input id="mcp-display-id" spellcheck="false" placeholder="context7" />
+          </label>
+          <label>
+            Transport
+            <select id="mcp-type">
+              <option value="stdio">stdio</option>
+              <option value="http">streamable HTTP</option>
+              <option value="sse">SSE</option>
+            </select>
+          </label>
+          <label class="mcp-stdio-field">
+            Command
+            <input id="mcp-command" spellcheck="false" placeholder="npx -y @playwright/mcp@latest" />
+          </label>
+          <label class="mcp-url-field">
+            URL
+            <input id="mcp-url" spellcheck="false" placeholder="https://mcp.context7.com/mcp" />
+          </label>
+          <label>
+            Env / Headers
+            <textarea id="mcp-env" rows="4" spellcheck="false" placeholder="BRAVE_API_KEY=..."></textarea>
+          </label>
+          <label class="check-row">
+            <input id="mcp-enabled" type="checkbox" />
+            Enabled
+          </label>
+          <div class="button-row">
+            <button id="save-mcp" class="primary" type="button">Save MCP</button>
+            <button id="reset-mcp" class="ghost" type="button">Clear</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="panel-workspace" class="settings-panel">
+        <div class="section-title">
+          <strong>Git review</strong>
+          <button id="refresh-workspace" class="ghost" type="button">Refresh</button>
+        </div>
+        <div id="git-summary" class="git-summary"></div>
+        <div class="section-title compact">
+          <strong>Branches</strong>
+        </div>
+        <div id="branch-list" class="branch-list"></div>
+        <div class="section-title compact">
+          <strong>Changed files</strong>
+        </div>
+        <div id="diff-files" class="diff-files"></div>
+      </section>
+    </aside>
+
+    <script src="./app.js" type="module"></script>
+  </body>
+</html>

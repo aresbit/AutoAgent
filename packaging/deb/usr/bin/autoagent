@@ -1,0 +1,6 @@
+#!/bin/sh
+# AutoAgent - AI coding agent launcher
+# Uses bundled bun runtime + bundled agent JS — no system dependencies
+
+AGENT_HOME="/usr/lib/autoagent"
+exec "${AGENT_HOME}/bun" run "${AGENT_HOME}/cli.js" "$@"

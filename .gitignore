@@ -1,0 +1,14 @@
+node_modules
+dist
+.DS_Store
+coverage
+.env
+*.log
+.idea
+.vscode
+*.suo
+.claude/
+.learnings/
+.self_improving_experience.json
+.self_improving_performance.json
+vendor/

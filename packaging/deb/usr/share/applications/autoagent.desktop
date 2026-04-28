@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=AutoAgent
+Comment=AI-powered coding agent
+Exec=autoagent
+Icon=autoagent
+Terminal=true
+Type=Application
+Categories=Development;IDE;
+Keywords=AI;agent;code;LLM;Claude;
