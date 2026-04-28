@@ -12,7 +12,6 @@
         <div class="brand-mark">A</div>
         <div>
           <strong>AutoAgent</strong>
-          <span>New Provider</span>
         </div>
       </div>
       <button id="new-chat" class="primary">New Session</button>
@@ -25,7 +24,10 @@
           <h1 id="chat-title">New session</h1>
           <p id="status">Idle</p>
         </div>
-        <button id="stop-run" class="ghost" disabled>Stop</button>
+        <div class="topbar-actions">
+          <button id="toggle-settings" class="ghost" title="Toggle settings panel">☰</button>
+          <button id="stop-run" class="ghost" disabled>Stop</button>
+        </div>
       </header>
 
       <section id="messages" class="messages"></section>

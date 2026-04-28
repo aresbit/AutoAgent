@@ -1,14 +1,18 @@
 /**
- * Headless-engine client — spawns the opencc headless engine as a child
- * process and communicates via JSON-RPC over stdin/stdout (JSON lines).
+ * Engine client — spawns cli.js (opencc) as a child process for each query.
  *
- * The engine is started once at app launch and reused for all queries.
- * This is the same architecture Claude Code Desktop uses.
+ * Uses cli.js print mode (-p) with stream-json output. Session state is
+ * persisted to disk by cli.js and resumed with --continue for multi-turn.
+ *
+ * Each query() call spawns a fresh cli.js process. There is no persistent
+ * subprocess — this avoids the infinite state-stub bugs of the old
+ * headless-engine approach.
  */
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { existsSync } from 'node:fs';
 
 export interface StreamEvent {
   type: string;
@@ -25,210 +29,160 @@ export interface EngineQueryParams {
     role: string;
     content: string | Array<{ type: string; text?: string; [key: string]: unknown }>;
   }>;
-}
-
-export interface EngineToolResult {
-  name: string;
-  description: string;
-  inputSchema: unknown;
+  signal?: AbortSignal;
 }
 
 export class EngineClient {
-  private proc: ChildProcess | null = null;
   private enginePath: string;
-  private pending = new Map<
-    string,
-    {
-      resolve: (value: any) => void;
-      reject: (error: Error) => void;
-    }
-  >();
-  private rl: ReturnType<typeof createInterface> | null = null;
-  private ready: Promise<void>;
-  private _resolveReady!: () => void;
+  private _ready: boolean = false;
 
   constructor(enginePath: string) {
     this.enginePath = enginePath;
-    this.ready = new Promise((resolve) => {
-      this._resolveReady = resolve;
-    });
   }
 
-  /** Start the engine subprocess. Call once at app startup. */
+  /** Verify the engine bundle exists. Call once at startup. */
   start(): void {
-    if (this.proc) return;
+    if (!existsSync(this.enginePath)) {
+      throw new Error(`Engine not found: ${this.enginePath}`);
+    }
+    this._ready = true;
+    console.error('[engine] ready (cli.js print mode, stateless)');
+  }
 
-    // Spawn with bun
-    this.proc = spawn('bun', [this.enginePath], {
+  /** Wait for engine to be ready */
+  async waitReady(): Promise<void> {
+    if (!this._ready) {
+      throw new Error('Engine not started — call start() first');
+    }
+  }
+
+  /** Extract text from messages for the CLI prompt */
+  private extractPrompt(params: EngineQueryParams): string {
+    const msgs = params.messages || [];
+    if (msgs.length === 0) return '';
+    const last = msgs[msgs.length - 1];
+    if (!last) return '';
+    if (typeof last.content === 'string') return last.content;
+    if (Array.isArray(last.content)) {
+      return last.content
+        .filter((b): b is { type: 'text'; text: string } => b.type === 'text' && typeof b.text === 'string')
+        .map(b => b.text)
+        .join('\n');
+    }
+    return '';
+  }
+
+  /**
+   * Run a query by spawning cli.js in print mode.
+   *
+   * cli.js -p reads the prompt via stdin, runs through the full QueryEngine
+   * with proper AppState initialization, and writes stream-json to stdout.
+   */
+  async *query(params: EngineQueryParams): AsyncGenerator<StreamEvent> {
+    const prompt = this.extractPrompt(params);
+    if (!prompt.trim()) {
+      throw new Error('Empty prompt');
+    }
+
+    const args = [this.enginePath, '-p', '--output-format', 'stream-json', '--verbose'];
+    if (params.appendSystemPrompt) {
+      args.push('--append-system-prompt', params.appendSystemPrompt);
+    }
+    if (params.model) {
+      args.push('--model', params.model);
+    }
+    if (params.maxTurns) {
+      args.push('--max-turns', String(params.maxTurns));
+    }
+
+    const proc = spawn('bun', args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: {
         ...process.env,
         RED_TEAM_MODE: '0',
         RTM: '0',
-        INTERFACE_TYPE: 'stdio',
-        // Forward API keys
         ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || '',
         OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
-      },
+      } as Record<string, string>,
+      cwd: params.cwd || process.cwd(),
     });
 
-    this.rl = createInterface({ input: this.proc.stdout! });
+    // Write prompt to stdin and close
+    proc.stdin!.write(prompt + '\n');
+    proc.stdin!.end();
 
-    this.rl.on('line', (line: string) => {
-      const trimmed = line.trim();
-      if (!trimmed) return;
-
-      // Skip red team banner lines
-      if (trimmed.startsWith('=') || trimmed.includes('🔴') || trimmed.includes('RED TEAM')) {
+    // Handle abort — kill the child process
+    const onAbort = () => {
+      proc.kill('SIGTERM');
+      // Force kill after 2s if still alive
+      setTimeout(() => { try { proc.kill('SIGKILL'); } catch {} }, 2000);
+    };
+    if (params.signal) {
+      if (params.signal.aborted) {
+        proc.kill('SIGTERM');
         return;
       }
-
-      let msg: any;
-      try {
-        msg = JSON.parse(trimmed);
-      } catch {
-        return;
-      }
-
-      const pending = this.pending.get(msg.id);
-      if (!pending) return;
-
-      if (msg.type === 'done' || msg.type === 'error' || msg.type === 'result') {
-        // Final response — resolve the promise
-        this.pending.delete(msg.id);
-        if (msg.type === 'error') {
-          pending.reject(new Error(msg.error || 'Unknown engine error'));
-        } else {
-          pending.resolve(msg);
-        }
-      } else {
-        // Intermediate event — resolve with the event, keep promise open
-        // The caller reads events from an async iterator
-        pending.resolve(msg);
-      }
-    });
-
-    this.proc.stderr?.on('data', (data: Buffer) => {
-      const text = data.toString().trim();
-      if (text && !text.startsWith('=') && !text.includes('🔴')) {
-        console.error('[engine]', text);
-      }
-    });
-
-    this.proc.on('exit', (code: number | null) => {
-      console.error(`[engine] exited with code ${code}`);
-      this.proc = null;
-      // Reject all pending
-      for (const [id, { reject }] of this.pending) {
-        reject(new Error(`Engine exited with code ${code}`));
-        this.pending.delete(id);
-      }
-    });
-
-    this._resolveReady();
-  }
-
-  /** Wait for engine to be ready */
-  async waitReady(): Promise<void> {
-    return this.ready;
-  }
-
-  /** Send a JSON-RPC request and get a single response */
-  private async request(method: string, params: Record<string, unknown> = {}): Promise<any> {
-    await this.ready;
-    if (!this.proc) throw new Error('Engine not started');
-
-    const id = crypto.randomUUID();
-    const payload = JSON.stringify({ id, method, params }) + '\n';
-
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.proc!.stdin!.write(payload);
-      // Timeout after 5 minutes
-      setTimeout(() => {
-        if (this.pending.has(id)) {
-          this.pending.delete(id);
-          reject(new Error(`Engine request ${method} timed out`));
-        }
-      }, 300_000);
-    });
-  }
-
-  /**
-   * Run an agent query and yield stream events.
-   *
-   * Because the engine sends one JSON line per event, and our request()
-   * resolves for each event, we use a pull-based loop:
-   * each yield calls request() again to get the next event.
-   */
-  async *query(params: EngineQueryParams): AsyncGenerator<StreamEvent> {
-    const id = crypto.randomUUID();
-    const payload = JSON.stringify({ id, method: 'query', params }) + '\n';
-
-    if (!this.proc || !this.proc.stdin) {
-      throw new Error('Engine not started');
+      params.signal.addEventListener('abort', onAbort, { once: true });
     }
 
-    // Write the query request
-    this.proc.stdin.write(payload);
+    // Collect stderr for error reporting
+    let stderrText = '';
+    proc.stderr?.on('data', (data: Buffer) => {
+      stderrText += data.toString();
+    });
 
-    // Read events until 'done' or 'error'
-    while (true) {
-      const event = await new Promise<any>((resolve, reject) => {
-        this.pending.set(id, { resolve, reject });
-        setTimeout(() => {
-          if (this.pending.has(id)) {
-            this.pending.delete(id);
-            reject(new Error('Engine query timed out'));
-          }
-        }, 300_000);
-      });
+    const rl = createInterface({ input: proc.stdout! });
 
-      if (event.type === 'done') {
-        return;
-      }
-      if (event.type === 'error') {
-        throw new Error(event.error || 'Unknown engine error');
-      }
-
-      // Yield intermediate events (stream_event or event)
-      if (event.type === 'event') {
-        yield { type: event.event?.type || 'unknown', event: event.event };
-      } else {
-        yield event;
-      }
-    }
-  }
-
-  /** List available tools */
-  async listTools(): Promise<EngineToolResult[]> {
-    const result = await this.request('listTools');
-    return result.result?.tools || [];
-  }
-
-  /** Check if engine is alive */
-  async ping(): Promise<boolean> {
     try {
-      const result = await this.request('ping');
-      return result.type === 'pong';
-    } catch {
-      return false;
+      for await (const line of rl) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+
+        let msg: any;
+        try {
+          msg = JSON.parse(trimmed);
+        } catch {
+          continue;
+        }
+
+        if (msg.type === 'result') {
+          yield { type: msg.type, event: msg };
+          break;
+        }
+
+        if (msg.type === 'error') {
+          yield { type: 'error', error: msg.error || 'Unknown error' };
+          break;
+        }
+
+        // Pass through all other event types
+        yield { type: msg.type || 'unknown', event: msg };
+      }
+    } finally {
+      if (params.signal) {
+        params.signal.removeEventListener('abort', onAbort);
+      }
     }
+
+    // Drain remaining stdout to avoid EPIPE
+    await new Promise<void>((resolve) => {
+      proc.stdout?.resume();
+      proc.on('close', (code) => {
+        if (code !== 0 && stderrText.trim()) {
+          console.error('[engine] cli.js exit', code, stderrText.slice(-500));
+        }
+        resolve();
+      });
+    });
   }
 
-  /** Stop the engine */
-  async stop(): Promise<void> {
-    if (this.proc) {
-      this.proc.stdin?.end();
-      this.proc.kill();
-      this.proc = null;
-    }
-  }
+  /** No-op — each query is a fresh process */
+  async stop(): Promise<void> {}
 }
 
-/** Resolve the path to the headless engine bundle */
+/** Resolve the path to the cli.js bundle */
 export function resolveEnginePath(): string {
-  // In development: relative path to opencc dist
   const __dirname = dirname(fileURLToPath(import.meta.url));
-  return join(__dirname, '..', '..', 'chatwise', 'opencc', 'dist', 'headless-engine.js');
+  // In dev: packages/opencc/dist/cli.js
+  return join(__dirname, '..', 'packages', 'opencc', 'dist', 'cli.js');
 }

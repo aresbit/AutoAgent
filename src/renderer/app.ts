@@ -138,6 +138,7 @@ const elements = {
   composer: $('#composer') as HTMLFormElement,
   prompt: $('#prompt') as HTMLTextAreaElement,
   stopRun: $('#stop-run') as HTMLButtonElement,
+  toggleSettings: $('#toggle-settings') as HTMLButtonElement,
   provider: $('#provider') as HTMLSelectElement,
   apiType: $('#api-type') as HTMLSelectElement,
   model: $('#model') as HTMLInputElement,
@@ -504,11 +505,34 @@ function collectSettings(): Settings {
 function renderChats(): void {
   elements.chatList.replaceChildren(
     ...state.chats.map((chat) => {
+      const row = document.createElement('div');
+      row.className = 'chat-row';
+
       const button = document.createElement('button');
       button.className = chat.id === state.activeChat?.id ? 'chat active' : 'chat';
       button.textContent = chat.title;
       button.onclick = () => void selectChat(chat.id);
-      return button;
+
+      const branchBtn = document.createElement('button');
+      branchBtn.className = 'chat-action ghost';
+      branchBtn.textContent = '⎇';
+      branchBtn.title = 'Branch session';
+      branchBtn.onclick = async (e) => {
+        e.stopPropagation();
+        await branchChat(chat.id);
+      };
+
+      const delBtn = document.createElement('button');
+      delBtn.className = 'chat-action ghost danger';
+      delBtn.textContent = '×';
+      delBtn.title = 'Delete session';
+      delBtn.onclick = async (e) => {
+        e.stopPropagation();
+        await deleteChatAction(chat.id);
+      };
+
+      row.append(button, branchBtn, delBtn);
+      return row;
     }),
   );
 }
@@ -561,6 +585,29 @@ async function createChat(): Promise<void> {
   state.activeChat = chat;
   renderChats();
   renderMessages(chat);
+}
+
+async function deleteChatAction(id: string): Promise<void> {
+  if (state.activeRunId) return; // don't delete while running
+  await window.autoagent.deleteChat(id);
+  await refreshChats();
+  if (state.activeChat?.id === id) {
+    state.activeChat = state.chats[0] || null;
+    if (state.activeChat) {
+      await selectChat(state.activeChat.id);
+    } else {
+      await createChat();
+    }
+  }
+}
+
+async function branchChat(id: string): Promise<void> {
+  const branch = (await window.autoagent.branchChat(id)) as ChatRecord;
+  state.chats = [branch, ...state.chats];
+  state.activeChat = branch;
+  renderChats();
+  renderMessages(branch);
+  setStatus('Branch created');
 }
 
 async function saveSettings(): Promise<void> {
@@ -702,10 +749,18 @@ elements.provider.onchange = async () => {
   if (resolved.apiKey) elements.apiKey.value = resolved.apiKey;
   renderModelOptions(elements.provider.value);
 };
+let settingsVisible = true;
+elements.toggleSettings.onclick = () => {
+  settingsVisible = !settingsVisible;
+  document.querySelector('.settings')?.classList.toggle('collapsed', !settingsVisible);
+  document.body.classList.toggle('settings-hidden', !settingsVisible);
+  elements.toggleSettings.textContent = settingsVisible ? '☰' : '◫';
+};
 elements.stopRun.onclick = async () => {
   if (!state.activeRunId) return;
   await window.autoagent.stopRun(state.activeRunId);
-  setStatus('Stopping');
+  setStatus('Stopped');
+  state.activeRunId = null;
 };
 elements.mcpType.onchange = updateMcpEditorMode;
 elements.saveMcp.onclick = () => void saveMcpForm();

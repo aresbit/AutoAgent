@@ -251,6 +251,10 @@ async function saveChat(chat: ChatRecord): Promise<ChatRecord> {
   return chat;
 }
 
+async function deleteChat(id: string): Promise<void> {
+  await rm(userDataPath('sessions', `${id}.json`), { force: true });
+}
+
 async function appendMessage(chatId: string, message: Omit<ChatMessage, 'id' | 'createdAt'>): Promise<ChatRecord> {
   const chat = await loadChat(chatId);
   chat.messages.push({ id: crypto.randomUUID(), createdAt: Date.now(), ...message });
@@ -807,6 +811,7 @@ async function runAgent(request: SendRequest): Promise<{ runId: string }> {
         cwd: settings.cwd,
         appendSystemPrompt: settings.appendSystemPrompt,
         messages,
+        signal: abortController.signal,
       })) {
         const text = extractEngineText(ev);
         if (ev.type === 'assistant' && text) assistantText = text;
@@ -930,6 +935,22 @@ ipcMain.handle('dialog:select-cwd', async () => {
 ipcMain.handle('chat:create', async () => saveChat(emptyChat()));
 ipcMain.handle('chat:load', async (_event, id: string) => loadChat(id));
 ipcMain.handle('chat:list', async () => listChats());
+ipcMain.handle('chat:delete', async (_event, id: string) => {
+  await deleteChat(id);
+  return { deleted: true };
+});
+ipcMain.handle('chat:branch', async (_event, id: string) => {
+  const parent = await loadChat(id);
+  const branch = emptyChat();
+  branch.title = `${parent.title} (branch)`;
+  branch.messages = parent.messages.map((m: { role: string; text: string }) => ({
+    id: crypto.randomUUID(),
+    role: m.role,
+    text: m.text,
+    createdAt: Date.now(),
+  }));
+  return saveChat(branch);
+});
 ipcMain.handle('agent:send', async (_event, request: SendRequest) => runAgent(request));
 ipcMain.handle('agent:stop', async (_event, runId: string) => {
   activeRuns.get(runId)?.abort();

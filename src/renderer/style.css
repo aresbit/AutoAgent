@@ -83,6 +83,7 @@ button:disabled {
   background: var(--panel);
   padding: 16px;
   overflow-y: auto;
+  transition: width 0.2s ease;
 }
 
 .sidebar {
@@ -91,6 +92,14 @@ button:disabled {
 
 .settings {
   border-left: 1px solid var(--line);
+}
+
+.settings.collapsed {
+  display: none;
+}
+
+body.settings-hidden {
+  grid-template-columns: 252px minmax(520px, 1fr) 0px;
 }
 
 .brand {
@@ -112,12 +121,10 @@ button:disabled {
   font-weight: 800;
 }
 
-.brand strong,
-.brand span {
+.brand strong {
   display: block;
 }
 
-.brand span,
 #status,
 #cwd-label {
   color: var(--muted);
@@ -139,6 +146,36 @@ button:disabled {
   white-space: nowrap;
 }
 
+.chat-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 26px 26px;
+  gap: 4px;
+  align-items: center;
+}
+
+.chat-row .chat {
+  min-width: 0;
+}
+
+.chat-action {
+  min-height: 26px;
+  min-width: 26px;
+  padding: 0;
+  font-size: 13px;
+  line-height: 1;
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+
+.chat-row:hover .chat-action {
+  opacity: 1;
+}
+
+.chat-action.danger {
+  color: var(--danger);
+}
+
 .chat.active {
   border-color: color-mix(in srgb, var(--blue), #ffffff 5%);
   background: #1a2833;
@@ -158,6 +195,12 @@ button:disabled {
   gap: 16px;
   border-bottom: 1px solid var(--line);
   padding: 0 20px;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 h1,
