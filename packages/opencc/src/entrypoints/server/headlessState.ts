@@ -4,19 +4,19 @@
  * Creates a minimal AppState + CanUseTool without requiring the full CLI
  * bootstrap (no React/Ink, no Commander arg parsing, no trust dialogs).
  *
- * Mirrors the initialization that runHeadless() in print.ts performs,
- * but stripped of feature flags, teleport, proactive, and CLI-only paths.
+ * Reuses CLI's getTools() for tool discovery — avoids stub-related crashes
+ * (e.g. "tools.map is not a function" from passing {} as Tools).
  */
 
 import { randomUUID } from 'node:crypto';
 import type { AppState } from '../../state/AppState.js';
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js';
+import type { ToolPermissionContext } from '../../types/permissions.js';
 import type { Tools } from '../../Tool.js';
-import type { PermissionMode } from '../../types/permissions.js';
 
 interface HeadlessStateOptions {
   cwd: string;
-  permissionMode: PermissionMode;
+  permissionMode: string;
   allowedTools: string[];
   model: string;
   apiKey: string;
@@ -31,11 +31,32 @@ interface HeadlessStateResult {
 /**
  * Create a minimal AppState suitable for headless/server use.
  *
- * This avoids the full React/zustand store setup that the REPL needs.
- * The AppState object is a plain mutable object with a setter callback.
+ * Reuses CLI's getTools() so the tool registry matches exactly what the
+ * interactive path would produce. Avoids the stub {} that causes
+ * "tools.map is not a function" in getSystemPrompt().
  */
 export function createAppState(opts: HeadlessStateOptions): HeadlessStateResult {
-  let current: AppState = buildDefaultAppState(opts);
+  // Build the tool permission context matching CLI defaults
+  const permissionContext: ToolPermissionContext = {
+    additionalWorkingDirectories: new Map(),
+    permissionMode: (opts.permissionMode || 'bypassPermissions') as any,
+    allowedTools: opts.allowedTools,
+    deniedTools: [],
+    autoAcceptTools: opts.permissionMode === 'bypassPermissions' ? opts.allowedTools : [],
+  } as any;
+
+  // Reuse CLI's getTools() — this imports the full tool registry
+  let tools: Tools;
+  try {
+    // Dynamic require to match CLI module resolution
+    const { getTools } = require('../../tools.js') as typeof import('../../tools.js');
+    tools = getTools(permissionContext);
+  } catch {
+    // Fallback: empty array if tool modules can't load
+    tools = [] as unknown as Tools;
+  }
+
+  let current: AppState = buildDefaultAppState(opts, permissionContext, tools);
 
   function setAppStateFn(f: (prev: AppState) => AppState): void {
     current = f(current);
@@ -44,27 +65,23 @@ export function createAppState(opts: HeadlessStateOptions): HeadlessStateResult 
   return { appState: current, setAppStateFn };
 }
 
-function buildDefaultAppState(opts: HeadlessStateOptions): AppState {
-  // Construct a minimal AppState that satisfies QueryEngine's needs.
-  // Most fields are stubs — QueryEngine only uses a subset via destructuring.
+function buildDefaultAppState(
+  opts: HeadlessStateOptions,
+  permissionContext: ToolPermissionContext,
+  tools: Tools,
+): AppState {
   return {
     // Core fields used by QueryEngine
     messages: [],
     sessionId: `server-${randomUUID()}`,
     cwd: opts.cwd,
-    permissionMode: opts.permissionMode,
+    permissionMode: opts.permissionMode as any,
 
-    // Tool permission context
-    toolPermissionContext: {
-      additionalWorkingDirectories: new Map(),
-      permissionMode: opts.permissionMode,
-      allowedTools: opts.allowedTools,
-      deniedTools: [],
-      autoAcceptTools: opts.permissionMode === 'bypassPermissions' ? opts.allowedTools : [],
-    },
+    // Tool permission context — must match CLI structure
+    toolPermissionContext: permissionContext,
 
-    // Tools — QueryEngine expects the tools list from AppState
-    tools: {} as Tools,
+    // Tools — real tool array from getTools()
+    tools,
 
     // File state cache
     readFileCache: {} as Record<string, unknown>,
@@ -78,10 +95,26 @@ function buildDefaultAppState(opts: HeadlessStateOptions): AppState {
       allowedTools: opts.allowedTools,
     },
 
+    // Hooks — must be a real Map, accessed by processUserInput + hook helpers
+    sessionHooks: new Map(),
+    hooksEnabled: false,
+    proactiveActive: false,
+
     // Stub fields (QueryEngine doesn't consume these directly)
     commands: [],
     mcpClients: [],
     mcpServerStatuses: [],
+    // MCP — tool/command/resource aggregation. All sub-fields are iterated
+    // via .map()/.forEach()/.some() during system prompt assembly and tool
+    // discovery — must be real iterables, not undefined.
+    mcp: {
+      tools: new Map(),
+      servers: new Map(),
+      commands: new Map(),
+      resources: new Map(),
+      clients: [] as any[],
+      enabledTools: [] as any[],
+    },
     agents: [],
     fastMode: false,
     isBareMode: false,
@@ -90,8 +123,6 @@ function buildDefaultAppState(opts: HeadlessStateOptions): AppState {
     skills: [],
     stats: undefined as any,
     fpsMetrics: undefined as any,
-    hooksEnabled: false,
-    proactiveActive: false,
     sessionSource: 'server' as any,
     conversationHistory: [],
     fileHistory: undefined as any,
@@ -120,17 +151,13 @@ function buildDefaultAppState(opts: HeadlessStateOptions): AppState {
  * Create a CanUseTool function that respects the permission mode.
  *
  * In server mode, bypassPermissions means all tools are allowed.
- * For acceptEdits/default modes, Read/Glob/Grep/WebFetch/WebSearch
- * are auto-allowed, Write/Edit/Bash require approval (currently
- * auto-approved for simplicity).
+ * The desktop client handles permissions via its own UI layer.
  */
 export function createCanUseTool(
   _appState: AppState,
   _setAppState: (f: (prev: AppState) => AppState) => void,
 ): CanUseToolFn {
   return async (_tool, _input, _toolUseContext) => {
-    // In server mode we default to bypassPermissions.
-    // The desktop client handles permissions via its own UI layer.
     return { behavior: 'allow' };
   };
 }

@@ -349,20 +349,27 @@ class ThreadManager {
     turnId: string,
     input: string,
   ): Promise<void> {
-    // Dynamically import the heavy modules only when needed
-    const { QueryEngine } = await import('../QueryEngine.js');
-    const { createAppState, createCanUseTool } = await import('./server/headlessState.js');
+    try {
+      // Bootstrap: enable config before QueryEngine touches it.
+      // The CLI path does this in main.tsx → init() → enableConfigs().
+      // Server path skips CLI machinery, so we must do it here.
+      const { enableConfigs } = await import('../utils/config.js');
+      enableConfigs();
 
-    const { appState, setAppStateFn } = createAppState({
-      cwd: thread.config.cwd,
-      permissionMode: thread.config.permissionMode as any,
-      allowedTools: thread.config.allowedTools,
-      model: thread.config.model,
-      apiKey: thread.config.apiKey,
-      baseURL: thread.config.baseURL,
-    });
+      // Dynamically import the heavy modules only when needed
+      const { QueryEngine } = await import('../QueryEngine.js');
+      const { createAppState, createCanUseTool } = await import('./server/headlessState.js');
 
-    const canUseTool = createCanUseTool(appState, setAppStateFn);
+      const { appState, setAppStateFn } = createAppState({
+        cwd: thread.config.cwd,
+        permissionMode: thread.config.permissionMode as any,
+        allowedTools: thread.config.allowedTools,
+        model: thread.config.model,
+        apiKey: thread.config.apiKey,
+        baseURL: thread.config.baseURL,
+      });
+
+      const canUseTool = createCanUseTool(appState, setAppStateFn);
 
     const engine = new QueryEngine({
       cwd: thread.config.cwd,
@@ -539,6 +546,11 @@ class ThreadManager {
           },
         });
       } else {
+        const msg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[server] agent loop error: ${msg}\n`);
+        if (err instanceof Error && err.stack) {
+          process.stderr.write(`[server] stack: ${err.stack}\n`);
+        }
         throw err;
       }
     } finally {
@@ -554,6 +566,20 @@ class ThreadManager {
           },
         });
       }
+    }
+    } catch (outerErr) {
+      // Catch errors from module imports / QueryEngine construction / outer setup
+      const msg = outerErr instanceof Error ? outerErr.message : String(outerErr);
+      process.stderr.write(`[server] runAgentLoop setup error: ${msg}\n`);
+      notify('turn/completed', {
+        threadId: thread.threadId,
+        turn: {
+          id: turnId,
+          status: 'failed',
+          items: [],
+          error: { message: msg, codexErrorInfo: 'InternalServerError' },
+        },
+      });
     }
   }
 

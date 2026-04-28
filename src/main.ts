@@ -736,7 +736,8 @@ async function runAgent(request: SendRequest): Promise<{ runId: string }> {
         messages: [{ role: 'user', content: request.prompt }],
         signal: abortController.signal,
       })) {
-        const text = extractEngineText(ev);
+        // Error events carry their message in ev.error, not in the event body
+        const text = ev.type === 'error' ? (ev.error || 'Unknown error') : extractEngineText(ev);
         if ((ev.type === 'assistant' || ev.type === 'text_delta') && text) assistantText += text;
         if (abortController.signal.aborted) break;
 
@@ -793,9 +794,9 @@ function createWavBuffer(samples: number[], sampleRate = 44100): Buffer {
 
 async function createWindow(): Promise<void> {
   mainWindow = new BrowserWindow({
-    width: 1080,
+    width: 1200,
     height: 870,
-    minWidth: 960,
+    minWidth: 1000,
     minHeight: 640,
     title: 'AutoAgent',
     icon: join(__dirname, 'icon.png'),
