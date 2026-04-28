@@ -723,6 +723,7 @@ elements.toggleSettings.onclick = () => {
   settingsVisible = !settingsVisible;
   document.querySelector('.settings')?.classList.toggle('collapsed', !settingsVisible);
   document.body.classList.toggle('settings-hidden', !settingsVisible);
+  document.body.classList.toggle('settings-visible', settingsVisible);
   elements.toggleSettings.textContent = settingsVisible ? '☰' : '◫';
 };
 elements.stopRun.onclick = async () => {

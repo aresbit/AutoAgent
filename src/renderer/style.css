@@ -677,12 +677,23 @@ textarea:focus {
   font-weight: 600;
 }
 
-@media (max-width: 1080px) {
+@media (max-width: 960px) {
   body {
     grid-template-columns: 220px minmax(380px, 1fr);
   }
 
   .settings {
     display: none;
+  }
+
+  /* Allow toggle to override media-query hide */
+  body.settings-visible .settings {
+    display: block;
+    position: fixed;
+    top: 0;
+    right: 0;
+    z-index: 100;
+    width: 360px;
+    box-shadow: var(--shadow);
   }
 }
