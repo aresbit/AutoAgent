@@ -1,5 +1,6 @@
 import type { ChildProcess, ExecFileException } from 'child_process'
 import { execFile, spawn } from 'child_process'
+import { existsSync } from 'fs'
 import memoize from 'lodash-es/memoize.js'
 import { homedir } from 'os'
 import * as path from 'path'
@@ -20,6 +21,30 @@ const __dirname = path.join(
   __filename,
   process.env.NODE_ENV === 'test' ? '../../../' : '../',
 )
+
+function executableExists(filePath: string): boolean {
+  return existsSync(filePath)
+}
+
+function findAutoAgentRipgrep(): string | undefined {
+  const candidates = [
+    process.env.AUTOAGENT_RG_PATH,
+    path.resolve(path.dirname(process.execPath), 'rg'),
+    path.resolve(__dirname, 'rg'),
+    path.resolve(__dirname, '..', 'bin', 'rg'),
+    '/usr/lib/autoagent/rg',
+    '/usr/bin/rg',
+  ].filter((candidate): candidate is string => Boolean(candidate))
+
+  if (process.platform === 'win32') {
+    candidates.push(
+      path.resolve(path.dirname(process.execPath), 'rg.exe'),
+      path.resolve(__dirname, 'rg.exe'),
+    )
+  }
+
+  return candidates.find(executableExists)
+}
 
 type RipgrepConfig = {
   mode: 'system' | 'builtin' | 'embedded'
@@ -53,6 +78,11 @@ const getRipgrepConfig = memoize((): RipgrepConfig => {
       args: ['--no-config'],
       argv0: 'rg',
     }
+  }
+
+  const autoAgentRipgrep = findAutoAgentRipgrep()
+  if (autoAgentRipgrep) {
+    return { mode: 'builtin', command: autoAgentRipgrep, args: [] }
   }
 
   const rgRoot = path.resolve(__dirname, 'vendor', 'ripgrep')

@@ -40,6 +40,22 @@ cp "${BUN_BIN}" "${PACKAGING_DIR}/usr/lib/autoagent/bun"
 strip "${PACKAGING_DIR}/usr/lib/autoagent/bun" 2>/dev/null || true
 echo "  bun: $(du -h "${PACKAGING_DIR}/usr/lib/autoagent/bun" | cut -f1)"
 
+# OpenCC is launched as `bun cli.js` inside the desktop app, so its bundled-mode
+# ripgrep dispatch is not available. Keep rg next to cli.js for deterministic
+# Glob/Grep support on fresh systems without a system rg.
+if [ -x "${PACKAGING_DIR}/usr/bin/rg" ]; then
+  cp "${PACKAGING_DIR}/usr/bin/rg" "${PACKAGING_DIR}/usr/lib/autoagent/rg"
+else
+  RG_BIN="$(command -v rg || true)"
+  if [ -z "${RG_BIN}" ]; then
+    echo "Error: rg binary not found. Install ripgrep or stage packaging/deb/usr/bin/rg." >&2
+    exit 1
+  fi
+  cp "${RG_BIN}" "${PACKAGING_DIR}/usr/lib/autoagent/rg"
+fi
+strip "${PACKAGING_DIR}/usr/lib/autoagent/rg" 2>/dev/null || true
+echo "  rg:  $(du -h "${PACKAGING_DIR}/usr/lib/autoagent/rg" | cut -f1)"
+
 # Step 4: Update version in control file
 echo "[4/7] Updating package metadata..."
 sed -i "s/^Version:.*/Version: ${VERSION}/" "${PACKAGING_DIR}/DEBIAN/control"
@@ -68,6 +84,7 @@ chmod 755 "${PACKAGING_DIR}/DEBIAN/postinst"
 chmod 755 "${PACKAGING_DIR}/usr/bin/autoagent"
 chmod 755 "${PACKAGING_DIR}/usr/bin/rg"
 chmod 755 "${PACKAGING_DIR}/usr/lib/autoagent/bun"
+chmod 755 "${PACKAGING_DIR}/usr/lib/autoagent/rg"
 chmod 644 "${PACKAGING_DIR}/usr/lib/autoagent/cli.js"
 chmod 644 "${PACKAGING_DIR}/usr/lib/autoagent/main.js"
 chmod 644 "${PACKAGING_DIR}/usr/lib/autoagent/preload.mjs"
@@ -83,7 +100,7 @@ chown -R root:root "${PACKAGING_DIR}" 2>/dev/null || true
 # Step 7: Build the .deb
 echo "[7/7] Building .deb package..."
 mkdir -p "${OUTPUT_DIR}"
-dpkg-deb --build "${PACKAGING_DIR}" "${OUTPUT_DIR}/${DEB_NAME}"
+dpkg-deb --root-owner-group --build "${PACKAGING_DIR}" "${OUTPUT_DIR}/${DEB_NAME}"
 
 echo ""
 echo "============================================"
