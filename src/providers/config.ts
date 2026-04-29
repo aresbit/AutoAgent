@@ -19,8 +19,7 @@ export interface CustomProvider {
 }
 
 export const BUILTIN_PROVIDERS: BuiltinProvider[] = [
-  { id: 'openai', name: 'OpenAI', checkStatus: true },
-  { id: 'codex', name: 'OpenAI Codex' },
+  { id: 'codex', name: 'Codex', checkStatus: true },
   { id: 'anthropic', name: 'Anthropic', checkStatus: true },
   { id: 'googleai', name: 'Google AI', checkStatus: true },
   { id: 'groq', name: 'Groq', checkStatus: true },
@@ -29,7 +28,7 @@ export const BUILTIN_PROVIDERS: BuiltinProvider[] = [
   { id: 'ollama', name: 'Ollama' },
   { id: 'xai', name: 'xAI' },
   { id: 'pplx', name: 'Perplexity' },
-  { id: 'azure', name: 'Azure OpenAI' },
+  { id: 'azure', name: 'Azure' },
   { id: 'mistral', name: 'Mistral' },
   { id: 'together', name: 'Together', allowCustomModels: true },
   { id: 'openrouter', name: 'OpenRouter', allowCustomModels: true },
@@ -85,8 +84,8 @@ export function resolveProviderEndpoint(
   const headers: Record<string, string> = {};
 
   switch (providerId) {
-    case 'openai':
-      return { url: config.openai_api_url || 'https://api.openai.com/v1', headers };
+    case 'codex':
+      return { url: config.codex_api_url || 'https://api.openai.com/v1', headers };
     case 'anthropic':
       return { url: config.anthropic_api_url || 'https://api.anthropic.com/v1', headers };
     case 'googleai':

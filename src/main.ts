@@ -21,6 +21,10 @@ import { dirname, extname, isAbsolute, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { EngineClient, resolveEnginePath } from './engine-client.js';
 import { BUILTIN_PROVIDERS, CUSTOM_PROVIDERS, resolveProviderEndpoint } from './providers/config.js';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import {
   defaultMcpServers,
 } from './chatwise/protocol.js';
@@ -36,7 +40,7 @@ import {
   workDirFrom,
 } from './chatwise/git.js';
 
-type ApiType = 'anthropic-messages' | 'openai-completions';
+type ApiType = 'anthropic-messages' | 'codex-completions';
 type PermissionMode = 'bypassPermissions' | 'acceptEdits' | 'default';
 
 interface DesktopSettings {
@@ -102,7 +106,7 @@ if (process.platform === 'linux') {
 // Set app name BEFORE ready — required for WM_CLASS desktop icon matching
 app.setName('autoagent');
 // Set Wayland desktop name — required for compositor to match .desktop file
-if (process.platform === 'linux') app.setDesktopName('autoagent');
+if (process.platform === 'linux') (app as typeof app & { setDesktopName?: (name: string) => void }).setDesktopName?.('autoagent');
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -113,14 +117,16 @@ let mainWindow: BrowserWindow | null = null;
 const activeRuns = new Map<string, AbortController>();
 let sqliteDatabase: any | null = null;
 
-// ---- Engine (long-running JSON-RPC server) ----
-// Spawned once at startup, persists across all queries.
-// Each chat session maps to a server-side "thread" (QueryEngine instance).
-// Context (system prompt, tools, message history, file cache) survives
-// across turns without rebuilding.
+// ---- Engine (cli.js -p stream-json headless loop) ----
+// Single long-running cli.js subprocess spawned via `-p --input-format
+// stream-json --output-format stream-json`. Reuses the mature Agent SDK/print
+// pathway (ask(), tool pool, MCP, permissions, partial stream) instead of
+// maintaining a separate desktop-only agent loop. The CLI process is restarted
+// when config (model, cwd, maxTurns, etc.) changes.
 let engine: EngineClient | null = null;
 
-async function getEngine(): Promise<EngineClient> {
+async function getEngine(settings?: DesktopSettings): Promise<EngineClient> {
+  if (settings) await syncEngineConfig(settings);
   if (!engine) {
     engine = new EngineClient(resolveEnginePath());
     engine.start();
@@ -149,14 +155,14 @@ function userDataPath(...parts: string[]): string {
 
 function defaultSettings(): DesktopSettings {
   return {
-    providerId: 'openai',
-    apiType: 'openai-completions',
-    model: process.env.CODEANY_MODEL || 'gpt-4o',
+    providerId: 'deepseek',
+    apiType: 'anthropic-messages',
+    model: process.env.CODEANY_MODEL || 'deepseek-v4-pro[1m]',
     apiKey: process.env.CODEANY_API_KEY || '',
-    baseURL: process.env.CODEANY_BASE_URL || 'https://api.openai.com/v1',
+    baseURL: process.env.CODEANY_BASE_URL || 'https://api.deepseek.com/anthropic',
     cwd: process.cwd() || homedir(),
     permissionMode: 'bypassPermissions',
-    maxTurns: 10,
+    maxTurns: 1024,
     allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'WebFetch', 'WebSearch', 'TodoWrite'],
     appendSystemPrompt:
       'You are AutoAgent, a desktop coding agent. Prefer concise answers, preserve user files, and ask before destructive or external actions.',
@@ -192,13 +198,13 @@ function normalizeSettings(input: Partial<DesktopSettings>): DesktopSettings {
 
   if (!base.baseURL && endpoint.url) base.baseURL = endpoint.url;
   base.apiType = base.providerId === 'anthropic' ? 'anthropic-messages' : base.apiType || inferApiType(base.model);
-  base.maxTurns = Math.max(1, Math.min(50, Number(base.maxTurns) || 10));
+  base.maxTurns = Math.max(1, Number(base.maxTurns) || 1024);
   base.allowedTools = Array.isArray(base.allowedTools) ? base.allowedTools : defaultSettings().allowedTools;
   return base;
 }
 
 function inferApiType(model: string): ApiType {
-  return model.toLowerCase().includes('claude') ? 'anthropic-messages' : 'openai-completions';
+  return 'anthropic-messages';
 }
 
 function providerCatalog() {
@@ -284,7 +290,6 @@ function extractEngineText(event: any): string {
       return ev.message.content
         .map((block: any) => {
           if (block.type === 'text') return block.text || '';
-          if (block.type === 'tool_use') return `[tool:${block.name}] ${JSON.stringify(block.input)}`;
           if (block.type === 'thinking') return block.thinking || '';
           return '';
         })
@@ -412,7 +417,7 @@ async function migrateChatwiseDatabase(database: any): Promise<void> {
       baseUrl TEXT NOT NULL,
       models TEXT,
       apiKey TEXT,
-      type TEXT DEFAULT 'openai',
+      type TEXT DEFAULT 'codex',
       config TEXT,
       icon TEXT
     );
@@ -489,7 +494,7 @@ async function migrateChatwiseDatabase(database: any): Promise<void> {
       'agentModeEnabled INTEGER',
       'agentOptions TEXT',
     ],
-    provider: ['type TEXT DEFAULT "openai"', 'config TEXT', 'icon TEXT'],
+    provider: ['type TEXT DEFAULT "codex"', 'config TEXT', 'icon TEXT'],
     prompt: ['model TEXT'],
     tool: ['excludedTools TEXT', 'oauthClient TEXT', 'oauthTokens TEXT', 'lastFetchedTools TEXT', 'displayName TEXT'],
   };
@@ -563,6 +568,63 @@ function parseEnvLines(value: string): Record<string, string> {
     env[trimmed.slice(0, index).trim()] = trimmed.slice(index + 1).trim();
   }
   return env;
+}
+
+function stringRecord(value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const output: Record<string, string> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (typeof entry === 'string' && entry.length > 0) output[key] = entry;
+  }
+  return output;
+}
+
+function processEnvRecord(): Record<string, string> {
+  const output: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (typeof value === 'string') output[key] = value;
+  }
+  return output;
+}
+
+function requestInitFromConfig(config: Record<string, unknown>): RequestInit {
+  const headers = stringRecord(config.headers);
+  return Object.keys(headers).length > 0 ? { headers } : {};
+}
+
+async function connectMCPServer(displayId: string, config: Record<string, unknown>) {
+  const client = new Client({ name: `autoagent-${displayId}`, version: '0.1.0' }, { capabilities: {} });
+  let transport: StdioClientTransport | SSEClientTransport | StreamableHTTPClientTransport;
+
+  if (config.type === 'http') {
+    if (typeof config.url !== 'string' || !config.url.trim()) throw new Error('MCP HTTP server URL is required');
+    transport = new StreamableHTTPClientTransport(new URL(config.url), { requestInit: requestInitFromConfig(config) });
+  } else if (config.type === 'sse') {
+    if (typeof config.url !== 'string' || !config.url.trim()) throw new Error('MCP SSE server URL is required');
+    const requestInit = requestInitFromConfig(config);
+    transport = new SSEClientTransport(new URL(config.url), {
+      requestInit,
+      eventSourceInit: Object.keys(stringRecord(config.headers)).length > 0 ? { fetch: (url, init) => fetch(url, { ...init, ...requestInit }) } : undefined,
+    });
+  } else {
+    if (typeof config.command !== 'string' || !config.command.trim()) throw new Error('MCP stdio command is required');
+    transport = new StdioClientTransport({
+      command: config.command,
+      args: Array.isArray(config.args) ? config.args.map(String) : [],
+      env: { ...processEnvRecord(), ...stringRecord(config.env) },
+      stderr: 'pipe',
+    });
+  }
+
+  await client.connect(transport);
+  const toolsResult = await client.listTools();
+  return {
+    status: 'connected',
+    tools: toolsResult.tools || [],
+    close: async () => {
+      await Promise.allSettled([(client as any).close?.(), transport.close()]);
+    },
+  };
 }
 
 function parseMcpRow(row: any): McpServerRecord {
@@ -718,7 +780,7 @@ async function runAgent(request: SendRequest): Promise<{ runId: string }> {
   void (async () => {
     let assistantText = '';
     try {
-      const eng = await getEngine();
+      const eng = await getEngine(settings);
       sendToWindow('agent:event', { runId, chatId: request.chatId, kind: 'start' });
 
       // The engine persists a thread across queries — context accumulates
@@ -733,6 +795,8 @@ async function runAgent(request: SendRequest): Promise<{ runId: string }> {
         apiKey: settings.apiKey,
         baseURL: settings.baseURL,
         providerId: settings.providerId,
+        apiType: settings.apiType,
+        allowedTools: settings.allowedTools,
         messages: [{ role: 'user', content: request.prompt }],
         signal: abortController.signal,
       })) {
@@ -905,8 +969,7 @@ ipcMain.handle('provider:resolve', async (_event, providerId: string, current: P
     apiKey: current.apiKey,
     [`${providerId}_api_url`]: current.baseURL,
   });
-  // Determine API type: Anthropic uses messages format, everything else is OpenAI-compatible
-  const apiType = providerId === 'anthropic' ? 'anthropic-messages' : 'openai-completions';
+  const apiType = providerId === 'codex' ? 'codex-completions' : 'anthropic-messages';
   // Collect models from CUSTOM_PROVIDERS if available
   const custom = CUSTOM_PROVIDERS.find(p => p.id === providerId || p.type === providerId);
   return {
@@ -936,7 +999,7 @@ ipcMain.handle('chat:branch', async (_event, id: string) => {
   const parent = await loadChat(id);
   const branch = emptyChat();
   branch.title = `${parent.title} (branch)`;
-  branch.messages = parent.messages.map((m: { role: string; text: string }) => ({
+  branch.messages = parent.messages.map((m: ChatMessage) => ({
     id: crypto.randomUUID(),
     role: m.role,
     text: m.text,

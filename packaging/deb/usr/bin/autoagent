@@ -1,6 +1,27 @@
 #!/bin/sh
-# AutoAgent - AI coding agent launcher
-# Uses bundled bun runtime + bundled agent JS — no system dependencies
+# AutoAgent - AI coding agent desktop application
+# Auto-detects Electron from common installation paths
 
 AGENT_HOME="/usr/lib/autoagent"
-exec "${AGENT_HOME}/bun" run "${AGENT_HOME}/cli.js" "$@"
+
+find_electron() {
+    [ -x "${AGENT_HOME}/electron" ] && { echo "${AGENT_HOME}/electron"; return 0; }
+    command -v electron >/dev/null 2>&1 && { echo "electron"; return 0; }
+    command -v npx >/dev/null 2>&1 && { echo "npx electron"; return 0; }
+    for dir in /usr/lib/node_modules /usr/local/lib/node_modules; do
+        [ -x "${dir}/electron/dist/electron" ] && { echo "${dir}/electron/dist/electron"; return 0; }
+    done
+    return 1
+}
+
+ELECTRON=$(find_electron)
+if [ -z "$ELECTRON" ]; then
+    echo "Error: Electron not found. Install with: npm install -g electron" >&2
+    exit 1
+fi
+
+# --no-sandbox needed when chrome-sandbox SUID bit can't be set (dev/testing)
+# Redirect output to avoid terminal flash when launched from .desktop
+LOG="${HOME}/.local/share/autoagent/autoagent.log"
+mkdir -p "$(dirname "$LOG")" 2>/dev/null
+exec $ELECTRON --no-sandbox "${AGENT_HOME}/main.js" "$@" >> "${LOG}" 2>&1

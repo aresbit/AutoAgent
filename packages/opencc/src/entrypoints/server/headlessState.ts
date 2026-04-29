@@ -13,6 +13,7 @@ import type { AppState } from '../../state/AppState.js';
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js';
 import type { ToolPermissionContext } from '../../types/permissions.js';
 import type { Tools } from '../../Tool.js';
+import { getTools } from '../../tools.js';
 
 interface HeadlessStateOptions {
   cwd: string;
@@ -39,21 +40,23 @@ export function createAppState(opts: HeadlessStateOptions): HeadlessStateResult 
   // Build the tool permission context matching CLI defaults
   const permissionContext: ToolPermissionContext = {
     additionalWorkingDirectories: new Map(),
-    permissionMode: (opts.permissionMode || 'bypassPermissions') as any,
-    allowedTools: opts.allowedTools,
-    deniedTools: [],
-    autoAcceptTools: opts.permissionMode === 'bypassPermissions' ? opts.allowedTools : [],
+    mode: (opts.permissionMode || 'bypassPermissions') as any,
+    alwaysAllowRules:
+      opts.permissionMode === 'bypassPermissions'
+        ? ({ command: opts.allowedTools } as any)
+        : ({} as any),
+    alwaysDenyRules: {} as any,
+    alwaysAskRules: {} as any,
+    isBypassPermissionsModeAvailable: true,
   } as any;
 
   // Reuse CLI's getTools() — this imports the full tool registry
   let tools: Tools;
   try {
-    // Dynamic require to match CLI module resolution
-    const { getTools } = require('../../tools.js') as typeof import('../../tools.js');
     tools = getTools(permissionContext);
-  } catch {
-    // Fallback: empty array if tool modules can't load
-    tools = [] as unknown as Tools;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to load CLI tool registry for desktop server: ${message}`);
   }
 
   let current: AppState = buildDefaultAppState(opts, permissionContext, tools);

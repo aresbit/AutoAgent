@@ -39,7 +39,6 @@ export function createModel(
   };
 
   switch (providerId) {
-    case 'openai':
     case 'codex':
       return createOpenAI(options).languageModel(modelId);
     case 'anthropic':
@@ -71,7 +70,7 @@ export function createModel(
     case 'vertex':
       return createVertex({ ...options, project: config.gcp_project, location: config.gcp_location }).languageModel(modelId);
     default: {
-      // Generic OpenAI-compatible provider (LM Studio, local, etc.)
+      // Generic Codex-compatible provider (LM Studio, local, etc.)
       return createOpenAI(options).languageModel(modelId);
     }
   }
@@ -80,7 +79,7 @@ export function createModel(
 // Alias mapping for model IDs with provider prefixes
 export function resolveModelId(modelId: string): { provider: string; model: string } {
   const prefixes: Record<string, string> = {
-    'openai-': 'openai',
+    'codex-': 'codex',
     'anthropic-': 'anthropic',
     'google-': 'googleai',
     'groq-': 'groq',
@@ -94,7 +93,7 @@ export function resolveModelId(modelId: string): { provider: string; model: stri
     'pplx-': 'pplx',
     'copilot-': 'copilot',
     'claude-': 'anthropic',
-    'gpt-': 'openai',
+    'gpt-': 'codex',
     'gemini-': 'googleai',
   };
 
@@ -104,6 +103,6 @@ export function resolveModelId(modelId: string): { provider: string; model: stri
     }
   }
 
-  // No prefix - assume OpenAI format or custom provider
-  return { provider: 'openai', model: modelId };
+  // No prefix - assume Codex-compatible format or custom provider
+  return { provider: 'codex', model: modelId };
 }

@@ -9,32 +9,32 @@ AutoAgent is an Electron-native desktop application that puts a full-featured AI
 ```
 Desktop (Electron)          Inference Engine (Bun)
 ┌──────────────────┐       ┌──────────────────────┐
-│  Renderer (TS)   │  IPC  │  cli.js --server      │
-│  Chat / MCP /    │◄─────►│  JSON-RPC over stdio  │
-│  Skills / Git    │       │  Long-running process │
+│  Renderer (TSX)  │  IPC  │  cli.js -p            │
+│  Chat / MCP /    │◄─────►│  stream-json stdio    │
+│  Skills / Git    │       │  (Agent SDK pathway)  │
 └──────────────────┘       └──────────────────────┘
         │                          │
         ▼                          ▼
 ┌──────────────────┐       ┌──────────────────────┐
-│  SQLite + JSON   │       │  ThreadManager        │
-│  Session persist │       │  └─ thread-1 (QE)     │
-└──────────────────┘       │  └─ thread-2 (QE)     │
+│  SQLite + JSON   │       │  ask() → tool pool    │
+│  Session persist │       │  MCP → permissions    │
+└──────────────────┘       │  partial stream       │
                            │  ~/.autoagent.json    │
                            └──────────────────────┘
 ```
 
-- **Frontend**: TypeScript SPA with custom IPC bridge to Electron main process
-- **Engine**: Long-running JSON-RPC server — single `cli.js --server` process spawned at startup, multiplexes multiple conversation threads via `ThreadManager`. Each thread holds a persistent `QueryEngine` instance whose context (system prompt, tool schemas, message history, file cache) survives across turns without rebuilding
-- **Protocol**: JSON-RPC 2.0 semantics over newline-delimited JSON (JSONL) on stdio — `initialize`, `thread/start`, `turn/start`, `turn/interrupt`, `thread/list`
+- **Frontend**: TypeScript + React SPA with custom IPC bridge to Electron main process
+- **Engine**: Long-running `cli.js -p --input-format stream-json --output-format stream-json --verbose` subprocess. This reuses the mature Agent SDK/print pathway (ask(), tool pool, MCP, permissions, partial stream) instead of a custom desktop-only agent loop. The process is restarted when config (model, cwd, etc.) changes.
+- **Protocol**: Newline-delimited JSON (JSONL) on stdio — user messages in, `stream_event` / `assistant` / `user` / `result` messages out. Control requests (tool permissions) auto-responded.
 - **Persistence**: SQLite for structured state (chats, messages, MCP servers), JSON for settings; automatic WAL-mode migration
 - **Distribution**: Single `.deb` package with bundled Bun runtime — zero external dependencies beyond `libc`
 
 ## Features
 
 ### Agent Core
-- **Multi-provider inference** — Anthropic Messages API, OpenAI-compatible backends, DeepSeek, and custom endpoints. Switch providers per session without restarting
-- **Stateful thread architecture** — each conversation runs in a persistent server-side thread; context (system prompt, tools, message history, file cache) accumulates across turns without per-query cold start
-- **Streaming output** — real-time token streaming via `item/agentMessage/delta` JSON-RPC notifications; tool-use events passthrough
+- **Multi-provider inference** — Anthropic Messages API, Codex-compatible backends, DeepSeek, and custom endpoints. Switch providers per session without restarting
+- **Persistent CLI subprocess** — single long-running `cli.js -p` process reused across queries; the CLI owns tools, MCP, permissions, compaction, and session state. Restarted only when config changes (model, cwd, etc.)
+- **Streaming output** — real-time token streaming via `text_delta` stream events; tool-use and thinking events passthrough
 - **Permission control** — bypass, accept-edits, auto, and default modes; configurable per session
 - **Configurable tool allowlist** — Read, Write, Edit, Glob, Grep, Bash, WebFetch, WebSearch
 - **Max-turns governor** — hard limit on agent loops to prevent runaway inference
@@ -94,9 +94,9 @@ Launch from your application launcher, or run `autoagent` from the terminal.
 
 | Field | What to enter |
 |---|---|
-| Provider | Select `anthropic` for Claude, `openai` for GPT, or a custom provider |
-| API type | Auto-selected based on provider; `anthropic-messages` or `openai-completions` |
-| Model | e.g. `claude-sonnet-4-6`, `gpt-4o`, `deepseek-chat` |
+| Provider | Select `anthropic` for Claude, `codex` for Codex-compatible models, or a custom provider |
+| API type | Auto-selected based on provider; `anthropic-messages` or `codex-completions` |
+| Model | e.g. `claude-sonnet-4-6`, `deepseek-v4-pro[1m]`, `deepseek-chat` |
 | Base URL | Your API endpoint; auto-filled for known providers |
 | API key | Your provider API key; stored locally in `~/.autoagent/` |
 | Workspace | The project directory the agent will operate in |

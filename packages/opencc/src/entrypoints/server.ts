@@ -64,6 +64,7 @@ type ThreadConfig = {
   apiKey: string;
   baseURL: string;
   providerId: string;
+  apiType: string;
 };
 
 interface ThreadInfo {
@@ -142,7 +143,7 @@ class ThreadManager {
     const config: ThreadConfig = {
       model: (params?.model as string) || 'claude-sonnet-4-6',
       cwd: (params?.cwd as string) || process.cwd(),
-      maxTurns: (params?.maxTurns as number) || 10,
+      maxTurns: (params?.maxTurns as number) || 1024,
       permissionMode: (params?.permissionMode as string) || 'bypassPermissions',
       allowedTools: Array.isArray(params?.allowedTools)
         ? (params.allowedTools as string[])
@@ -151,6 +152,7 @@ class ThreadManager {
       apiKey: (params?.apiKey as string) || process.env.ANTHROPIC_API_KEY || '',
       baseURL: (params?.baseURL as string) || process.env.ANTHROPIC_BASE_URL || '',
       providerId: (params?.providerId as string) || 'anthropic',
+      apiType: (params?.apiType as string) || 'anthropic-messages',
     };
 
     const threadId = randomUUID();
@@ -356,6 +358,8 @@ class ThreadManager {
     // SDKMessage[] as initialMessages (Message[] expected), corrupting state.
     if (!thread.queryEngine) {
       // First turn: bootstrap config, import modules, create engine
+      this.applyThreadEnvironment(thread.config);
+
       const { enableConfigs } = await import('../utils/config.js');
       enableConfigs();
 
@@ -389,6 +393,7 @@ class ThreadManager {
         userSpecifiedModel: thread.config.model,
         maxTurns: thread.config.maxTurns,
         verbose: true,
+        includePartialMessages: true,
         abortController: thread.aborter,
       });
 
@@ -403,28 +408,59 @@ class ThreadManager {
       for await (const msg of engine.submitMessage(input)) {
         // Map SDKMessage → JSON-RPC notifications
         switch (msg.type) {
-          case 'user': {
-            // Tool result — show inline on the agent message stream
-            const toolInput = thread._activeTool?.input || '';
-            const toolName = thread._activeTool?.name || 'tool';
-            const resultText = typeof msg.content === 'string'
-              ? msg.content
-              : JSON.stringify(msg.content);
-            // Emit tool call as a delta on the agent message (visible to user)
-            if (currentAssistantItemId && thread._activeTool) {
-              const toolDelta = toolInput
-                ? ` ${toolInput}\n[result:${toolName}] ${resultText.slice(0, 500)}`
-                : `\n[result:${toolName}] ${resultText.slice(0, 500)}`;
+          case 'stream_event': {
+            const event = (msg as any).event;
+            if (!currentAssistantItemId) {
+              currentAssistantItemId = randomUUID();
+              notify('item/started', {
+                threadId: thread.threadId,
+                turnId,
+                item: {
+                  id: currentAssistantItemId,
+                  type: 'agentMessage',
+                  text: '',
+                  status: 'inProgress',
+                },
+              });
+            }
+
+            let delta = '';
+            if (event?.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
+              delta = event.delta.text || '';
+            } else if (event?.type === 'content_block_delta' && event.delta?.type === 'thinking_delta') {
+              delta = event.delta.thinking || '';
+            } else if (event?.type === 'content_block_start' && event.content_block?.type === 'tool_use') {
+              const block = event.content_block;
+              thread._activeTool = { name: block.name, input: '' };
+              this.notifyToolCall(thread.threadId, turnId, block.name);
+            } else if (event?.type === 'content_block_delta' && event.delta?.type === 'input_json_delta') {
+              if (thread._activeTool) {
+                thread._activeTool.input += event.delta.partial_json || '';
+              }
+            }
+
+            if (delta) {
               notify('item/agentMessage/delta', {
                 threadId: thread.threadId,
                 turnId,
                 itemId: currentAssistantItemId,
-                delta: toolDelta,
+                delta,
               });
             }
+            break;
+          }
+
+          case 'user': {
+            if (!thread._activeTool && !this.isToolResultMessage(msg)) {
+              break;
+            }
+            const toolName = thread._activeTool?.name || 'tool';
+            const resultText = this.extractToolResultText(msg);
             thread._activeTool = undefined;
 
-            // Also emit as a structured item for the client
+            // Emit tool output as a structured item. Do not append it to the
+            // assistant delta stream; otherwise internal tool markers become
+            // persisted assistant text in the desktop chat.
             const itemId = randomUUID();
             notify('item/started', {
               threadId: thread.threadId,
@@ -467,9 +503,9 @@ class ThreadManager {
             // content_block_start — tool invocation begins
             else if (event?.type === 'content_block_start' && event.content_block?.type === 'tool_use') {
               const blk = event.content_block;
-              delta = `\n[tool:${blk.name}]`;
               // Store partial tool info for the delta phase
               if (!thread._activeTool) thread._activeTool = { name: blk.name, input: '' };
+              this.notifyToolCall(thread.threadId, turnId, blk.name);
             }
             // content_block_delta — tool input JSON streaming
             else if (event?.type === 'content_block_delta' && event.delta?.type === 'input_json_delta') {
@@ -618,6 +654,61 @@ class ThreadManager {
     }
     return '';
   }
+
+  private extractToolResultText(msg: SDKMessage): string {
+    const candidate = (msg as any).content ?? (msg as any).message?.content ?? (msg as any).tool_use_result ?? msg;
+    const text = this.extractContentText(candidate);
+    if (text) return text;
+    const json = JSON.stringify(candidate);
+    return typeof json === 'string' ? json : '';
+  }
+
+  private isToolResultMessage(msg: SDKMessage): boolean {
+    const content = (msg as any).content ?? (msg as any).message?.content;
+    if (!Array.isArray(content)) return Boolean((msg as any).tool_use_result);
+    return content.some((block: any) => block?.type === 'tool_result');
+  }
+
+  private extractContentText(content: unknown): string {
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+      return content
+        .map((block: any) => {
+          if (typeof block === 'string') return block;
+          if (block?.type === 'text' && typeof block.text === 'string') return block.text;
+          if (block?.type === 'tool_result') return this.extractContentText(block.content);
+          if (typeof block?.content === 'string') return block.content;
+          return '';
+        })
+        .filter(Boolean)
+        .join('\n');
+    }
+    return '';
+  }
+
+  private notifyToolCall(threadId: string, turnId: string, toolName: string): void {
+    const itemId = randomUUID();
+    notify('item/started', {
+      threadId,
+      turnId,
+      item: { id: itemId, type: 'tool_call', toolName, content: '', status: 'inProgress' },
+    });
+  }
+
+  private applyThreadEnvironment(config: ThreadConfig): void {
+    if (config.apiKey) process.env.ANTHROPIC_API_KEY = config.apiKey;
+    if (config.baseURL) {
+      process.env.ANTHROPIC_BASE_URL = normalizeAnthropicBaseURL(config.baseURL);
+    }
+    if (config.model) {
+      process.env.ANTHROPIC_MODEL = config.model;
+      process.env.ANTHROPIC_CUSTOM_MODEL_OPTION = config.model;
+    }
+  }
+}
+
+function normalizeAnthropicBaseURL(baseURL: string): string {
+  return baseURL.replace(/\/chat\/completions\/?$/, '').replace(/\/v1\/?$/, '');
 }
 
 // ============================================================================
