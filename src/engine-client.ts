@@ -24,6 +24,7 @@ export interface EngineQueryParams {
   maxTurns?: number;
   cwd?: string;
   appendSystemPrompt?: string;
+  resumeSessionId?: string;
   apiKey?: string;
   baseURL?: string;
   providerId?: string;
@@ -117,7 +118,6 @@ export class EngineClient {
   private proc: ChildProcess | null = null;
   private listeners = new Set<Listener>();
   private stderrBuffer = '';
-  private configKey: string | null = null;
 
   constructor(private readonly enginePath: string) {}
 
@@ -144,21 +144,32 @@ export class EngineClient {
     const prompt = extractPrompt(params);
     if (!prompt.trim()) throw new Error('Empty prompt');
 
-    this.ensureCliProcess(params);
+    this.spawnCliProcess(params);
 
     const eventQueue: StreamEvent[] = [];
     let resolveNext: (() => void) | null = null;
     let terminal = false;
+    let sawResult = false;
+    const proc = this.proc;
 
     const listener: Listener = (message) => {
       this.handleControlRequest(message);
       const mapped = mapCliMessage(message);
       if (!mapped) return;
       eventQueue.push(mapped);
+      if (mapped.type === 'result') sawResult = true;
       if (mapped.type === 'result' || mapped.type === 'error' || mapped.type === 'interrupted') terminal = true;
       resolveNext?.();
     };
     this.listeners.add(listener);
+
+    const onClose = (code: number | null) => {
+      if (sawResult || terminal) return;
+      eventQueue.push({ type: 'error', error: `Engine process exited before result (code ${code ?? 'unknown'})` });
+      terminal = true;
+      resolveNext?.();
+    };
+    proc?.once('close', onClose);
 
     const onAbort = () => {
       eventQueue.push({ type: 'interrupted', event: { aborted: true } });
@@ -174,6 +185,7 @@ export class EngineClient {
 
     try {
       this.writeUserMessage(prompt);
+      this.proc?.stdin?.end();
       while (true) {
         while (eventQueue.length > 0) {
           const event = eventQueue.shift()!;
@@ -188,14 +200,13 @@ export class EngineClient {
       }
     } finally {
       this.listeners.delete(listener);
+      proc?.off('close', onClose);
       if (params.signal) params.signal.removeEventListener('abort', onAbort);
+      await this.stop();
     }
   }
 
-  private ensureCliProcess(params: EngineQueryParams): void {
-    const configKey = this.makeConfigKey(params);
-    if (this.proc && this.proc.exitCode === null && this.configKey === configKey) return;
-
+  private spawnCliProcess(params: EngineQueryParams): void {
     if (this.proc && this.proc.exitCode === null) this.proc.kill('SIGTERM');
 
     const bunExe = existsSync(join(dirname(this.enginePath), 'bun')) ? join(dirname(this.enginePath), 'bun') : 'bun';
@@ -216,6 +227,7 @@ export class EngineClient {
       '--permission-mode',
       'bypassPermissions',
     ];
+    if (params.resumeSessionId) args.push('--resume', params.resumeSessionId);
 
     const allowedTools = params.allowedTools?.length ? params.allowedTools : DEFAULT_TOOLS;
     args.push('--allowedTools', allowedTools.join(','));
@@ -239,7 +251,6 @@ export class EngineClient {
       stdio: ['pipe', 'pipe', 'pipe'],
       env,
     });
-    this.configKey = configKey;
     this.stderrBuffer = '';
 
     this.proc.stderr?.on('data', (data: Buffer) => {
@@ -250,8 +261,6 @@ export class EngineClient {
 
     this.proc.on('close', (code) => {
       console.error(`[engine] cli process exited with code ${code}`);
-      this.configKey = null;
-      for (const listener of this.listeners) listener({ type: 'error', is_error: true, result: `Engine process exited (code ${code})` });
     });
 
     const rl = createInterface({ input: this.proc.stdout! });
@@ -302,19 +311,6 @@ export class EngineClient {
     }
   }
 
-  private makeConfigKey(params: EngineQueryParams): string {
-    return JSON.stringify({
-      model: params.model || 'deepseek-v4-pro[1m]',
-      cwd: params.cwd || process.cwd(),
-      maxTurns: params.maxTurns || 1024,
-      appendSystemPrompt: params.appendSystemPrompt || '',
-      apiKey: params.apiKey || '',
-      baseURL: params.baseURL || '',
-      providerId: params.providerId || 'deepseek',
-      apiType: params.apiType || 'anthropic-messages',
-      allowedTools: params.allowedTools || DEFAULT_TOOLS,
-    });
-  }
 }
 
 function normalizeAnthropicBaseURL(baseURL: string): string {

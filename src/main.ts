@@ -62,6 +62,7 @@ interface ChatRecord {
   createdAt: number;
   updatedAt: number;
   messages: ChatMessage[];
+  claudeSessionId?: string;
 }
 
 interface ChatMessage {
@@ -118,21 +119,14 @@ const activeRuns = new Map<string, AbortController>();
 let sqliteDatabase: any | null = null;
 
 // ---- Engine (cli.js -p stream-json headless loop) ----
-// Single long-running cli.js subprocess spawned via `-p --input-format
-// stream-json --output-format stream-json`. Reuses the mature Agent SDK/print
-// pathway (ask(), tool pool, MCP, permissions, partial stream) instead of
-// maintaining a separate desktop-only agent loop. The CLI process is restarted
-// when config (model, cwd, maxTurns, etc.) changes.
-let engine: EngineClient | null = null;
-
+// `-p` is a mature single-run headless loop. Each desktop turn gets a fresh
+// process, while Claude Code's transcript persistence is reused via --resume.
 async function getEngine(settings?: DesktopSettings): Promise<EngineClient> {
   if (settings) await syncEngineConfig(settings);
-  if (!engine) {
-    engine = new EngineClient(resolveEnginePath());
-    engine.start();
-    await engine.waitReady();
-  }
-  return engine;
+  const next = new EngineClient(resolveEnginePath());
+  next.start();
+  await next.waitReady();
+  return next;
 }
 
 protocol.registerSchemesAsPrivileged([
@@ -268,12 +262,22 @@ async function appendMessage(chatId: string, message: Omit<ChatMessage, 'id' | '
   return saveChat(chat);
 }
 
+async function updateClaudeSessionId(chatId: string, claudeSessionId: string): Promise<void> {
+  const chat = await loadChat(chatId);
+  chat.claudeSessionId = claudeSessionId;
+  await saveChat(chat);
+}
+
 function extractEngineText(event: any): string {
   if (!event) return '';
   // Direct text from text_delta stream events
   if (event.type === 'text_delta') {
     if (event.event?.delta) return event.event.delta;
     if (event.text) return event.text;
+  }
+  if (event.type === 'result') {
+    if (typeof event.event?.result === 'string') return event.event.result;
+    if (typeof event.result === 'string') return event.result;
   }
   // Direct text from a completed item
   if (event.type === 'assistant' || event.type === 'tool_result') {
@@ -296,6 +300,7 @@ function extractEngineText(event: any): string {
         .filter(Boolean)
         .join('\n');
     }
+    if (ev.type === 'result' && typeof ev.result === 'string') return ev.result;
     if (ev.type === 'text_delta') return ev.text || ev.delta || '';
   }
   return '';
@@ -771,6 +776,7 @@ async function runAgent(request: SendRequest): Promise<{ runId: string }> {
   const baseSettings = await loadSettings();
   const settings = normalizeSettings({ ...baseSettings, ...request.settings });
   await writeJson(userDataPath('settings.json'), settings);
+  const chatBeforeTurn = await loadChat(request.chatId);
 
   const runId = crypto.randomUUID();
   const abortController = new AbortController();
@@ -792,6 +798,7 @@ async function runAgent(request: SendRequest): Promise<{ runId: string }> {
         maxTurns: settings.maxTurns,
         cwd: settings.cwd,
         appendSystemPrompt: settings.appendSystemPrompt,
+        resumeSessionId: chatBeforeTurn.claudeSessionId,
         apiKey: settings.apiKey,
         baseURL: settings.baseURL,
         providerId: settings.providerId,
@@ -804,6 +811,10 @@ async function runAgent(request: SendRequest): Promise<{ runId: string }> {
         const text = ev.type === 'error' ? (ev.error || 'Unknown error') : extractEngineText(ev);
         if (ev.type === 'text_delta' && text) assistantText += text;
         if (ev.type === 'assistant' && text) assistantText = text;
+        if (ev.type === 'result' && text && !assistantText.trim()) assistantText = text;
+        if (ev.type === 'result' && typeof ev.event?.session_id === 'string') {
+          await updateClaudeSessionId(request.chatId, ev.event.session_id);
+        }
         if (abortController.signal.aborted) break;
 
         // Map server event types to renderer-friendly kinds
@@ -1459,7 +1470,7 @@ app.whenReady().then(async () => {
   loadEnabledSkills().catch(() => {});
   // Sync engine config from stored settings — defer to avoid IO contention
   setTimeout(() => loadSettings().then(syncEngineConfig).catch((err) => console.error('[config] sync failed:', err)), 500);
-  // Start opencc engine subprocess (pre-warm)
+  // Validate engine path after startup; each agent turn spawns its own -p process.
   getEngine().catch((err) => console.error('[engine] failed to start:', err));
   registerClientProtocol();
   perfMark('protocol registered');
@@ -1486,5 +1497,4 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   for (const run of activeRuns.values()) run.abort();
   killElectronExecChildren();
-  engine?.stop().catch(() => undefined);
 });
