@@ -66,6 +66,7 @@ cp "${PROJECT_DIR}/assets/icon_512x512.png" "${PACKAGING_DIR}/usr/share/icons/hi
 echo "[6/7] Setting permissions..."
 chmod 755 "${PACKAGING_DIR}/DEBIAN/postinst"
 chmod 755 "${PACKAGING_DIR}/usr/bin/autoagent"
+chmod 755 "${PACKAGING_DIR}/usr/bin/rg"
 chmod 755 "${PACKAGING_DIR}/usr/lib/autoagent/bun"
 chmod 644 "${PACKAGING_DIR}/usr/lib/autoagent/cli.js"
 chmod 644 "${PACKAGING_DIR}/usr/lib/autoagent/main.js"
