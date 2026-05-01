@@ -30,18 +30,14 @@ function findAutoAgentRipgrep(): string | undefined {
   const candidates = [
     process.env.AUTOAGENT_RG_PATH,
     path.resolve(path.dirname(process.execPath), 'rg'),
+    path.resolve(path.dirname(process.execPath), 'rg.exe'),
     path.resolve(__dirname, 'rg'),
+    path.resolve(__dirname, 'rg.exe'),
     path.resolve(__dirname, '..', 'bin', 'rg'),
+    path.resolve(__dirname, '..', 'bin', 'rg.exe'),
     '/usr/lib/autoagent/rg',
     '/usr/bin/rg',
   ].filter((candidate): candidate is string => Boolean(candidate))
-
-  if (process.platform === 'win32') {
-    candidates.push(
-      path.resolve(path.dirname(process.execPath), 'rg.exe'),
-      path.resolve(__dirname, 'rg.exe'),
-    )
-  }
 
   return candidates.find(executableExists)
 }
@@ -69,6 +65,11 @@ const getRipgrepConfig = memoize((): RipgrepConfig => {
     }
   }
 
+  const autoAgentRipgrep = findAutoAgentRipgrep()
+  if (autoAgentRipgrep) {
+    return { mode: 'builtin', command: autoAgentRipgrep, args: [] }
+  }
+
   // In bundled (native) mode, ripgrep is statically compiled into bun-internal
   // and dispatches based on argv[0]. We spawn ourselves with argv0='rg'.
   if (isInBundledMode()) {
@@ -78,11 +79,6 @@ const getRipgrepConfig = memoize((): RipgrepConfig => {
       args: ['--no-config'],
       argv0: 'rg',
     }
-  }
-
-  const autoAgentRipgrep = findAutoAgentRipgrep()
-  if (autoAgentRipgrep) {
-    return { mode: 'builtin', command: autoAgentRipgrep, args: [] }
   }
 
   const rgRoot = path.resolve(__dirname, 'vendor', 'ripgrep')

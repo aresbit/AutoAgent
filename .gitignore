@@ -12,3 +12,10 @@ coverage
 .self_improving_experience.json
 .self_improving_performance.json
 vendor/
+build-resources/
+build/
+release/
+dist-test/
+.tmp-pillow/
+assets/icon-frame0.bin
+temp-extracted-icon.png

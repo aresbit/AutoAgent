@@ -16,7 +16,7 @@ import {
 import { copyFile, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, extname, isAbsolute, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { EngineClient, resolveEnginePath } from './engine-client.js';
@@ -99,15 +99,35 @@ function perfMark(label: string): void {
   tPrev = now;
 }
 
-// Startup optimizations: avoid GPU process spawn overhead on Linux
+const PRODUCT_NAME = 'AutoAgent';
+const LINUX_DESKTOP_NAME = 'autoagent';
+const WINDOWS_APP_ID = 'com.autoagent.desktop';
+
+// Startup optimizations
 if (process.platform === 'linux') {
   app.commandLine.appendSwitch('in-process-gpu');
 }
+// Windows: disable GPU to avoid ERR_FAILED (-2) caused by GPU cache access
+// denied errors (拒绝访问。0x5) in locked-down environments. Also redirect
+// the disk cache to %TEMP% to bypass AppData permission restrictions.
+if (process.platform === 'win32') {
+  app.commandLine.appendSwitch('disable-gpu');
+  app.commandLine.appendSwitch('disable-software-rasterizer');
+  app.commandLine.appendSwitch('disk-cache-dir', join(tmpdir(), 'autoagent-cache'));
+  // Override userData to a temp directory so Chromium can create its cache
+  // subdirectories without hitting AppData permission issues.
+  app.setPath('userData', join(tmpdir(), 'autoagent-userdata'));
+}
 
-// Set app name BEFORE ready — required for WM_CLASS desktop icon matching
-app.setName('autoagent');
+// Keep Windows/macOS runtime identity aligned with the packaged shortcut/exe
+// name, while Linux still uses the desktop file name for WM_CLASS matching.
+app.setName(process.platform === 'linux' ? LINUX_DESKTOP_NAME : PRODUCT_NAME);
 // Set Wayland desktop name — required for compositor to match .desktop file
-if (process.platform === 'linux') (app as typeof app & { setDesktopName?: (name: string) => void }).setDesktopName?.('autoagent');
+if (process.platform === 'linux') {
+  (app as typeof app & { setDesktopName?: (name: string) => void }).setDesktopName?.(LINUX_DESKTOP_NAME);
+}
+// Set AppUserModelId — required for Windows taskbar icon matching
+if (process.platform === 'win32') app.setAppUserModelId(WINDOWS_APP_ID);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -145,6 +165,19 @@ protocol.registerSchemesAsPrivileged([
 
 function userDataPath(...parts: string[]): string {
   return join(app.getPath('userData'), ...parts);
+}
+
+function resolveRuntimeAssetPath(name: string): string {
+  const candidates = [
+    process.resourcesPath ? join(process.resourcesPath, name) : '',
+    join(__dirname, name),
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+
+  return candidates[0] || name;
 }
 
 function defaultSettings(): DesktopSettings {
@@ -869,16 +902,18 @@ function createWavBuffer(samples: number[], sampleRate = 44100): Buffer {
 }
 
 async function createWindow(): Promise<void> {
+  const iconPath = resolveRuntimeAssetPath(process.platform === 'win32' ? 'icon.ico' : 'icon.png');
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 870,
     minWidth: 1000,
     minHeight: 640,
-    title: 'AutoAgent',
-    icon: join(__dirname, 'icon.png'),
-    // Required for Linux desktop environments to match the window
-    // to autoagent.desktop for the correct dock/taskbar icon
-    ...(process.platform === 'linux' ? { desktopFileName: 'autoagent' } : {}),
+    title: PRODUCT_NAME,
+    icon: iconPath,
+    // Linux: match window to autoagent.desktop for correct dock/taskbar icon
+    // Windows: icon.ico used for taskbar (paired with setAppUserModelId)
+    // macOS: icon.png works natively
+    ...(process.platform === 'linux' ? { desktopFileName: LINUX_DESKTOP_NAME } : {}),
     autoHideMenuBar: true,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     ...(process.platform === 'darwin' ? { trafficLightPosition: { x: 14, y: 18 } } : {}),
@@ -893,6 +928,9 @@ async function createWindow(): Promise<void> {
     },
   });
   perfMark('BrowserWindow created');
+  if (process.platform === 'win32') {
+    mainWindow.setIcon(nativeImage.createFromPath(iconPath));
+  }
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     void shell.openExternal(url);
@@ -916,28 +954,39 @@ async function createWindow(): Promise<void> {
     console.error(`[perf] +${(performance.now() - t0).toFixed(0)}ms did-finish-load`);
   });
 
-  // Use loadFile instead of loadURL — avoids custom protocol handler overhead
+  // loadFile is the standard Electron approach for local HTML.
+  // GPU is disabled on Windows (see module-level commandLine switches) to
+  // work around ERR_FAILED (-2) caused by GPU disk cache permission errors.
   const loadStart = performance.now();
   await mainWindow.loadFile(join(clientDir, 'index.html'));
-  console.error(`[perf] +${(performance.now() - t0).toFixed(0)}ms (Δ${(performance.now() - loadStart).toFixed(0)}ms) loadFile done`);
+  console.error(`[perf] +${(performance.now() - t0).toFixed(0)}ms (Δ${(performance.now() - loadStart).toFixed(0)}ms) loadURL done`);
 }
 
 // Sync provider settings to ~/.autoagent.json so the CLI engine can read them
 async function syncEngineConfig(settings: DesktopSettings): Promise<void> {
   const t = performance.now();
-  const configPath = join(homedir(), '.autoagent.json');
+  const configPath = join(homedir(), '.autoagent', '.claude.json');
   try {
     let existing: Record<string, unknown> = {};
     try {
       const raw = await readFile(configPath, 'utf8');
       existing = JSON.parse(raw);
     } catch {}
+    const apiKey = settings.apiKey || (typeof existing.primaryApiKey === 'string' ? existing.primaryApiKey : '');
+    const normalizedKey = apiKey ? apiKey.slice(-20) : '';
+    const existingApproved: string[] = (existing.customApiKeyResponses as any)?.approved || [];
     const merged = {
       ...existing,
-      primaryApiKey: settings.apiKey || existing.primaryApiKey || '',
+      primaryApiKey: apiKey,
+      customApiKeyResponses: {
+        ...((existing.customApiKeyResponses as any) || {}),
+        approved: normalizedKey && !existingApproved.includes(normalizedKey)
+          ? [...existingApproved, normalizedKey]
+          : existingApproved,
+      },
       env: {
         ...((existing.env as Record<string, string>) || {}),
-        ANTHROPIC_API_KEY: settings.apiKey || '',
+        ANTHROPIC_API_KEY: apiKey,
         ANTHROPIC_BASE_URL: settings.baseURL || '',
       },
     };

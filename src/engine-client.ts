@@ -7,11 +7,41 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, appendFileSync, mkdirSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
+
+// File-based diagnostic logger for packaged-app troubleshooting.
+// Writes to %TEMP%/autoagent-userdata/engine.log.
+const LOG_FILE = join(tmpdir(), 'autoagent-userdata', 'engine.log');
+
+function ensureLogDir(): void {
+  try { mkdirSync(dirname(LOG_FILE), { recursive: true }); } catch {}
+}
+
+function logToFile(...args: unknown[]): void {
+  try {
+    ensureLogDir();
+    const ts = new Date().toISOString().replace('T', ' ').slice(0, 23);
+    const line = args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
+    appendFileSync(LOG_FILE, `[${ts}] ${line}\n`);
+  } catch {}
+}
+
+function resolveBundledRipgrepPath(): string | null {
+  const candidates = [
+    process.env.AUTOAGENT_RG_PATH,
+    process.resourcesPath ? join(process.resourcesPath, 'rg.exe') : null,
+  ].filter((value): value is string => !!value);
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+
+  return null;
+}
 
 export interface StreamEvent {
   type: string;
@@ -118,6 +148,7 @@ export class EngineClient {
   private proc: ChildProcess | null = null;
   private listeners = new Set<Listener>();
   private stderrBuffer = '';
+  private _onSpawnError: ((err: Error) => void) | null = null;
 
   constructor(private readonly enginePath: string) {}
 
@@ -144,11 +175,24 @@ export class EngineClient {
     const prompt = extractPrompt(params);
     if (!prompt.trim()) throw new Error('Empty prompt');
 
-    this.spawnCliProcess(params);
+    logToFile('query() called, prompt_len=', prompt.length, 'resumeSessionId=', params.resumeSessionId || 'none');
+    logToFile('model=', params.model, 'maxTurns=', params.maxTurns);
 
     const eventQueue: StreamEvent[] = [];
     let resolveNext: (() => void) | null = null;
     let terminal = false;
+
+    // Wire up spawn error callback so silent failures unblock the generator
+    const prevHandler = this._onSpawnError;
+    this._onSpawnError = (err) => {
+      eventQueue.push({ type: 'error', error: `Engine spawn failed: ${err.message}` });
+      terminal = true;
+      resolveNext?.();
+    };
+
+    this.spawnCliProcess(params);
+    this._onSpawnError = prevHandler;
+
     let sawResult = false;
     const proc = this.proc;
 
@@ -186,9 +230,11 @@ export class EngineClient {
     try {
       this.writeUserMessage(prompt);
       this.proc?.stdin?.end();
+      logToFile('User message written, stdin closed');
       while (true) {
         while (eventQueue.length > 0) {
           const event = eventQueue.shift()!;
+          if (event.type !== 'text_delta') logToFile('yield event type=', event.type);
           yield event;
           if (event.type === 'result' || event.type === 'error' || event.type === 'interrupted') return;
         }
@@ -199,6 +245,7 @@ export class EngineClient {
         resolveNext = null;
       }
     } finally {
+      logToFile('query() finally block — cleaning up');
       this.listeners.delete(listener);
       proc?.off('close', onClose);
       if (params.signal) params.signal.removeEventListener('abort', onAbort);
@@ -209,7 +256,12 @@ export class EngineClient {
   private spawnCliProcess(params: EngineQueryParams): void {
     if (this.proc && this.proc.exitCode === null) this.proc.kill('SIGTERM');
 
-    const bunExe = existsSync(join(dirname(this.enginePath), 'bun')) ? join(dirname(this.enginePath), 'bun') : 'bun';
+    // Resolve bun executable with Windows-aware lookup:
+    // 1. bun/bun.exe next to cli.js (bundled deployment)
+    // 2. build-resources/bun_runtime.exe (dev mode)
+    // 3. process.resourcesPath/bun_runtime.exe (packaged electron-builder)
+    // 4. system PATH
+    const bunExe = resolveBunPath(this.enginePath);
     const args = [
       this.enginePath,
       '-p',
@@ -239,6 +291,8 @@ export class EngineClient {
       CLAUDE_CODE_ENTRYPOINT: 'claude-desktop',
       CLAUDE_CODE_INCLUDE_PARTIAL_MESSAGES: '1',
     };
+    const bundledRipgrep = resolveBundledRipgrepPath();
+    if (bundledRipgrep) env.AUTOAGENT_RG_PATH = bundledRipgrep;
     if (params.apiKey) env.ANTHROPIC_API_KEY = params.apiKey;
     if (params.baseURL) env.ANTHROPIC_BASE_URL = normalizeAnthropicBaseURL(params.baseURL);
     if (params.model) {
@@ -253,19 +307,38 @@ export class EngineClient {
     });
     this.stderrBuffer = '';
 
+    // Diagnostic logging
+    logToFile('Spawning: bun=', bunExe, 'cli=', this.enginePath);
+    logToFile('CLAUDE_CONFIG_DIR=', env.CLAUDE_CONFIG_DIR);
+    logToFile('ANTHROPIC_API_KEY set=', !!env.ANTHROPIC_API_KEY, 'len=', (env.ANTHROPIC_API_KEY || '').length);
+    logToFile('ANTHROPIC_BASE_URL=', env.ANTHROPIC_BASE_URL);
+    logToFile('args=', args);
+    logToFile('CWD=', params.cwd || process.cwd());
+    console.error(`[engine] Spawning: bun=${bunExe} cli=${this.enginePath}`);
+
+    this.proc.on('error', (err: Error) => {
+      console.error(`[engine] Process spawn error: ${err.message}`);
+      logToFile('Process spawn error:', err.message);
+      this._onSpawnError?.(err);
+    });
+
     this.proc.stderr?.on('data', (data: Buffer) => {
-      this.stderrBuffer += data.toString();
+      const text = data.toString();
+      this.stderrBuffer += text;
       if (this.stderrBuffer.length > 8192) this.stderrBuffer = this.stderrBuffer.slice(-8192);
-      console.error('[engine:cli]', data.toString().trimEnd());
+      console.error('[engine:cli]', text.trimEnd());
+      logToFile('[stderr]', text.trimEnd());
     });
 
     this.proc.on('close', (code) => {
       console.error(`[engine] cli process exited with code ${code}`);
+      logToFile('cli process exited with code', code);
     });
 
     const rl = createInterface({ input: this.proc.stdout! });
     void this.readLoop(rl);
     console.error(`[engine] cli stream-json process spawned (pid: ${this.proc.pid})`);
+    logToFile('cli stream-json process spawned (pid:', this.proc.pid, ')');
   }
 
   private writeUserMessage(prompt: string): void {
@@ -313,13 +386,89 @@ export class EngineClient {
 
 }
 
+function resolveBunPath(enginePath: string): string {
+  const dir = dirname(enginePath);
+
+  // 1. Check for bun next to cli.js (with .exe on Windows)
+  const candidates = process.platform === 'win32'
+    ? ['bun.exe', 'bun.cmd', 'bun']
+    : ['bun'];
+  for (const name of candidates) {
+    const candidate = join(dir, name);
+    if (existsSync(candidate)) {
+      console.error(`[resolveBunPath] step1 found: ${candidate}`);
+      logToFile('resolveBunPath step1 found:', candidate);
+      return candidate;
+    }
+  }
+
+  // 2. Dev mode: build-resources/bun_runtime.exe (walk up to find project root)
+  let probe = dir;
+  for (let i = 0; i < 5; i++) {
+    const p = join(probe, 'build-resources', 'bun_runtime.exe');
+    if (existsSync(p)) {
+      console.error(`[resolveBunPath] step2 found: ${p}`);
+      logToFile('resolveBunPath step2 found:', p);
+      return p;
+    }
+    const parent = dirname(probe);
+    if (parent === probe) break;
+    probe = parent;
+  }
+
+  // 3. Packaged electron-builder: extraResources/bun_runtime.exe
+  if (process.resourcesPath) {
+    const p = join(process.resourcesPath, 'bun_runtime.exe');
+    if (existsSync(p)) {
+      console.error(`[resolveBunPath] step3 found: ${p}`);
+      logToFile('resolveBunPath step3 found:', p);
+      return p;
+    }
+    console.error(`[resolveBunPath] step3 missing: ${p} (resourcesPath=${process.resourcesPath})`);
+    logToFile('resolveBunPath step3 missing:', p, 'resourcesPath=', process.resourcesPath);
+  } else {
+    console.error(`[resolveBunPath] step3 skipped — process.resourcesPath is undefined`);
+    logToFile('resolveBunPath step3 skipped — process.resourcesPath is undefined');
+  }
+
+  // 4. System PATH fallback
+  console.error(`[resolveBunPath] step4 fallback to system PATH: bun`);
+  logToFile('resolveBunPath step4 fallback to system PATH: bun');
+  return 'bun';
+}
+
 function normalizeAnthropicBaseURL(baseURL: string): string {
   return baseURL.replace(/\/chat\/completions\/?$/, '').replace(/\/v1\/?$/, '');
 }
 
 export function resolveEnginePath(): string {
+  // Packaged mode: extraResources (outside asar, accessible by subprocess)
+  if (process.resourcesPath) {
+    const bundledCli = join(process.resourcesPath, 'opencc-dist', 'cli.js');
+    if (existsSync(bundledCli)) {
+      console.error(`[resolveEnginePath] step1 (packaged) found: ${bundledCli}`);
+      logToFile('resolveEnginePath step1 (packaged) found:', bundledCli);
+      return bundledCli;
+    }
+    console.error(`[resolveEnginePath] step1 missing: ${bundledCli}`);
+    logToFile('resolveEnginePath step1 missing:', bundledCli);
+  } else {
+    console.error(`[resolveEnginePath] step1 skipped — process.resourcesPath is undefined`);
+    logToFile('resolveEnginePath step1 skipped — process.resourcesPath is undefined');
+  }
+
+  // Dev mode: bundled next to compiled main.js
   const __dirname = dirname(fileURLToPath(import.meta.url));
   const installed = join(__dirname, 'cli.js');
-  if (existsSync(installed)) return installed;
-  return join(__dirname, '..', 'packages', 'opencc', 'dist', 'cli.js');
+  if (existsSync(installed)) {
+    console.error(`[resolveEnginePath] step2 (dev) found: ${installed}`);
+    logToFile('resolveEnginePath step2 (dev) found:', installed);
+    return installed;
+  }
+
+  // Monorepo dev: packages/opencc/dist/cli.js
+  const monorepo = join(__dirname, '..', 'packages', 'opencc', 'dist', 'cli.js');
+  console.error(`[resolveEnginePath] step3 (monorepo) fallback: ${monorepo}`);
+  logToFile('resolveEnginePath step3 (monorepo) fallback:', monorepo);
+  return monorepo;
 }

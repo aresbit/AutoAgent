@@ -35,10 +35,15 @@ echo "  client/:    $(du -sh "${DESKTOP_DIST_DIR}/client" | cut -f1)"
 # Step 3: Copy bun runtime binary into the package
 echo "[3/7] Staging bun runtime..."
 BUN_BIN="$(command -v bun)"
+RG_BIN="${RG_BIN:-$(command -v rg)}"
 mkdir -p "${PACKAGING_DIR}/usr/lib/autoagent"
+mkdir -p "${PACKAGING_DIR}/usr/bin"
 cp "${BUN_BIN}" "${PACKAGING_DIR}/usr/lib/autoagent/bun"
+cp "${RG_BIN}" "${PACKAGING_DIR}/usr/bin/rg"
 strip "${PACKAGING_DIR}/usr/lib/autoagent/bun" 2>/dev/null || true
+strip "${PACKAGING_DIR}/usr/bin/rg" 2>/dev/null || true
 echo "  bun: $(du -h "${PACKAGING_DIR}/usr/lib/autoagent/bun" | cut -f1)"
+echo "  rg:  $(du -h "${PACKAGING_DIR}/usr/bin/rg" | cut -f1)"
 
 # OpenCC is launched as `bun cli.js` inside the desktop app, so its bundled-mode
 # ripgrep dispatch is not available. Keep rg next to cli.js for deterministic

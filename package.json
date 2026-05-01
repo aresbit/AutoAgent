@@ -1,9 +1,74 @@
 {
   "name": "autoagent",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
+  "description": "AutoAgent Desktop - AI Agent for coding automation",
+  "author": "AutoAgent Team",
   "main": "dist/main.js",
+  "build": {
+    "appId": "com.autoagent.desktop",
+    "productName": "AutoAgent",
+    "directories": {
+      "output": "release"
+    },
+    "afterPack": "scripts/after-pack-win.cjs",
+    "files": [
+      "dist/**/*",
+      "package.json",
+      "packages/opencc/dist/**/*",
+      "packages/opencc/package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "build-resources/bun_runtime.exe",
+        "to": "bun_runtime.exe"
+      },
+      {
+        "from": "packages/opencc/dist",
+        "to": "opencc-dist"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        },
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "assets/icon.ico",
+      "extraResources": [
+        {
+          "from": "build-resources/rg.exe",
+          "to": "rg.exe"
+        },
+        {
+          "from": "assets/icon.ico",
+          "to": "icon.ico"
+        },
+        {
+          "from": "assets/icon.png",
+          "to": "icon.png"
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-portable-x64.${ext}"
+    },
+    "extraMetadata": {
+      "main": "dist/main.js"
+    }
+  },
   "workspaces": [
     "packages/*",
     "packages/opencc/packages/*",
@@ -11,7 +76,8 @@
   ],
   "scripts": {
     "build": "bun run build:desktop",
-    "build:desktop": "bun build src/main.ts --outdir dist --target node --external electron --external @anthropic-ai/sdk && bun build src/preload.ts --outdir dist --target node --external electron && mv dist/preload.js dist/preload.mjs && rm -rf dist/client && mkdir -p dist/client && bun build src/renderer/app.tsx --outdir dist/client --target browser --format esm && cp src/renderer/index.html src/renderer/style.css dist/client/ && cp assets/icon.png dist/icon.png",
+    "build:desktop": "bun scripts/build-desktop.mjs",
+    "package:win:local": "node scripts/package-win-local.mjs",
     "dev": "bun run build:desktop && electron --no-sandbox .",
     "start": "bun run build:desktop && electron --no-sandbox ."
   },
@@ -27,6 +93,7 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "electron": "^41.3.0",
+    "electron-builder": "^26.8.1",
     "typescript": "^5.8.3"
   }
 }
