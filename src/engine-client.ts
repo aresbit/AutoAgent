@@ -7,7 +7,7 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, appendFileSync, mkdirSync } from 'node:fs';
+import { existsSync, appendFileSync, copyFileSync, mkdirSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -41,6 +41,23 @@ function resolveBundledRipgrepPath(): string | null {
   }
 
   return null;
+}
+
+function ensurePackagedEnginePath(): string {
+  const bundledCli = process.resourcesPath ? join(process.resourcesPath, 'opencc-dist', 'cli.js') : '';
+  if (!bundledCli || !existsSync(bundledCli)) return bundledCli;
+
+  const stagedDir = join(tmpdir(), 'autoagent-userdata', 'opencc-dist');
+  const stagedCli = join(stagedDir, 'cli.js');
+
+  try {
+    mkdirSync(stagedDir, { recursive: true });
+    if (!existsSync(stagedCli)) copyFileSync(bundledCli, stagedCli);
+    return stagedCli;
+  } catch (error) {
+    logToFile('ensurePackagedEnginePath failed:', error);
+    return bundledCli;
+  }
 }
 
 function resolveSpawnCwd(cwd?: string): string {
@@ -451,9 +468,11 @@ export function resolveEnginePath(): string {
   if (process.resourcesPath) {
     const bundledCli = join(process.resourcesPath, 'opencc-dist', 'cli.js');
     if (existsSync(bundledCli)) {
+      const stagedCli = ensurePackagedEnginePath();
       console.error(`[resolveEnginePath] step1 (packaged) found: ${bundledCli}`);
       logToFile('resolveEnginePath step1 (packaged) found:', bundledCli);
-      return bundledCli;
+      logToFile('resolveEnginePath step1 staged:', stagedCli);
+      return stagedCli;
     }
     console.error(`[resolveEnginePath] step1 missing: ${bundledCli}`);
     logToFile('resolveEnginePath step1 missing:', bundledCli);

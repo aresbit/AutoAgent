@@ -60,7 +60,8 @@
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true
+      "createDesktopShortcut": true,
+      "include": "scripts/installer.nsh"
     },
     "portable": {
       "artifactName": "${productName}-${version}-portable-x64.${ext}"

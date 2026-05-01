@@ -19,6 +19,7 @@ import { readdir } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, extname, isAbsolute, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import { EngineClient, resolveEnginePath } from './engine-client.js';
 import { BUILTIN_PROVIDERS, CUSTOM_PROVIDERS, resolveProviderEndpoint } from './providers/config.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -183,6 +184,76 @@ function resolveRuntimeAssetPath(name: string): string {
   }
 
   return candidates[0] || name;
+}
+
+function windowsShortcutCandidates(): string[] {
+  const appData = process.env.APPDATA || '';
+  const userProfile = process.env.USERPROFILE || homedir();
+  const programData = process.env.ProgramData || 'C:\\ProgramData';
+  return [
+    join(appData, 'Microsoft', 'Windows', 'Start Menu', 'Programs', `${PRODUCT_NAME}.lnk`),
+    join(programData, 'Microsoft', 'Windows', 'Start Menu', 'Programs', `${PRODUCT_NAME}.lnk`),
+    join(userProfile, 'Desktop', `${PRODUCT_NAME}.lnk`),
+    join(appData, 'Microsoft', 'Internet Explorer', 'Quick Launch', 'User Pinned', 'TaskBar', `${PRODUCT_NAME}.lnk`),
+  ];
+}
+
+function forceWriteWindowsShortcut(
+  shortcutPath: string,
+  executablePath: string,
+  iconPath: string,
+  workingDirectory: string,
+  description: string,
+): void {
+  const escapedPath = shortcutPath.replace(/\\/g, '\\\\');
+  const escapedExe = executablePath.replace(/\\/g, '\\\\');
+  const escapedIcon = iconPath.replace(/\\/g, '\\\\');
+  const escapedCwd = workingDirectory.replace(/\\/g, '\\\\');
+  const escapedDesc = description.replace(/"/g, '""');
+  spawnSync('powershell.exe', [
+    '-NoProfile',
+    '-Command',
+    [
+      '$shell = New-Object -ComObject WScript.Shell',
+      `$lnk = $shell.CreateShortcut("${escapedPath}")`,
+      `$lnk.TargetPath = "${escapedExe}"`,
+      '$lnk.Arguments = ""',
+      `$lnk.IconLocation = "${escapedIcon},0"`,
+      `$lnk.WorkingDirectory = "${escapedCwd}"`,
+      `$lnk.Description = "${escapedDesc}"`,
+      '$lnk.Save()',
+    ].join('; '),
+  ], { windowsHide: true });
+}
+
+function repairWindowsShortcuts(): void {
+  if (process.platform !== 'win32' || !app.isPackaged) return;
+
+  const iconPath = resolveRuntimeAssetPath('icon.ico');
+  const executablePath = process.execPath;
+  const workingDirectory = dirname(executablePath);
+  const description = `${PRODUCT_NAME} Desktop - AI Agent for coding automation`;
+
+  for (const shortcutPath of windowsShortcutCandidates()) {
+    const isPinnedTaskbarShortcut = shortcutPath.includes(join('User Pinned', 'TaskBar'));
+    if (isPinnedTaskbarShortcut && !existsSync(shortcutPath)) continue;
+    try {
+      const operation = existsSync(shortcutPath) ? 'update' : 'create';
+      const updated = shell.writeShortcutLink(shortcutPath, operation, {
+        target: executablePath,
+        cwd: workingDirectory,
+        icon: iconPath,
+        iconIndex: 0,
+        appUserModelId: WINDOWS_APP_ID,
+        description,
+      });
+      if (!updated) throw new Error('shell.writeShortcutLink returned false');
+      forceWriteWindowsShortcut(shortcutPath, executablePath, iconPath, workingDirectory, description);
+    } catch (error) {
+      console.error('[shortcut] shell.writeShortcutLink failed, falling back to WSH:', shortcutPath, error);
+      forceWriteWindowsShortcut(shortcutPath, executablePath, iconPath, workingDirectory, description);
+    }
+  }
 }
 
 function defaultSettings(): DesktopSettings {
@@ -909,6 +980,7 @@ function createWavBuffer(samples: number[], sampleRate = 44100): Buffer {
 
 async function createWindow(): Promise<void> {
   const iconPath = resolveRuntimeAssetPath(process.platform === 'win32' ? 'icon.ico' : 'icon.png');
+  const runtimeWindowIconPath = resolveRuntimeAssetPath('icon.png');
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 870,
@@ -935,7 +1007,7 @@ async function createWindow(): Promise<void> {
   });
   perfMark('BrowserWindow created');
   if (process.platform === 'win32') {
-    mainWindow.setIcon(nativeImage.createFromPath(iconPath));
+    mainWindow.setIcon(nativeImage.createFromPath(runtimeWindowIconPath));
   }
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -1517,6 +1589,7 @@ if (!gotLock) {
 
 app.whenReady().then(async () => {
   perfMark('app.ready fired');
+  repairWindowsShortcuts();
   Menu.setApplicationMenu(null);
   registerElectronFetchIpc(ipcMain);
   registerElectronExecIpc(ipcMain);
