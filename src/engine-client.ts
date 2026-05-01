@@ -43,6 +43,11 @@ function resolveBundledRipgrepPath(): string | null {
   return null;
 }
 
+function resolveSpawnCwd(cwd?: string): string {
+  if (cwd && existsSync(cwd)) return cwd;
+  return process.cwd();
+}
+
 export interface StreamEvent {
   type: string;
   event?: any;
@@ -301,7 +306,7 @@ export class EngineClient {
     }
 
     this.proc = spawn(bunExe, args, {
-      cwd: params.cwd || process.cwd(),
+      cwd: resolveSpawnCwd(params.cwd),
       stdio: ['pipe', 'pipe', 'pipe'],
       env,
     });
@@ -313,7 +318,7 @@ export class EngineClient {
     logToFile('ANTHROPIC_API_KEY set=', !!env.ANTHROPIC_API_KEY, 'len=', (env.ANTHROPIC_API_KEY || '').length);
     logToFile('ANTHROPIC_BASE_URL=', env.ANTHROPIC_BASE_URL);
     logToFile('args=', args);
-    logToFile('CWD=', params.cwd || process.cwd());
+    logToFile('CWD=', resolveSpawnCwd(params.cwd));
     console.error(`[engine] Spawning: bun=${bunExe} cli=${this.enginePath}`);
 
     this.proc.on('error', (err: Error) => {

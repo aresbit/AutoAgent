@@ -167,6 +167,11 @@ function userDataPath(...parts: string[]): string {
   return join(app.getPath('userData'), ...parts);
 }
 
+function resolveDefaultWorkspaceCwd(): string {
+  if (!app.isPackaged) return process.cwd() || homedir();
+  return homedir();
+}
+
 function resolveRuntimeAssetPath(name: string): string {
   const candidates = [
     process.resourcesPath ? join(process.resourcesPath, name) : '',
@@ -187,7 +192,7 @@ function defaultSettings(): DesktopSettings {
     model: process.env.CODEANY_MODEL || 'deepseek-v4-pro[1m]',
     apiKey: process.env.CODEANY_API_KEY || '',
     baseURL: process.env.CODEANY_BASE_URL || 'https://api.deepseek.com/anthropic',
-    cwd: process.cwd() || homedir(),
+    cwd: resolveDefaultWorkspaceCwd(),
     permissionMode: 'bypassPermissions',
     maxTurns: 1024,
     allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'WebFetch', 'WebSearch', 'TodoWrite'],
@@ -225,6 +230,7 @@ function normalizeSettings(input: Partial<DesktopSettings>): DesktopSettings {
 
   if (!base.baseURL && endpoint.url) base.baseURL = endpoint.url;
   base.apiType = base.providerId === 'anthropic' ? 'anthropic-messages' : base.apiType || inferApiType(base.model);
+  if (!base.cwd || !existsSync(base.cwd)) base.cwd = resolveDefaultWorkspaceCwd();
   base.maxTurns = Math.max(1, Number(base.maxTurns) || 1024);
   base.allowedTools = Array.isArray(base.allowedTools) ? base.allowedTools : defaultSettings().allowedTools;
   return base;
