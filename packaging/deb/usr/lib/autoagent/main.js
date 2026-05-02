@@ -6984,7 +6984,6 @@ import {
   ipcMain,
   nativeImage,
   nativeTheme,
-  net as net2,
   protocol,
   shell,
   systemPreferences
@@ -6992,17 +6991,169 @@ import {
 import { copyFile, mkdir, readFile as readFile2, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync as existsSync2 } from "node:fs";
 import { readdir } from "node:fs/promises";
-import { homedir as homedir2 } from "node:os";
+import { createServer } from "node:http";
+import { homedir as homedir2, tmpdir as tmpdir2 } from "node:os";
 import { dirname as dirname2, extname, isAbsolute, join as join3, relative } from "node:path";
-import { fileURLToPath as fileURLToPath2, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 
 // src/engine-client.ts
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import { createInterface } from "node:readline";
+import { appendFileSync, existsSync, mkdirSync } from "node:fs";
+import { tmpdir, homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { homedir } from "node:os";
+import { createInterface } from "node:readline";
+var LOG_FILE = join(tmpdir(), "autoagent-userdata", "engine.log");
+function ensureLogDir() {
+  try {
+    mkdirSync(dirname(LOG_FILE), { recursive: true });
+  } catch {}
+}
+function logToFile(...args) {
+  try {
+    ensureLogDir();
+    const ts = new Date().toISOString().replace("T", " ").slice(0, 23);
+    const line = args.map((arg) => typeof arg === "string" ? arg : JSON.stringify(arg)).join(" ");
+    appendFileSync(LOG_FILE, `[${ts}] ${line}
+`);
+  } catch {}
+}
+function resolveBundledRipgrepPath() {
+  const candidates = [
+    process.env.AUTOAGENT_RG_PATH,
+    process.resourcesPath ? join(process.resourcesPath, "rg.exe") : null
+  ].filter((value) => Boolean(value));
+  for (const candidate of candidates) {
+    if (existsSync(candidate))
+      return candidate;
+  }
+  return null;
+}
+function resolveSpawnCwd(cwd) {
+  if (cwd && existsSync(cwd))
+    return cwd;
+  return process.cwd();
+}
+function tokenizeCliArgs(value) {
+  if (!value?.trim())
+    return [];
+  const matches = value.match(/"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)'|[^\s]+/g) || [];
+  return matches.map((token) => {
+    if (token.startsWith('"') && token.endsWith('"') || token.startsWith("'") && token.endsWith("'")) {
+      return token.slice(1, -1);
+    }
+    return token;
+  });
+}
+function splitCommand(command) {
+  const tokens = tokenizeCliArgs(command);
+  return {
+    executable: tokens[0] || "opencc",
+    args: tokens.slice(1)
+  };
+}
+function shouldSpawnViaShell(executable) {
+  if (process.platform !== "win32")
+    return false;
+  return /\.(bat|cmd)$/i.test(executable);
+}
+function buildSpawnCommand(split, args) {
+  if (!shouldSpawnViaShell(split.executable)) {
+    return {
+      command: split.executable,
+      args: [...split.args, ...args],
+      shell: false
+    };
+  }
+  return {
+    command: process.env.ComSpec || "cmd.exe",
+    args: ["/d", "/c", split.executable, ...split.args, ...args],
+    shell: false
+  };
+}
+var supportedFlagsCache = new Map;
+function pushOption(args, flag, value) {
+  if (value === undefined || value === null || value === "")
+    return;
+  args.push(flag, String(value));
+}
+function pushListOption(args, flag, values) {
+  if (!values?.length)
+    return;
+  args.push(flag, values.join(","));
+}
+function parseSupportedFlags(helpText) {
+  const supported = new Set;
+  for (const line of helpText.split(/\r?\n/)) {
+    const matches = line.match(/--[a-zA-Z0-9][a-zA-Z0-9-]*/g);
+    if (!matches)
+      continue;
+    for (const flag of matches)
+      supported.add(flag);
+  }
+  return supported;
+}
+async function detectSupportedFlags(split, cwd) {
+  const cacheKey = [split.executable, ...split.args].join("\x00");
+  const cached = supportedFlagsCache.get(cacheKey);
+  if (cached)
+    return cached;
+  const spawnCommand = buildSpawnCommand(split, ["--help"]);
+  const result = await new Promise((resolve) => {
+    const child = spawn(spawnCommand.command, spawnCommand.args, {
+      cwd: resolveSpawnCwd(cwd),
+      stdio: ["ignore", "pipe", "pipe"],
+      shell: spawnCommand.shell,
+      env: process.env
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", () => resolve({ code: null, stdout, stderr }));
+    child.on("close", (code) => resolve({ code, stdout, stderr }));
+  });
+  const text = `${result.stdout}
+${result.stderr}`.trim();
+  if (!text) {
+    logToFile("flag detection failed: empty help output for", split.executable);
+    return null;
+  }
+  const parsed = parseSupportedFlags(text);
+  supportedFlagsCache.set(cacheKey, parsed);
+  logToFile("detected supported flags count=", parsed.size, "for", split.executable);
+  return parsed;
+}
+function pushSupportedOption(args, supportedFlags, flag, value) {
+  if (supportedFlags && !supportedFlags.has(flag))
+    return;
+  pushOption(args, flag, value);
+}
+function pushSupportedListOption(args, supportedFlags, flag, values) {
+  if (supportedFlags && !supportedFlags.has(flag))
+    return;
+  pushListOption(args, flag, values);
+}
+function pushSupportedBoolean(args, supportedFlags, flag, enabled) {
+  if (!enabled)
+    return;
+  if (supportedFlags && !supportedFlags.has(flag))
+    return;
+  args.push(flag);
+}
+function resolveFallbackModel(params) {
+  const fallback = params.fallbackModel?.trim();
+  const model = params.model?.trim();
+  if (!fallback)
+    return;
+  if (model && fallback === model)
+    return;
+  return fallback;
+}
 var DEFAULT_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "WebFetch", "WebSearch", "TodoWrite"];
 function extractPrompt(params) {
   const msgs = params.messages || [];
@@ -7055,18 +7206,11 @@ function mapCliMessage(message) {
 }
 
 class EngineClient {
-  enginePath;
   proc = null;
   listeners = new Set;
   stderrBuffer = "";
-  configKey = null;
-  constructor(enginePath) {
-    this.enginePath = enginePath;
-  }
-  start() {
-    if (!existsSync(this.enginePath))
-      throw new Error(`Engine not found: ${this.enginePath}`);
-  }
+  _onSpawnError = null;
+  start() {}
   async waitReady() {}
   async stop() {
     if (!this.proc || this.proc.exitCode !== null)
@@ -7082,21 +7226,42 @@ class EngineClient {
     const prompt = extractPrompt(params);
     if (!prompt.trim())
       throw new Error("Empty prompt");
-    this.ensureCliProcess(params);
+    logToFile("query() called, prompt_len=", prompt.length, "resumeSessionId=", params.resumeSessionId || "none");
+    logToFile("model=", params.model, "maxTurns=", params.maxTurns);
     const eventQueue = [];
     let resolveNext = null;
     let terminal = false;
+    const prevHandler = this._onSpawnError;
+    this._onSpawnError = (err) => {
+      eventQueue.push({ type: "error", error: `Engine spawn failed: ${err.message}` });
+      terminal = true;
+      resolveNext?.();
+    };
+    await this.spawnCliProcess(params);
+    this._onSpawnError = prevHandler;
+    let sawResult = false;
+    const proc = this.proc;
     const listener = (message) => {
       this.handleControlRequest(message);
       const mapped = mapCliMessage(message);
       if (!mapped)
         return;
       eventQueue.push(mapped);
+      if (mapped.type === "result")
+        sawResult = true;
       if (mapped.type === "result" || mapped.type === "error" || mapped.type === "interrupted")
         terminal = true;
       resolveNext?.();
     };
     this.listeners.add(listener);
+    const onClose = (code) => {
+      if (sawResult || terminal)
+        return;
+      eventQueue.push({ type: "error", error: `Engine process exited before result (code ${code ?? "unknown"})` });
+      terminal = true;
+      resolveNext?.();
+    };
+    proc?.once("close", onClose);
     const onAbort = () => {
       eventQueue.push({ type: "interrupted", event: { aborted: true } });
       terminal = true;
@@ -7110,9 +7275,13 @@ class EngineClient {
     }
     try {
       this.writeUserMessage(prompt);
+      this.proc?.stdin?.end();
+      logToFile("User message written, stdin closed");
       while (true) {
         while (eventQueue.length > 0) {
           const event = eventQueue.shift();
+          if (event.type !== "text_delta")
+            logToFile("yield event type=", event.type);
           yield event;
           if (event.type === "result" || event.type === "error" || event.type === "interrupted")
             return;
@@ -7125,45 +7294,75 @@ class EngineClient {
         resolveNext = null;
       }
     } finally {
+      logToFile("query() finally block - cleaning up");
       this.listeners.delete(listener);
+      proc?.off("close", onClose);
       if (params.signal)
         params.signal.removeEventListener("abort", onAbort);
+      await this.stop();
     }
   }
-  ensureCliProcess(params) {
-    const configKey = this.makeConfigKey(params);
-    if (this.proc && this.proc.exitCode === null && this.configKey === configKey)
-      return;
+  async spawnCliProcess(params) {
     if (this.proc && this.proc.exitCode === null)
       this.proc.kill("SIGTERM");
-    const bunExe = existsSync(join(dirname(this.enginePath), "bun")) ? join(dirname(this.enginePath), "bun") : "bun";
+    const split = splitCommand(params.claudeCommand);
+    const supportedFlags = await detectSupportedFlags(split, params.cwd);
     const args = [
-      this.enginePath,
       "-p",
       "--input-format",
       "stream-json",
       "--output-format",
-      "stream-json",
-      "--verbose",
-      "--include-partial-messages",
-      "--dangerously-skip-permissions",
-      "--model",
-      params.model || "deepseek-v4-pro[1m]",
-      "--max-turns",
-      String(params.maxTurns || 1024),
-      "--permission-mode",
-      "bypassPermissions"
+      "stream-json"
     ];
-    const allowedTools = params.allowedTools?.length ? params.allowedTools : DEFAULT_TOOLS;
-    args.push("--allowedTools", allowedTools.join(","));
-    if (params.appendSystemPrompt?.trim())
-      args.push("--append-system-prompt", params.appendSystemPrompt);
+    pushSupportedBoolean(args, supportedFlags, "--verbose", params.verbose !== false);
+    pushSupportedBoolean(args, supportedFlags, "--include-partial-messages", params.includePartialMessages !== false);
+    pushSupportedBoolean(args, supportedFlags, "--include-hook-events", params.includeHookEvents);
+    pushSupportedBoolean(args, supportedFlags, "--debug", params.debug);
+    pushSupportedOption(args, supportedFlags, "--debug-file", params.debugFile);
+    pushSupportedOption(args, supportedFlags, "--thinking", params.thinkingMode);
+    pushSupportedOption(args, supportedFlags, "--max-thinking-tokens", params.maxThinkingTokens);
+    pushSupportedOption(args, supportedFlags, "--thinking-display", params.thinkingDisplay);
+    pushSupportedOption(args, supportedFlags, "--effort", params.effort);
+    pushSupportedOption(args, supportedFlags, "--max-budget-usd", params.maxBudgetUsd);
+    pushSupportedOption(args, supportedFlags, "--task-budget", params.taskBudget);
+    pushSupportedOption(args, supportedFlags, "--model", params.model || "sonnet");
+    pushSupportedOption(args, supportedFlags, "--fallback-model", resolveFallbackModel(params));
+    pushSupportedOption(args, supportedFlags, "--agent", params.agentName);
+    pushSupportedOption(args, supportedFlags, "--max-turns", params.maxTurns || 1024);
+    pushSupportedOption(args, supportedFlags, "--json-schema", params.jsonSchema);
+    pushSupportedOption(args, supportedFlags, "--permission-mode", params.permissionMode || "default");
+    pushSupportedOption(args, supportedFlags, "--permission-prompt-tool", params.permissionPromptTool);
+    pushSupportedBoolean(args, supportedFlags, "--dangerously-skip-permissions", params.permissionMode === "bypassPermissions");
+    pushSupportedBoolean(args, supportedFlags, "--allow-dangerously-skip-permissions", params.allowDangerouslySkipPermissions);
+    pushSupportedListOption(args, supportedFlags, "--allowedTools", params.allowedTools?.length ? params.allowedTools : DEFAULT_TOOLS);
+    pushSupportedListOption(args, supportedFlags, "--disallowedTools", params.disallowedTools);
+    pushSupportedOption(args, supportedFlags, "--tools", params.tools);
+    pushSupportedListOption(args, supportedFlags, "--betas", params.betas);
+    pushSupportedListOption(args, supportedFlags, "--mcp-config", params.mcpConfig);
+    pushSupportedOption(args, supportedFlags, "--setting-sources", params.settingSources);
+    pushSupportedListOption(args, supportedFlags, "--add-dir", params.addDirs);
+    pushSupportedOption(args, supportedFlags, "--plugin-dir", params.pluginDir);
+    pushSupportedOption(args, supportedFlags, "--managed-settings", params.managedSettings);
+    pushSupportedListOption(args, supportedFlags, "--channels", params.channels);
+    pushSupportedOption(args, supportedFlags, "--session-id", params.sessionId);
+    pushSupportedBoolean(args, supportedFlags, "--fork-session", params.forkSession);
+    pushSupportedBoolean(args, supportedFlags, "--continue", params.continueSession && !params.resumeSessionId);
+    pushSupportedOption(args, supportedFlags, "--resume", params.resumeSessionId);
+    pushSupportedOption(args, supportedFlags, "--resume-session-at", params.resumeSessionAt);
+    pushSupportedBoolean(args, supportedFlags, "--no-session-persistence", params.noSessionPersistence);
+    pushSupportedBoolean(args, supportedFlags, "--strict-mcp-config", params.strictMcpConfig);
+    pushSupportedBoolean(args, supportedFlags, "--assistant", params.assistant);
+    pushSupportedOption(args, supportedFlags, "--append-system-prompt", params.appendSystemPrompt?.trim() ? params.appendSystemPrompt : "");
+    args.push(...tokenizeCliArgs(params.extraCliArgs));
     const env = {
       ...Object.fromEntries(Object.entries(process.env).filter((entry) => typeof entry[1] === "string")),
-      CLAUDE_CONFIG_DIR: join(homedir(), ".autoagent"),
       CLAUDE_CODE_ENTRYPOINT: "claude-desktop",
-      CLAUDE_CODE_INCLUDE_PARTIAL_MESSAGES: "1"
+      CLAUDE_CODE_INCLUDE_PARTIAL_MESSAGES: "1",
+      CLAUDE_CONFIG_DIR: params.claudeConfigDir?.trim() || join(homedir(), ".autoagent")
     };
+    const bundledRipgrep = resolveBundledRipgrepPath();
+    if (bundledRipgrep)
+      env.AUTOAGENT_RG_PATH = bundledRipgrep;
     if (params.apiKey)
       env.ANTHROPIC_API_KEY = params.apiKey;
     if (params.baseURL)
@@ -7172,28 +7371,46 @@ class EngineClient {
       env.ANTHROPIC_MODEL = params.model;
       env.ANTHROPIC_CUSTOM_MODEL_OPTION = params.model;
     }
-    this.proc = spawn(bunExe, args, {
-      cwd: params.cwd || process.cwd(),
+    const spawnCommand = buildSpawnCommand(split, args);
+    this.proc = spawn(spawnCommand.command, spawnCommand.args, {
+      cwd: resolveSpawnCwd(params.cwd),
       stdio: ["pipe", "pipe", "pipe"],
-      env
+      env,
+      shell: spawnCommand.shell
     });
-    this.configKey = configKey;
     this.stderrBuffer = "";
+    logToFile("Spawning opencc command=", split.executable);
+    logToFile("CLAUDE_CONFIG_DIR=", env.CLAUDE_CONFIG_DIR);
+    logToFile("ANTHROPIC_API_KEY set=", !!env.ANTHROPIC_API_KEY, "len=", (env.ANTHROPIC_API_KEY || "").length);
+    logToFile("ANTHROPIC_BASE_URL=", env.ANTHROPIC_BASE_URL);
+    logToFile("spawnCommand=", spawnCommand.command);
+    logToFile("spawnShell=", spawnCommand.shell);
+    logToFile("spawnArgs=", spawnCommand.args);
+    logToFile("supportedFlagsDetected=", supportedFlags ? [...supportedFlags].sort().join(",") : "unknown");
+    logToFile("args=", args);
+    logToFile("CWD=", resolveSpawnCwd(params.cwd));
+    console.error(`[engine] Spawning: ${spawnCommand.command} ${spawnCommand.args.join(" ")}`);
+    this.proc.on("error", (err) => {
+      console.error(`[engine] Process spawn error: ${err.message}`);
+      logToFile("Process spawn error:", err.message);
+      this._onSpawnError?.(err);
+    });
     this.proc.stderr?.on("data", (data) => {
-      this.stderrBuffer += data.toString();
+      const text = data.toString();
+      this.stderrBuffer += text;
       if (this.stderrBuffer.length > 8192)
         this.stderrBuffer = this.stderrBuffer.slice(-8192);
-      console.error("[engine:cli]", data.toString().trimEnd());
+      console.error("[engine:cli]", text.trimEnd());
+      logToFile("[stderr]", text.trimEnd());
     });
     this.proc.on("close", (code) => {
       console.error(`[engine] cli process exited with code ${code}`);
-      this.configKey = null;
-      for (const listener of this.listeners)
-        listener({ type: "error", is_error: true, result: `Engine process exited (code ${code})` });
+      logToFile("cli process exited with code", code);
     });
     const rl = createInterface({ input: this.proc.stdout });
     this.readLoop(rl);
-    console.error(`[engine] cli stream-json process spawned (pid: ${this.proc.pid})`);
+    console.error(`[engine] claude stream-json process spawned (pid: ${this.proc.pid})`);
+    logToFile("claude stream-json process spawned (pid:", this.proc.pid, ")");
   }
   writeUserMessage(prompt) {
     if (!this.proc?.stdin)
@@ -7242,29 +7459,9 @@ class EngineClient {
       }
     }
   }
-  makeConfigKey(params) {
-    return JSON.stringify({
-      model: params.model || "deepseek-v4-pro[1m]",
-      cwd: params.cwd || process.cwd(),
-      maxTurns: params.maxTurns || 1024,
-      appendSystemPrompt: params.appendSystemPrompt || "",
-      apiKey: params.apiKey || "",
-      baseURL: params.baseURL || "",
-      providerId: params.providerId || "deepseek",
-      apiType: params.apiType || "anthropic-messages",
-      allowedTools: params.allowedTools || DEFAULT_TOOLS
-    });
-  }
 }
 function normalizeAnthropicBaseURL(baseURL) {
   return baseURL.replace(/\/chat\/completions\/?$/, "").replace(/\/v1\/?$/, "");
-}
-function resolveEnginePath() {
-  const __dirname2 = dirname(fileURLToPath(import.meta.url));
-  const installed = join(__dirname2, "cli.js");
-  if (existsSync(installed))
-    return installed;
-  return join(__dirname2, "..", "packages", "opencc", "dist", "cli.js");
 }
 
 // src/providers/config.ts
@@ -17007,29 +17204,43 @@ function perfMark(label) {
   console.error(`[perf] +${(now - t0).toFixed(0)}ms (Δ${(now - tPrev).toFixed(0)}ms) ${label}`);
   tPrev = now;
 }
+var PRODUCT_NAME = "AutoAgent";
+var LINUX_DESKTOP_NAME = "autoagent";
+var WINDOWS_APP_ID = "com.autoagent.desktop";
 if (process.platform === "linux") {
   app.commandLine.appendSwitch("in-process-gpu");
 }
-app.setName("autoagent");
-if (process.platform === "linux")
-  app.setDesktopName?.("autoagent");
-var __filename2 = fileURLToPath2(import.meta.url);
+if (process.platform === "win32") {
+  app.disableHardwareAcceleration();
+  app.commandLine.appendSwitch("disable-gpu");
+  app.commandLine.appendSwitch("disable-software-rasterizer");
+  app.commandLine.appendSwitch("disable-gpu-shader-disk-cache");
+  app.commandLine.appendSwitch("disable-gpu-program-cache");
+  app.commandLine.appendSwitch("disk-cache-dir", join3(tmpdir2(), "autoagent-cache"));
+  app.setPath("userData", join3(tmpdir2(), "autoagent-userdata"));
+}
+app.setName(process.platform === "linux" ? LINUX_DESKTOP_NAME : PRODUCT_NAME);
+if (process.platform === "linux") {
+  app.setDesktopName?.(LINUX_DESKTOP_NAME);
+}
+if (process.platform === "win32")
+  app.setAppUserModelId(WINDOWS_APP_ID);
+var __filename2 = fileURLToPath(import.meta.url);
 var __dirname2 = dirname2(__filename2);
 var clientDir = join3(__dirname2, "client");
 perfMark("module init done");
 var mainWindow = null;
 var activeRuns = new Map;
 var sqliteDatabase = null;
-var engine = null;
+var rendererServerPromise = null;
+var rendererServer = null;
 async function getEngine(settings) {
   if (settings)
     await syncEngineConfig(settings);
-  if (!engine) {
-    engine = new EngineClient(resolveEnginePath());
-    engine.start();
-    await engine.waitReady();
-  }
-  return engine;
+  const next = new EngineClient;
+  next.start();
+  await next.waitReady();
+  return next;
 }
 protocol.registerSchemesAsPrivileged([
   {
@@ -17047,17 +17258,352 @@ protocol.registerSchemesAsPrivileged([
 function userDataPath(...parts) {
   return join3(app.getPath("userData"), ...parts);
 }
+function slugify2(value) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "artifact";
+}
+function sanitizeTitle(value, fallback = "Artifact") {
+  return (value || "").trim() || fallback;
+}
+function sanitizeDescription(value) {
+  return (value || "").trim();
+}
+function artifactDirForId(id, title) {
+  return userDataPath("artifacts", `${slugify2(title)}-${id.slice(0, 8)}`);
+}
+function artifactMetadataPath(dir) {
+  return join3(dir, "artifact.json");
+}
+async function writeArtifactMetadata(record3) {
+  await writeFile(artifactMetadataPath(dirname2(record3.path)), JSON.stringify(record3, null, 2) + `
+`, "utf8");
+}
+async function readArtifactMetadata(dir) {
+  try {
+    const raw = await readFile2(artifactMetadataPath(dir), "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object")
+      return null;
+    if (!parsed.id || !parsed.path || !parsed.title || typeof parsed.createdAt !== "number")
+      return null;
+    return {
+      id: parsed.id,
+      title: sanitizeTitle(parsed.title),
+      description: sanitizeDescription(parsed.description),
+      path: parsed.path,
+      createdAt: parsed.createdAt,
+      updatedAt: typeof parsed.updatedAt === "number" ? parsed.updatedAt : parsed.createdAt,
+      lastOpenedAt: typeof parsed.lastOpenedAt === "number" ? parsed.lastOpenedAt : null
+    };
+  } catch {
+    return null;
+  }
+}
+function artifactHtmlShell(title, body, description = "") {
+  const hasHtmlTag = /<html[\s>]/i.test(body);
+  if (hasHtmlTag)
+    return body;
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${title.replace(/[<&>"]/g, "")}</title>
+  ${description ? `<meta name="description" content="${description.replace(/[<&>"]/g, "")}" />` : ""}
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #ffffff;
+      --surface: #f8fafc;
+      --line: rgba(100, 116, 139, 0.2);
+      --text: #0f172a;
+      --muted: #475569;
+      --accent: #2563eb;
+      --radius: 14px;
+      --shadow: 0 20px 50px rgba(15, 23, 42, 0.08);
+      font-family: Inter, system-ui, sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f172a;
+        --surface: #111827;
+        --line: rgba(148, 163, 184, 0.18);
+        --text: #e5eefb;
+        --muted: #9fb0c7;
+        --accent: #8ab4ff;
+        --shadow: 0 20px 50px rgba(2, 6, 23, 0.42);
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text); }
+    body { padding: 24px; }
+    main {
+      max-width: 1100px;
+      margin: 0 auto;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 24px;
+    }
+    a { color: var(--accent); }
+    header {
+      display: grid;
+      gap: 10px;
+      margin-bottom: 20px;
+      padding-bottom: 18px;
+      border-bottom: 1px solid var(--line);
+    }
+    header h1 {
+      margin: 0;
+      font-size: clamp(28px, 4vw, 40px);
+      line-height: 1.05;
+    }
+    header p {
+      margin: 0;
+      max-width: 72ch;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+    pre { white-space: pre-wrap; }
+  </style>
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+    window.addEventListener('DOMContentLoaded', async () => {
+      mermaid.initialize({ startOnLoad: false, securityLevel: 'strict' });
+      const nodes = document.querySelectorAll('pre.mermaid, code.language-mermaid, .mermaid');
+      for (const node of nodes) {
+        const source = node.textContent || '';
+        if (!source.trim()) continue;
+        const id = 'mermaid-' + Math.random().toString(36).slice(2);
+        try {
+          const { svg } = await mermaid.render(id, source);
+          const wrapper = document.createElement('div');
+          wrapper.className = 'mermaid-render';
+          wrapper.innerHTML = svg;
+          node.replaceWith(wrapper);
+        } catch (error) {
+          console.error('Mermaid render failed', error);
+        }
+      }
+    });
+  </script>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>${title.replace(/[<&>"]/g, "")}</h1>
+      ${description ? `<p>${description.replace(/[<&>"]/g, "")}</p>` : ""}
+    </header>
+    ${body}
+  </main>
+</body>
+</html>`;
+}
+async function listArtifacts() {
+  const root = userDataPath("artifacts");
+  if (!existsSync2(root))
+    return [];
+  const entries = await readdir(root, { withFileTypes: true });
+  const records = await Promise.all(entries.filter((entry) => entry.isDirectory()).map((entry) => readArtifactMetadata(join3(root, entry.name))));
+  return records.filter((record3) => Boolean(record3)).sort((a, b) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt);
+}
+async function createArtifact(input) {
+  const id = crypto.randomUUID();
+  const now = Date.now();
+  const title = sanitizeTitle(input.title);
+  const description = sanitizeDescription(input.description);
+  const dir = artifactDirForId(id, title);
+  const path = join3(dir, "index.html");
+  await mkdir(dir, { recursive: true });
+  await writeFile(path, artifactHtmlShell(title, input.html, description), "utf8");
+  const record3 = {
+    id,
+    title,
+    description,
+    path,
+    createdAt: now,
+    updatedAt: now,
+    lastOpenedAt: null
+  };
+  await writeArtifactMetadata(record3);
+  return record3;
+}
+async function touchArtifactOpen(path) {
+  const record3 = await readArtifactMetadata(dirname2(path));
+  if (!record3)
+    return null;
+  const next = { ...record3, lastOpenedAt: Date.now() };
+  await writeArtifactMetadata(next);
+  return next;
+}
+async function openArtifactWindow(path, title) {
+  const artifactWindow = new BrowserWindow2({
+    width: 1080,
+    height: 780,
+    minWidth: 720,
+    minHeight: 520,
+    title: title || "Artifact",
+    backgroundColor: "#ffffff",
+    autoHideMenuBar: true,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true
+    }
+  });
+  artifactWindow.webContents.setWindowOpenHandler(({ url: url2 }) => {
+    shell.openExternal(url2);
+    return { action: "deny" };
+  });
+  await artifactWindow.loadFile(path);
+}
+function resolveDefaultWorkspaceCwd() {
+  if (!app.isPackaged)
+    return process.cwd() || homedir2();
+  return homedir2();
+}
+function resolveDefaultOpenccCommand() {
+  if (process.env.AUTOAGENT_CLAUDE_COMMAND?.trim())
+    return process.env.AUTOAGENT_CLAUDE_COMMAND;
+  if (process.env.AUTOAGENT_OPENCC_COMMAND?.trim())
+    return process.env.AUTOAGENT_OPENCC_COMMAND;
+  if (app.isPackaged) {
+    return "opencc";
+  }
+  const workspaceRoot = dirname2(__dirname2);
+  const openccBat = join3(workspaceRoot, "packages", "opencc", "opencc.bat");
+  const openccCli = join3(workspaceRoot, "packages", "opencc", "dist", "cli.js");
+  if (process.platform === "win32" && existsSync2(openccBat)) {
+    return `"${openccBat}"`;
+  }
+  if (existsSync2(openccCli)) {
+    return `bun run "${openccCli}" --dangerously-skip-permissions`;
+  }
+  return "opencc";
+}
+function resolveRuntimeAssetPath(name) {
+  const candidates = [
+    process.resourcesPath ? join3(process.resourcesPath, name) : "",
+    join3(__dirname2, name)
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    if (existsSync2(candidate))
+      return candidate;
+  }
+  return candidates[0] || name;
+}
+function windowsShortcutCandidates() {
+  const appData = process.env.APPDATA || "";
+  const userProfile = process.env.USERPROFILE || homedir2();
+  const programData = process.env.ProgramData || "C:\\ProgramData";
+  return [
+    join3(appData, "Microsoft", "Windows", "Start Menu", "Programs", `${PRODUCT_NAME}.lnk`),
+    join3(programData, "Microsoft", "Windows", "Start Menu", "Programs", `${PRODUCT_NAME}.lnk`),
+    join3(userProfile, "Desktop", `${PRODUCT_NAME}.lnk`),
+    join3(appData, "Microsoft", "Internet Explorer", "Quick Launch", "User Pinned", "TaskBar", `${PRODUCT_NAME}.lnk`)
+  ];
+}
+function forceWriteWindowsShortcut(shortcutPath, executablePath, iconPath, workingDirectory, description) {
+  const escapedPath = shortcutPath.replace(/\\/g, "\\\\");
+  const escapedExe = executablePath.replace(/\\/g, "\\\\");
+  const escapedIcon = iconPath.replace(/\\/g, "\\\\");
+  const escapedCwd = workingDirectory.replace(/\\/g, "\\\\");
+  const escapedDesc = description.replace(/"/g, '""');
+  spawnSync("powershell.exe", [
+    "-NoProfile",
+    "-Command",
+    [
+      "$shell = New-Object -ComObject WScript.Shell",
+      `$lnk = $shell.CreateShortcut("${escapedPath}")`,
+      `$lnk.TargetPath = "${escapedExe}"`,
+      '$lnk.Arguments = ""',
+      `$lnk.IconLocation = "${escapedIcon},0"`,
+      `$lnk.WorkingDirectory = "${escapedCwd}"`,
+      `$lnk.Description = "${escapedDesc}"`,
+      "$lnk.Save()"
+    ].join("; ")
+  ], { windowsHide: true });
+}
+function repairWindowsShortcuts() {
+  if (process.platform !== "win32" || !app.isPackaged)
+    return;
+  const iconPath = resolveRuntimeAssetPath("icon.ico");
+  const executablePath = process.execPath;
+  const workingDirectory = dirname2(executablePath);
+  const description = `${PRODUCT_NAME} Desktop - AI Agent for coding automation`;
+  for (const shortcutPath of windowsShortcutCandidates()) {
+    const isPinnedTaskbarShortcut = shortcutPath.includes(join3("User Pinned", "TaskBar"));
+    if (isPinnedTaskbarShortcut && !existsSync2(shortcutPath))
+      continue;
+    try {
+      const operation = existsSync2(shortcutPath) ? "update" : "create";
+      const updated = shell.writeShortcutLink(shortcutPath, operation, {
+        target: executablePath,
+        cwd: workingDirectory,
+        icon: iconPath,
+        iconIndex: 0,
+        appUserModelId: WINDOWS_APP_ID,
+        description
+      });
+      if (!updated)
+        throw new Error("shell.writeShortcutLink returned false");
+      forceWriteWindowsShortcut(shortcutPath, executablePath, iconPath, workingDirectory, description);
+    } catch (error2) {
+      console.error("[shortcut] shell.writeShortcutLink failed, falling back to WSH:", shortcutPath, error2);
+      forceWriteWindowsShortcut(shortcutPath, executablePath, iconPath, workingDirectory, description);
+    }
+  }
+}
 function defaultSettings() {
   return {
+    claudeCommand: resolveDefaultOpenccCommand(),
+    claudeConfigDir: join3(homedir2(), ".autoagent"),
     providerId: "deepseek",
     apiType: "anthropic-messages",
     model: process.env.CODEANY_MODEL || "deepseek-v4-pro[1m]",
+    fallbackModel: "",
+    agentName: "",
     apiKey: process.env.CODEANY_API_KEY || "",
     baseURL: process.env.CODEANY_BASE_URL || "https://api.deepseek.com/anthropic",
-    cwd: process.cwd() || homedir2(),
+    cwd: resolveDefaultWorkspaceCwd(),
     permissionMode: "bypassPermissions",
+    allowDangerouslySkipPermissions: false,
+    thinkingMode: "",
+    maxThinkingTokens: null,
+    thinkingDisplay: "",
+    effort: "",
+    maxBudgetUsd: null,
+    taskBudget: null,
     maxTurns: 1024,
     allowedTools: ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "WebFetch", "WebSearch", "TodoWrite"],
+    disallowedTools: [],
+    tools: "",
+    betas: [],
+    jsonSchema: "",
+    permissionPromptTool: "",
+    mcpConfig: [],
+    strictMcpConfig: false,
+    settingSources: "",
+    addDirs: [],
+    pluginDir: "",
+    managedSettings: "",
+    channels: [],
+    sessionId: "",
+    forkSession: false,
+    continueSession: false,
+    resumeSessionAt: "",
+    noSessionPersistence: false,
+    includePartialMessages: true,
+    includeHookEvents: false,
+    assistant: false,
+    debug: false,
+    debugFile: "",
+    verbose: true,
+    extraCliArgs: "",
+    leftSidebarOpen: true,
+    leftSidebarWidth: 260,
+    rightPanelOpen: true,
+    rightPanelWidth: 420,
     appendSystemPrompt: "You are AutoAgent, a desktop coding agent. Prefer concise answers, preserve user files, and ask before destructive or external actions."
   };
 }
@@ -17088,8 +17634,26 @@ function normalizeSettings(input) {
   if (!base.baseURL && endpoint.url)
     base.baseURL = endpoint.url;
   base.apiType = base.providerId === "anthropic" ? "anthropic-messages" : base.apiType || inferApiType(base.model);
+  if (!base.cwd || !existsSync2(base.cwd))
+    base.cwd = resolveDefaultWorkspaceCwd();
+  if (!base.claudeCommand?.trim())
+    base.claudeCommand = defaultSettings().claudeCommand;
+  if (!base.claudeConfigDir?.trim())
+    base.claudeConfigDir = defaultSettings().claudeConfigDir;
   base.maxTurns = Math.max(1, Number(base.maxTurns) || 1024);
   base.allowedTools = Array.isArray(base.allowedTools) ? base.allowedTools : defaultSettings().allowedTools;
+  base.disallowedTools = Array.isArray(base.disallowedTools) ? base.disallowedTools : [];
+  base.betas = Array.isArray(base.betas) ? base.betas : [];
+  base.mcpConfig = Array.isArray(base.mcpConfig) ? base.mcpConfig : [];
+  base.addDirs = Array.isArray(base.addDirs) ? base.addDirs : [];
+  base.channels = Array.isArray(base.channels) ? base.channels : [];
+  base.maxThinkingTokens = base.maxThinkingTokens == null ? null : Math.max(0, Number(base.maxThinkingTokens) || 0);
+  base.maxBudgetUsd = base.maxBudgetUsd == null || base.maxBudgetUsd === "" ? null : Math.max(0, Number(base.maxBudgetUsd) || 0);
+  base.taskBudget = base.taskBudget == null || base.taskBudget === "" ? null : Math.max(0, Number(base.taskBudget) || 0);
+  base.leftSidebarOpen = Boolean(base.leftSidebarOpen);
+  base.rightPanelOpen = Boolean(base.rightPanelOpen);
+  base.leftSidebarWidth = Math.min(460, Math.max(220, Number(base.leftSidebarWidth) || 260));
+  base.rightPanelWidth = Math.min(760, Math.max(320, Number(base.rightPanelWidth) || 420));
   return base;
 }
 function inferApiType(model) {
@@ -17148,6 +17712,11 @@ async function appendMessage(chatId, message) {
   }
   return saveChat(chat);
 }
+async function updateClaudeSessionId(chatId, claudeSessionId) {
+  const chat = await loadChat(chatId);
+  chat.claudeSessionId = claudeSessionId;
+  await saveChat(chat);
+}
 function extractEngineText(event) {
   if (!event)
     return "";
@@ -17156,6 +17725,12 @@ function extractEngineText(event) {
       return event.event.delta;
     if (event.text)
       return event.text;
+  }
+  if (event.type === "result") {
+    if (typeof event.event?.result === "string")
+      return event.event.result;
+    if (typeof event.result === "string")
+      return event.result;
   }
   if (event.type === "assistant" || event.type === "tool_result") {
     if (event.event?.item?.text)
@@ -17178,6 +17753,8 @@ function extractEngineText(event) {
       }).filter(Boolean).join(`
 `);
     }
+    if (ev.type === "result" && typeof ev.result === "string")
+      return ev.result;
     if (ev.type === "text_delta")
       return ev.text || ev.delta || "";
   }
@@ -17186,6 +17763,81 @@ function extractEngineText(event) {
 function sendToWindow(channel, payload) {
   if (!mainWindow?.isDestroyed())
     mainWindow?.webContents.send(channel, payload);
+}
+function contentTypeForFile(path) {
+  const ext = extname(path).toLowerCase();
+  if (ext === ".html")
+    return "text/html; charset=utf-8";
+  if (ext === ".js" || ext === ".mjs")
+    return "text/javascript; charset=utf-8";
+  if (ext === ".css")
+    return "text/css; charset=utf-8";
+  if (ext === ".json")
+    return "application/json; charset=utf-8";
+  if (ext === ".svg")
+    return "image/svg+xml";
+  if (ext === ".png")
+    return "image/png";
+  if (ext === ".jpg" || ext === ".jpeg")
+    return "image/jpeg";
+  if (ext === ".ico")
+    return "image/x-icon";
+  if (ext === ".woff2")
+    return "font/woff2";
+  return "application/octet-stream";
+}
+async function responseFromFile(path) {
+  try {
+    const data = await readFile2(path);
+    return new Response(data, {
+      status: 200,
+      headers: {
+        "content-type": contentTypeForFile(path),
+        "cache-control": "no-cache"
+      }
+    });
+  } catch (error2) {
+    const message = error2 instanceof Error ? error2.message : String(error2);
+    return new Response(message, { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } });
+  }
+}
+async function ensureRendererServer() {
+  if (rendererServerPromise)
+    return rendererServerPromise;
+  rendererServerPromise = new Promise((resolve, reject) => {
+    const server = createServer(async (req, res) => {
+      try {
+        const requestUrl = new URL(req.url || "/", "http://127.0.0.1");
+        const resolved = await resolveClientFile(requestUrl.pathname);
+        const path = resolved || join3(clientDir, "index.html");
+        const body = await readFile2(path);
+        res.writeHead(200, {
+          "content-type": contentTypeForFile(path),
+          "cache-control": "no-cache"
+        });
+        res.end(body);
+      } catch (error2) {
+        const message = error2 instanceof Error ? error2.message : String(error2);
+        res.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
+        res.end(message);
+      }
+    });
+    server.on("error", (error2) => {
+      rendererServerPromise = null;
+      reject(error2);
+    });
+    server.listen(0, "127.0.0.1", () => {
+      rendererServer = server;
+      const address = server.address();
+      if (!address) {
+        rendererServerPromise = null;
+        reject(new Error("Renderer server failed to bind"));
+        return;
+      }
+      resolve(`http://127.0.0.1:${address.port}/index.html`);
+    });
+  });
+  return rendererServerPromise;
 }
 async function resolveClientFile(pathname, fallback = "index") {
   const requested = join3(clientDir, decodeURIComponent(pathname));
@@ -17218,13 +17870,13 @@ function registerClientProtocol() {
       const path = url2.searchParams.get("path");
       if (!path)
         return new Response("missing path", { status: 404 });
-      return net2.fetch(pathToFileURL(userDataPath("files", path)).toString());
+      return responseFromFile(userDataPath("files", path));
     }
     if (url2.hostname === "file") {
       const path = url2.searchParams.get("path");
       if (!path)
         return new Response("missing path", { status: 404 });
-      return net2.fetch(pathToFileURL(path).toString());
+      return responseFromFile(path);
     }
     if (url2.hostname !== "app") {
       return new Response("hostname mismatch", { status: 404 });
@@ -17234,7 +17886,7 @@ function registerClientProtocol() {
     if (!resolved && extname(url2.pathname) && extname(url2.pathname) !== ".html") {
       return new Response("not found", { status: 404 });
     }
-    return net2.fetch(pathToFileURL(resolved || fallback).toString());
+    return responseFromFile(resolved || fallback);
   });
 }
 async function getSqliteDatabase() {
@@ -17621,6 +18273,11 @@ async function runAgent(request) {
   const baseSettings = await loadSettings();
   const settings = normalizeSettings({ ...baseSettings, ...request.settings });
   await writeJson(userDataPath("settings.json"), settings);
+  const chatBeforeTurn = await loadChat(request.chatId);
+  const resumeSessionId = chatBeforeTurn.claudeSessionId;
+  const effectiveNoSessionPersistence = false;
+  const effectiveForkSession = Boolean(resumeSessionId) && settings.forkSession;
+  const effectiveContinueSession = !resumeSessionId && settings.continueSession;
   const runId = crypto.randomUUID();
   const abortController = new AbortController;
   activeRuns.set(runId, abortController);
@@ -17631,15 +18288,52 @@ async function runAgent(request) {
       const eng = await getEngine(settings);
       sendToWindow("agent:event", { runId, chatId: request.chatId, kind: "start" });
       for await (const ev of eng.query({
+        claudeCommand: settings.claudeCommand,
+        claudeConfigDir: settings.claudeConfigDir,
         model: settings.model,
+        fallbackModel: settings.fallbackModel,
+        agentName: settings.agentName,
+        thinkingMode: settings.thinkingMode,
+        maxThinkingTokens: settings.maxThinkingTokens,
+        thinkingDisplay: settings.thinkingDisplay,
+        effort: settings.effort,
+        maxBudgetUsd: settings.maxBudgetUsd,
+        taskBudget: settings.taskBudget,
         maxTurns: settings.maxTurns,
         cwd: settings.cwd,
         appendSystemPrompt: settings.appendSystemPrompt,
+        resumeSessionId,
+        resumeSessionAt: settings.resumeSessionAt,
+        sessionId: settings.sessionId,
+        continueSession: effectiveContinueSession,
+        forkSession: effectiveForkSession,
+        noSessionPersistence: effectiveNoSessionPersistence,
         apiKey: settings.apiKey,
         baseURL: settings.baseURL,
         providerId: settings.providerId,
         apiType: settings.apiType,
+        permissionMode: settings.permissionMode,
+        permissionPromptTool: settings.permissionPromptTool,
+        allowDangerouslySkipPermissions: settings.allowDangerouslySkipPermissions,
         allowedTools: settings.allowedTools,
+        disallowedTools: settings.disallowedTools,
+        tools: settings.tools,
+        betas: settings.betas,
+        jsonSchema: settings.jsonSchema,
+        mcpConfig: settings.mcpConfig,
+        strictMcpConfig: settings.strictMcpConfig,
+        settingSources: settings.settingSources,
+        addDirs: settings.addDirs,
+        pluginDir: settings.pluginDir,
+        managedSettings: settings.managedSettings,
+        channels: settings.channels,
+        includePartialMessages: settings.includePartialMessages,
+        includeHookEvents: settings.includeHookEvents,
+        assistant: settings.assistant,
+        debug: settings.debug,
+        debugFile: settings.debugFile,
+        verbose: settings.verbose,
+        extraCliArgs: settings.extraCliArgs,
         messages: [{ role: "user", content: request.prompt }],
         signal: abortController.signal
       })) {
@@ -17648,6 +18342,11 @@ async function runAgent(request) {
           assistantText += text;
         if (ev.type === "assistant" && text)
           assistantText = text;
+        if (ev.type === "result" && text && !assistantText.trim())
+          assistantText = text;
+        if (ev.type === "result" && typeof ev.event?.session_id === "string") {
+          await updateClaudeSessionId(request.chatId, ev.event.session_id);
+        }
         if (abortController.signal.aborted)
           break;
         const kind = ev.type === "text_delta" ? "partial_message" : ev.type === "assistant" ? "assistant" : ev.type === "tool_start" || ev.type === "tool_result" ? "tool_result" : ev.type === "result" ? "done" : ev.type === "interrupted" ? "done" : ev.type === "error" ? "error" : ev.type;
@@ -17690,34 +18389,38 @@ function createWavBuffer(samples, sampleRate = 44100) {
   return buffer;
 }
 async function createWindow() {
+  const iconPath = resolveRuntimeAssetPath(process.platform === "win32" ? "icon.ico" : "icon.png");
+  const runtimeWindowIconPath = resolveRuntimeAssetPath("icon.png");
   mainWindow = new BrowserWindow2({
     width: 1200,
     height: 870,
     minWidth: 1000,
     minHeight: 640,
-    title: "AutoAgent",
-    icon: join3(__dirname2, "icon.png"),
-    ...process.platform === "linux" ? { desktopFileName: "autoagent" } : {},
+    title: PRODUCT_NAME,
+    icon: iconPath,
+    ...process.platform === "linux" ? { desktopFileName: LINUX_DESKTOP_NAME } : {},
     autoHideMenuBar: true,
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
     ...process.platform === "darwin" ? { trafficLightPosition: { x: 14, y: 18 } } : {},
-    show: false,
-    backgroundColor: "#0d0f12",
+    show: true,
+    backgroundColor: "#ffffff",
     webPreferences: {
-      preload: join3(__dirname2, "preload.mjs"),
+      preload: join3(__dirname2, "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false
     }
   });
   perfMark("BrowserWindow created");
+  if (process.platform === "win32") {
+    mainWindow.setIcon(nativeImage.createFromPath(runtimeWindowIconPath));
+  }
   mainWindow.webContents.setWindowOpenHandler(({ url: url2 }) => {
     shell.openExternal(url2);
     return { action: "deny" };
   });
   mainWindow.once("ready-to-show", () => {
     console.error(`[perf] +${(performance.now() - t0).toFixed(0)}ms ready-to-show`);
-    mainWindow.show();
   });
   mainWindow.webContents.on("did-start-loading", () => {
     console.error(`[perf] +${(performance.now() - t0).toFixed(0)}ms did-start-loading`);
@@ -17728,25 +18431,49 @@ async function createWindow() {
   mainWindow.webContents.on("did-finish-load", () => {
     console.error(`[perf] +${(performance.now() - t0).toFixed(0)}ms did-finish-load`);
   });
+  mainWindow.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    console.error(`[window] did-fail-load mainFrame=${isMainFrame} code=${errorCode} url=${validatedURL} error=${errorDescription}`);
+  });
+  mainWindow.webContents.on("console-message", (_event, level, message, line, sourceId) => {
+    console.error(`[renderer:${level}] ${sourceId}:${line} ${message}`);
+  });
+  mainWindow.webContents.on("render-process-gone", (_event, details) => {
+    console.error(`[window] render-process-gone reason=${details.reason} exitCode=${details.exitCode}`);
+  });
   const loadStart = performance.now();
-  await mainWindow.loadFile(join3(clientDir, "index.html"));
-  console.error(`[perf] +${(performance.now() - t0).toFixed(0)}ms (Δ${(performance.now() - loadStart).toFixed(0)}ms) loadFile done`);
+  try {
+    const rendererUrl = await ensureRendererServer();
+    await mainWindow.loadURL(rendererUrl);
+  } catch (error2) {
+    const message = error2 instanceof Error ? `${error2.name}: ${error2.message}` : String(error2);
+    console.error("[window] renderer shell load failed", error2);
+    await mainWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(`<!doctype html><html><body style="font-family: sans-serif; padding: 24px;"><h1>AutoAgent failed to load</h1><pre>${message}</pre></body></html>`)}`);
+  }
+  console.error(`[perf] +${(performance.now() - t0).toFixed(0)}ms (Δ${(performance.now() - loadStart).toFixed(0)}ms) loadURL done`);
 }
 async function syncEngineConfig(settings) {
   const t = performance.now();
-  const configPath = join3(homedir2(), ".autoagent.json");
+  const configDir = settings.claudeConfigDir?.trim() || join3(homedir2(), ".autoagent");
+  const configPath = join3(configDir, ".claude.json");
   try {
     let existing = {};
     try {
       const raw = await readFile2(configPath, "utf8");
       existing = JSON.parse(raw);
     } catch {}
+    const apiKey = settings.apiKey || (typeof existing.primaryApiKey === "string" ? existing.primaryApiKey : "");
+    const normalizedKey = apiKey ? apiKey.slice(-20) : "";
+    const existingApproved = existing.customApiKeyResponses?.approved || [];
     const merged = {
       ...existing,
-      primaryApiKey: settings.apiKey || existing.primaryApiKey || "",
+      primaryApiKey: apiKey,
+      customApiKeyResponses: {
+        ...existing.customApiKeyResponses || {},
+        approved: normalizedKey && !existingApproved.includes(normalizedKey) ? [...existingApproved, normalizedKey] : existingApproved
+      },
       env: {
         ...existing.env || {},
-        ANTHROPIC_API_KEY: settings.apiKey || "",
+        ANTHROPIC_API_KEY: apiKey,
         ANTHROPIC_BASE_URL: settings.baseURL || ""
       }
     };
@@ -17760,10 +18487,11 @@ async function syncEngineConfig(settings) {
 }
 ipcMain.handle("app:bootstrap", async () => {
   const t = performance.now();
-  const [settings, chats, mcpServers] = await Promise.all([
+  const [settings, chats, mcpServers, artifacts] = await Promise.all([
     loadSettings(),
     listChats(),
-    listMcpServersFromDatabase()
+    listMcpServersFromDatabase(),
+    listArtifacts()
   ]);
   console.error(`[perf] bootstrap IPC: loadSettings=${(performance.now() - t).toFixed(0)}ms`);
   return {
@@ -17771,6 +18499,7 @@ ipcMain.handle("app:bootstrap", async () => {
     providers: providerCatalog(),
     chats,
     mcpServers,
+    artifacts,
     chatwise: { defaultMcpServers }
   };
 });
@@ -17826,6 +18555,24 @@ ipcMain.handle("agent:stop", async (_event, runId) => {
   return { stopped: true };
 });
 ipcMain.handle("shell:open-external", async (_event, url2) => shell.openExternal(url2));
+ipcMain.handle("artifact:create", async (_event, input) => {
+  const artifact = await createArtifact(input);
+  await openArtifactWindow(artifact.path, artifact.title);
+  return await touchArtifactOpen(artifact.path) || artifact;
+});
+ipcMain.handle("artifact:list", async () => listArtifacts());
+ipcMain.handle("artifact:load", async (_event, input) => {
+  if (input.path)
+    return readArtifactMetadata(dirname2(input.path));
+  if (!input.id)
+    return null;
+  const artifacts = await listArtifacts();
+  return artifacts.find((artifact) => artifact.id === input.id) || null;
+});
+ipcMain.handle("artifact:open", async (_event, input) => {
+  await openArtifactWindow(input.path, input.title);
+  return { opened: true, artifact: await touchArtifactOpen(input.path) };
+});
 ipcMain.handle("mcp:list", async () => listMcpServersFromDatabase());
 ipcMain.handle("mcp:save", async (_event, input) => saveMcpServer(input));
 ipcMain.handle("mcp:toggle", async (_event, input) => toggleMcpServer(input));
@@ -18230,6 +18977,7 @@ if (!gotLock) {
 }
 app.whenReady().then(async () => {
   perfMark("app.ready fired");
+  repairWindowsShortcuts();
   Menu.setApplicationMenu(null);
   registerElectronFetchIpc(ipcMain);
   registerElectronExecIpc(ipcMain);
@@ -18261,7 +19009,7 @@ app.on("before-quit", () => {
   for (const run of activeRuns.values())
     run.abort();
   killElectronExecChildren();
-  engine?.stop().catch(() => {
-    return;
-  });
+  try {
+    rendererServer?.close();
+  } catch {}
 });

@@ -19,3 +19,8 @@ dist-test/
 .tmp-pillow/
 assets/icon-frame0.bin
 temp-extracted-icon.png
+packaging/deb/usr/lib/autoagent/bun
+packaging/deb/usr/lib/autoagent/rg
+packaging/deb/usr/lib/autoagent/electron
+packaging/deb/usr/lib/autoagent/electron-dist/
+packaging/deb/usr/bin/rg
