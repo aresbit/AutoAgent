@@ -8,8 +8,11 @@ import {
   FolderGit2,
   GitBranch,
   GitFork,
+  LayoutPanelTop,
   Loader2,
   MessageSquarePlus,
+  PanelLeftClose,
+  PanelLeftOpen,
   PanelRightClose,
   PanelRightOpen,
   Play,
@@ -24,6 +27,7 @@ import {
   X,
 } from 'lucide-react';
 import type { AutoAgentBridge } from '../preload';
+import { MessageContent } from './message-content';
 
 declare global {
   interface Window {
@@ -32,7 +36,7 @@ declare global {
 }
 
 type Role = 'user' | 'assistant' | 'system' | 'tool';
-type Panel = 'skills' | 'agent' | 'mcp' | 'workspace';
+type Panel = 'skills' | 'agent' | 'mcp' | 'workspace' | 'artifacts';
 
 interface ChatMessage {
   id: string;
@@ -50,15 +54,54 @@ interface ChatRecord {
 }
 
 interface Settings {
+  claudeCommand: string;
+  claudeConfigDir: string;
   providerId: string;
   apiType: string;
   model: string;
+  fallbackModel: string;
+  agentName: string;
   apiKey: string;
   baseURL: string;
   cwd: string;
   permissionMode: string;
+  allowDangerouslySkipPermissions: boolean;
+  thinkingMode: string;
+  maxThinkingTokens: number | null;
+  thinkingDisplay: string;
+  effort: string;
+  maxBudgetUsd: number | null;
+  taskBudget: number | null;
   maxTurns: number;
   allowedTools: string[];
+  disallowedTools: string[];
+  tools: string;
+  betas: string[];
+  jsonSchema: string;
+  permissionPromptTool: string;
+  mcpConfig: string[];
+  strictMcpConfig: boolean;
+  settingSources: string;
+  addDirs: string[];
+  pluginDir: string;
+  managedSettings: string;
+  channels: string[];
+  sessionId: string;
+  forkSession: boolean;
+  continueSession: boolean;
+  resumeSessionAt: string;
+  noSessionPersistence: boolean;
+  includePartialMessages: boolean;
+  includeHookEvents: boolean;
+  assistant: boolean;
+  debug: boolean;
+  debugFile: string;
+  verbose: boolean;
+  extraCliArgs: string;
+  leftSidebarOpen: boolean;
+  leftSidebarWidth: number;
+  rightPanelOpen: boolean;
+  rightPanelWidth: number;
   appendSystemPrompt: string;
 }
 
@@ -70,6 +113,7 @@ interface BootstrapPayload {
   };
   chats: ChatRecord[];
   mcpServers: McpServer[];
+  artifacts: ArtifactRecord[];
 }
 
 interface AgentEvent {
@@ -161,6 +205,30 @@ function splitCommandLine(value: string): { command: string; args: string[] } {
   return { command: parts[0] || '', args: parts.slice(1) };
 }
 
+interface ArtifactRecord {
+  id: string;
+  title: string;
+  description: string;
+  path: string;
+  createdAt: number;
+  updatedAt: number;
+  lastOpenedAt: number | null;
+}
+
+function splitList(value: string): string[] {
+  return value
+    .split(/[\n,]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function splitLines(value: string): string[] {
+  return value
+    .split('\n')
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 function formatMcpDetail(config: Record<string, unknown>): string {
   if (config.type === 'http' || config.type === 'sse') return `${config.type}: ${String(config.url || '')}`;
   return `stdio: ${String(config.command || '')} ${((config.args as string[] | undefined) || []).join(' ')}`.trim();
@@ -173,6 +241,9 @@ function allProviders(providers: BootstrapPayload['providers']) {
 }
 
 function App() {
+  const [leftOpen, setLeftOpen] = useState(true);
+  const [leftWidth, setLeftWidth] = useState(260);
+  const [controlWidth, setControlWidth] = useState(420);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [providers, setProviders] = useState<BootstrapPayload['providers']>(emptyProviders);
   const [chats, setChats] = useState<ChatRecord[]>([]);
@@ -189,9 +260,12 @@ function App() {
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [skillDirs, setSkillDirs] = useState<SkillDir[]>([]);
   const [gitStatus, setGitStatus] = useState<GitStatus | null>(null);
+  const [artifacts, setArtifacts] = useState<ArtifactRecord[]>([]);
   const [error, setError] = useState<string | null>(null);
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const activeChatIdRef = useRef<string | null>(null);
+  const resizingPaneRef = useRef<'left' | 'right' | null>(null);
+  const layoutHydratedRef = useRef(false);
 
   const running = Boolean(activeRunId);
   const visibleMessages = useMemo(() => [...(activeChat?.messages || []), ...liveMessages], [activeChat, liveMessages]);
@@ -210,6 +284,55 @@ function App() {
   }, [visibleMessages.length, visibleMessages.at(-1)?.text]);
 
   useEffect(() => {
+    if (!settings || layoutHydratedRef.current) return;
+    setLeftOpen(settings.leftSidebarOpen);
+    setLeftWidth(settings.leftSidebarWidth);
+    setRightOpen(settings.rightPanelOpen);
+    setControlWidth(settings.rightPanelWidth);
+    layoutHydratedRef.current = true;
+  }, [settings]);
+
+  function persistLayout(partial: Partial<Settings>) {
+    setSettings((current) => {
+      if (!current) return current;
+      const next = { ...current, ...partial };
+      void window.autoagent.saveSettings(next);
+      return next;
+    });
+  }
+
+  useEffect(() => {
+    const onPointerMove = (event: PointerEvent) => {
+      if (resizingPaneRef.current === 'left') {
+        const next = Math.min(Math.max(event.clientX, 220), Math.min(460, window.innerWidth - (rightOpen ? controlWidth + 360 : 240)));
+        setLeftWidth(next);
+        return;
+      }
+      if (resizingPaneRef.current === 'right') {
+        const next = Math.min(Math.max(window.innerWidth - event.clientX, 320), Math.min(760, window.innerWidth - (leftOpen ? leftWidth + 360 : 240)));
+        setControlWidth(next);
+      }
+    };
+    const stopResize = () => {
+      const pane = resizingPaneRef.current;
+      resizingPaneRef.current = null;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      if (pane === 'left') persistLayout({ leftSidebarWidth: leftWidth });
+      if (pane === 'right') persistLayout({ rightPanelWidth: controlWidth });
+    };
+
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', stopResize);
+    window.addEventListener('pointercancel', stopResize);
+    return () => {
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', stopResize);
+      window.removeEventListener('pointercancel', stopResize);
+    };
+  }, [controlWidth, leftWidth, settings]);
+
+  useEffect(() => {
     void boot();
     const off = window.autoagent.onAgentEvent(handleAgentEvent);
     return () => {
@@ -224,6 +347,7 @@ function App() {
       setSettings(payload.settings);
       setChats(payload.chats);
       setMcpServers(payload.mcpServers || []);
+      setArtifacts(payload.artifacts || []);
       setStatus('Idle');
 
       if (payload.chats[0]) {
@@ -449,13 +573,35 @@ function App() {
     setGitStatus((await window.autoagent.gitStatus(cwd)) as GitStatus);
   }
 
+  async function refreshArtifacts() {
+    setArtifacts((await window.autoagent.listArtifacts()) as ArtifactRecord[]);
+  }
+
+  async function createArtifact(input: { title?: string; description?: string; html: string }) {
+    const artifact = (await window.autoagent.createArtifact(input)) as ArtifactRecord;
+    await refreshArtifacts();
+    return artifact;
+  }
+
+  async function openArtifact(record: ArtifactRecord) {
+    await window.autoagent.openArtifact({ path: record.path, title: record.title });
+    await refreshArtifacts();
+  }
+
   if (error) {
     return <div className="fatal"><strong>Bootstrap failed</strong><pre>{error}</pre></div>;
   }
 
   return (
-    <div className={`shell ${rightOpen ? 'right-open' : 'right-closed'}`}>
-      <aside className="sidebar">
+    <div
+      className={`shell ${leftOpen ? 'left-open' : 'left-closed'} ${rightOpen ? 'right-open' : 'right-closed'}`}
+      style={{
+        ['--left-width' as '--left-width']: `${leftWidth}px`,
+        ['--control-width' as '--control-width']: `${controlWidth}px`,
+      }}
+    >
+      {leftOpen ? (
+        <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark"><Bot size={18} /></div>
           <div><strong>AutoAgent</strong><span>{settings?.model || 'loading'}</span></div>
@@ -474,7 +620,23 @@ function App() {
             </div>
           ))}
         </div>
-      </aside>
+        </aside>
+      ) : null}
+
+      {leftOpen ? (
+        <div
+          className="panel-resizer left"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize session sidebar"
+          onPointerDown={(event) => {
+            resizingPaneRef.current = 'left';
+            document.body.style.cursor = 'col-resize';
+            document.body.style.userSelect = 'none';
+            event.preventDefault();
+          }}
+        />
+      ) : null}
 
       <main className="workspace">
         <header className="topbar">
@@ -483,15 +645,32 @@ function App() {
             <p><span className={`run-dot ${running ? 'on' : ''}`} />{status} · {settings?.cwd}</p>
           </div>
           <div className="topbar-actions">
+            <button className="ghost" onClick={() => {
+              const next = !leftOpen;
+              setLeftOpen(next);
+              persistLayout({ leftSidebarOpen: next });
+            }}>
+              {leftOpen ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}
+            </button>
             <button className="ghost" disabled={!running} onClick={() => void stopRun()}>{running ? <Square size={16} /> : <Circle size={16} />}Stop</button>
-            <button className="ghost" onClick={() => setRightOpen((value) => !value)}>
+            <button className="ghost" onClick={() => {
+              const next = !rightOpen;
+              setRightOpen(next);
+              persistLayout({ rightPanelOpen: next });
+            }}>
               {rightOpen ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}
             </button>
           </div>
         </header>
 
         <section className="messages" ref={messagesRef}>
-          {visibleMessages.length === 0 ? <EmptyState /> : visibleMessages.map((message) => <MessageView key={message.id} message={message} />)}
+          {visibleMessages.length === 0 ? <EmptyState /> : visibleMessages.map((message) => (
+            <MessageView
+              key={message.id}
+              message={message}
+              onCreateArtifact={createArtifact}
+            />
+          ))}
         </section>
 
         <form className="composer" onSubmit={(event) => void submitPrompt(event)}>
@@ -512,30 +691,47 @@ function App() {
       </main>
 
       {rightOpen && settings ? (
-        <ControlPanel
-          panel={panel}
-          setPanel={setPanel}
-          settings={settings}
-          setSettings={setSettings}
-          providers={providerOptions}
-          modelOptions={modelOptions}
-          resolveProvider={resolveProvider}
-          saveSettings={saveSettings}
-          pickCwd={pickCwd}
-          mcpServers={mcpServers}
-          mcpForm={mcpForm}
-          setMcpForm={setMcpForm}
-          loadMcpForm={loadMcpForm}
-          saveMcpForm={saveMcpForm}
-          discoverMcpTools={discoverMcpTools}
-          mcpDiscovery={mcpDiscovery}
-          skills={skills}
-          skillDirs={skillDirs}
-          toggleSkill={toggleSkill}
-          refreshSkills={() => void refreshSkills(settings.cwd)}
-          gitStatus={gitStatus}
-          refreshWorkspace={() => void refreshWorkspace(settings.cwd)}
-        />
+        <>
+          <div
+            className="panel-resizer right"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize control panel"
+            onPointerDown={(event) => {
+              resizingPaneRef.current = 'right';
+              document.body.style.cursor = 'col-resize';
+              document.body.style.userSelect = 'none';
+              event.preventDefault();
+            }}
+          />
+          <ControlPanel
+            panel={panel}
+            setPanel={setPanel}
+            settings={settings}
+            setSettings={setSettings}
+            providers={providerOptions}
+            modelOptions={modelOptions}
+            resolveProvider={resolveProvider}
+            saveSettings={saveSettings}
+            pickCwd={pickCwd}
+            mcpServers={mcpServers}
+            mcpForm={mcpForm}
+            setMcpForm={setMcpForm}
+            loadMcpForm={loadMcpForm}
+            saveMcpForm={saveMcpForm}
+            discoverMcpTools={discoverMcpTools}
+            mcpDiscovery={mcpDiscovery}
+            skills={skills}
+            skillDirs={skillDirs}
+            toggleSkill={toggleSkill}
+            refreshSkills={() => void refreshSkills(settings.cwd)}
+            gitStatus={gitStatus}
+            refreshWorkspace={() => void refreshWorkspace(settings.cwd)}
+            artifacts={artifacts}
+            openArtifact={openArtifact}
+            refreshArtifacts={() => void refreshArtifacts()}
+          />
+        </>
       ) : null}
     </div>
   );
@@ -551,12 +747,28 @@ function EmptyState() {
   );
 }
 
-function MessageView({ message }: { message: ChatMessage }) {
+function MessageView({
+  message,
+  onCreateArtifact,
+}: {
+  message: ChatMessage;
+  onCreateArtifact: (input: { title?: string; description?: string; html: string }) => Promise<ArtifactRecord>;
+}) {
   const icon = message.role === 'assistant' ? <Bot size={15} /> : message.role === 'tool' ? <Wrench size={15} /> : message.role === 'system' ? <Settings2 size={15} /> : <Circle size={15} />;
   return (
     <article className={`message ${message.role}`}>
       <div className="message-role">{icon}<span>{message.role}</span></div>
-      <pre>{message.text}</pre>
+      <div className="message-body">
+        {message.role === 'tool' ? (
+          <pre>{message.text}</pre>
+        ) : (
+          <MessageContent
+            text={message.text}
+            onOpenLink={(url) => void window.autoagent.openExternal(url)}
+            onCreateArtifact={onCreateArtifact}
+          />
+        )}
+      </div>
     </article>
   );
 }
@@ -584,12 +796,16 @@ function ControlPanel(props: {
   refreshSkills: () => void;
   gitStatus: GitStatus | null;
   refreshWorkspace: () => void;
+  artifacts: ArtifactRecord[];
+  openArtifact: (record: ArtifactRecord) => Promise<void>;
+  refreshArtifacts: () => void;
 }) {
   const tabs: Array<[Panel, React.ReactNode, string]> = [
     ['skills', <Boxes size={15} />, 'Skills'],
     ['agent', <Settings2 size={15} />, 'Agent'],
     ['mcp', <Plug size={15} />, 'MCP'],
     ['workspace', <FolderGit2 size={15} />, 'Workspace'],
+    ['artifacts', <LayoutPanelTop size={15} />, 'Artifacts'],
   ];
 
   return (
@@ -606,6 +822,7 @@ function ControlPanel(props: {
         {props.panel === 'mcp' && <McpPanel {...props} />}
         {props.panel === 'skills' && <SkillsPanel {...props} />}
         {props.panel === 'workspace' && <WorkspacePanel {...props} />}
+        {props.panel === 'artifacts' && <ArtifactsPanel {...props} />}
       </div>
     </aside>
   );
@@ -615,16 +832,63 @@ function AgentPanel(props: React.ComponentProps<typeof ControlPanel>) {
   const { settings, setSettings } = props;
   return (
     <div className="form-grid">
+      <Field label="OpenCC command"><input value={settings.claudeCommand} onChange={(e) => setSettings({ ...settings, claudeCommand: e.target.value })} placeholder="opencc" /></Field>
+      <Field label="OpenCC config dir"><input value={settings.claudeConfigDir} onChange={(e) => setSettings({ ...settings, claudeConfigDir: e.target.value })} /></Field>
       <Field label="Provider"><select value={settings.providerId} onChange={(e) => void props.resolveProvider(e.target.value)}>{props.providers.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></Field>
       <Field label="API type"><select value={settings.apiType} onChange={(e) => setSettings({ ...settings, apiType: e.target.value })}><option value="anthropic-messages">Anthropic messages</option><option value="codex-completions">Codex compatible</option></select></Field>
       <Field label="Model"><input value={settings.model} list="model-options" onChange={(e) => setSettings({ ...settings, model: e.target.value })} /><datalist id="model-options">{props.modelOptions.map((model) => <option key={model} value={model} />)}</datalist></Field>
+      <Field label="Fallback model"><input value={settings.fallbackModel} onChange={(e) => setSettings({ ...settings, fallbackModel: e.target.value })} /></Field>
+      <Field
+        label="Agent profile"
+        hint="Optional. Fill this only if your OpenCC/Claude setup defines a named agent profile to load with `--agent`."
+      >
+        <input
+          value={settings.agentName}
+          onChange={(e) => setSettings({ ...settings, agentName: e.target.value })}
+          placeholder="Leave empty for the default agent"
+        />
+      </Field>
       <Field label="Base URL"><input value={settings.baseURL} onChange={(e) => setSettings({ ...settings, baseURL: e.target.value })} /></Field>
       <Field label="API key"><input type="password" value={settings.apiKey} onChange={(e) => setSettings({ ...settings, apiKey: e.target.value })} /></Field>
       <Field label="Workspace"><div className="inline-field"><input value={settings.cwd} onChange={(e) => setSettings({ ...settings, cwd: e.target.value })} /><button className="ghost" onClick={() => void props.pickCwd()} type="button">Choose</button></div></Field>
       <Field label="Permission"><select value={settings.permissionMode} onChange={(e) => setSettings({ ...settings, permissionMode: e.target.value })}><option value="bypassPermissions">Bypass</option><option value="acceptEdits">Accept edits</option><option value="auto">Auto</option><option value="default">Default</option></select></Field>
+      <Field label="Thinking"><select value={settings.thinkingMode} onChange={(e) => setSettings({ ...settings, thinkingMode: e.target.value })}><option value="">default</option><option value="adaptive">adaptive</option><option value="enabled">enabled</option><option value="disabled">disabled</option></select></Field>
+      <Field label="Effort"><select value={settings.effort} onChange={(e) => setSettings({ ...settings, effort: e.target.value })}><option value="">default</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="max">max</option></select></Field>
+      <Field label="Max thinking tokens"><input type="number" min={0} value={settings.maxThinkingTokens ?? ''} onChange={(e) => setSettings({ ...settings, maxThinkingTokens: e.target.value === '' ? null : Number(e.target.value) || 0 })} /></Field>
+      <Field label="Thinking display"><input value={settings.thinkingDisplay} onChange={(e) => setSettings({ ...settings, thinkingDisplay: e.target.value })} /></Field>
+      <Field label="Max budget USD"><input type="number" min={0} step="0.01" value={settings.maxBudgetUsd ?? ''} onChange={(e) => setSettings({ ...settings, maxBudgetUsd: e.target.value === '' ? null : Number(e.target.value) || 0 })} /></Field>
+      <Field label="Task budget"><input type="number" min={0} value={settings.taskBudget ?? ''} onChange={(e) => setSettings({ ...settings, taskBudget: e.target.value === '' ? null : Number(e.target.value) || 0 })} /></Field>
       <Field label="Max turns"><input type="number" min={1} value={settings.maxTurns} onChange={(e) => setSettings({ ...settings, maxTurns: Number(e.target.value) || 1024 })} /></Field>
-      <Field label="Allowed tools"><input value={settings.allowedTools.join(', ')} onChange={(e) => setSettings({ ...settings, allowedTools: e.target.value.split(',').map((item) => item.trim()).filter(Boolean) })} /></Field>
+      <Field label="Allowed tools"><input value={settings.allowedTools.join(', ')} onChange={(e) => setSettings({ ...settings, allowedTools: splitList(e.target.value) })} /></Field>
+      <Field label="Disallowed tools"><input value={settings.disallowedTools.join(', ')} onChange={(e) => setSettings({ ...settings, disallowedTools: splitList(e.target.value) })} /></Field>
+      <Field label="Tools arg"><input value={settings.tools} onChange={(e) => setSettings({ ...settings, tools: e.target.value })} placeholder="default" /></Field>
+      <Field label="Permission prompt tool"><input value={settings.permissionPromptTool} onChange={(e) => setSettings({ ...settings, permissionPromptTool: e.target.value })} /></Field>
+      <Field label="Betas"><input value={settings.betas.join(', ')} onChange={(e) => setSettings({ ...settings, betas: splitList(e.target.value) })} /></Field>
+      <Field label="MCP config"><textarea rows={3} value={settings.mcpConfig.join('\n')} onChange={(e) => setSettings({ ...settings, mcpConfig: splitLines(e.target.value) })} /></Field>
+      <Field label="Add dir"><textarea rows={2} value={settings.addDirs.join('\n')} onChange={(e) => setSettings({ ...settings, addDirs: splitLines(e.target.value) })} /></Field>
+      <Field label="Channels"><input value={settings.channels.join(', ')} onChange={(e) => setSettings({ ...settings, channels: splitList(e.target.value) })} /></Field>
+      <Field label="Setting sources"><input value={settings.settingSources} onChange={(e) => setSettings({ ...settings, settingSources: e.target.value })} /></Field>
+      <Field label="Plugin dir"><input value={settings.pluginDir} onChange={(e) => setSettings({ ...settings, pluginDir: e.target.value })} /></Field>
+      <Field label="Managed settings"><input value={settings.managedSettings} onChange={(e) => setSettings({ ...settings, managedSettings: e.target.value })} /></Field>
+      <Field label="Session ID"><input value={settings.sessionId} onChange={(e) => setSettings({ ...settings, sessionId: e.target.value })} /></Field>
+      <Field label="Resume session at"><input value={settings.resumeSessionAt} onChange={(e) => setSettings({ ...settings, resumeSessionAt: e.target.value })} /></Field>
+      <Field label="JSON schema"><textarea rows={4} value={settings.jsonSchema} onChange={(e) => setSettings({ ...settings, jsonSchema: e.target.value })} /></Field>
+      <Field label="Debug file"><input value={settings.debugFile} onChange={(e) => setSettings({ ...settings, debugFile: e.target.value })} /></Field>
+      <Field label="Extra CLI args"><textarea rows={4} value={settings.extraCliArgs} onChange={(e) => setSettings({ ...settings, extraCliArgs: e.target.value })} placeholder="--plugin-dir C:\\path --assistant" /></Field>
       <Field label="System append"><textarea rows={7} value={settings.appendSystemPrompt} onChange={(e) => setSettings({ ...settings, appendSystemPrompt: e.target.value })} /></Field>
+      <div className="stack">
+        <label className="check-row"><input type="checkbox" checked={settings.allowDangerouslySkipPermissions} onChange={(e) => setSettings({ ...settings, allowDangerouslySkipPermissions: e.target.checked })} />Allow dangerously skip permissions</label>
+        <label className="check-row"><input type="checkbox" checked={settings.strictMcpConfig} onChange={(e) => setSettings({ ...settings, strictMcpConfig: e.target.checked })} />Strict MCP config</label>
+        <label className="check-row"><input type="checkbox" checked={settings.continueSession} onChange={(e) => setSettings({ ...settings, continueSession: e.target.checked })} />Use `--continue` when no session id exists</label>
+        <label className="check-row"><input type="checkbox" checked={settings.forkSession} onChange={(e) => setSettings({ ...settings, forkSession: e.target.checked })} />Fork resumed session</label>
+        <label className="check-row"><input type="checkbox" checked={settings.noSessionPersistence} onChange={(e) => setSettings({ ...settings, noSessionPersistence: e.target.checked })} />No session persistence (single-run experiments only)</label>
+        <p className="field-hint">Desktop chat ignores this during sends so follow-up turns can keep working across the same session.</p>
+        <label className="check-row"><input type="checkbox" checked={settings.includePartialMessages} onChange={(e) => setSettings({ ...settings, includePartialMessages: e.target.checked })} />Include partial messages</label>
+        <label className="check-row"><input type="checkbox" checked={settings.includeHookEvents} onChange={(e) => setSettings({ ...settings, includeHookEvents: e.target.checked })} />Include hook events</label>
+        <label className="check-row"><input type="checkbox" checked={settings.assistant} onChange={(e) => setSettings({ ...settings, assistant: e.target.checked })} />Assistant mode</label>
+        <label className="check-row"><input type="checkbox" checked={settings.debug} onChange={(e) => setSettings({ ...settings, debug: e.target.checked })} />Debug</label>
+        <label className="check-row"><input type="checkbox" checked={settings.verbose} onChange={(e) => setSettings({ ...settings, verbose: e.target.checked })} />Verbose</label>
+      </div>
     </div>
   );
 }
@@ -652,6 +916,37 @@ function McpPanel(props: React.ComponentProps<typeof ControlPanel>) {
         <div className="button-row"><button className="primary" onClick={() => void props.saveMcpForm()}><Save size={15} />Save MCP</button><button className="ghost" onClick={() => props.setMcpForm(defaultMcpForm)}><X size={15} />Clear</button></div>
       </div>
       {props.mcpDiscovery.map((result) => <div className={`discovery-card ${result.status === 'connected' ? 'ok' : 'error'}`} key={result.id}><strong>{result.displayId}</strong><span>{result.status} · {result.durationMs}ms · {result.tools.length} tools</span>{result.error ? <em>{result.error}</em> : null}<div className="chip-list">{result.tools.slice(0, 24).map((tool) => <span key={tool.name}>{tool.name}</span>)}</div></div>)}
+    </div>
+  );
+}
+
+function formatArtifactTime(timestamp: number | null): string {
+  if (!timestamp) return 'Never opened';
+  return new Date(timestamp).toLocaleString();
+}
+
+function ArtifactsPanel(props: React.ComponentProps<typeof ControlPanel>) {
+  return (
+    <div className="stack">
+      <PanelTitle title={`${props.artifacts.length} artifacts`} action={<button className="ghost" onClick={props.refreshArtifacts}><RefreshCw size={15} />Refresh</button>} />
+      <div className="item-list">
+        {props.artifacts.length === 0 ? (
+          <div className="editor-card">
+            <strong>No artifacts yet</strong>
+            <span>Generate an `artifact-html` block in chat to create a persistent artifact.</span>
+          </div>
+        ) : props.artifacts.map((artifact) => (
+          <div className="artifact-row" key={artifact.id}>
+            <button className="item-main artifact-main" onClick={() => void props.openArtifact(artifact)}>
+              <strong>{artifact.title}</strong>
+              <span>{artifact.description || 'No description'}</span>
+              <small>Updated {new Date(artifact.updatedAt).toLocaleString()}</small>
+              <small>{formatArtifactTime(artifact.lastOpenedAt)}</small>
+            </button>
+            <button className="ghost" onClick={() => void props.openArtifact(artifact)}>Open</button>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -695,8 +990,14 @@ function WorkspacePanel(props: React.ComponentProps<typeof ControlPanel>) {
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return <label className="field"><span>{label}</span>{children}</label>;
+function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <label className="field">
+      <span>{label}</span>
+      {children}
+      {hint ? <small className="field-hint">{hint}</small> : null}
+    </label>
+  );
 }
 
 function PanelTitle({ title, action }: { title: string; action?: React.ReactNode }) {

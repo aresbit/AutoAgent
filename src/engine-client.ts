@@ -1,31 +1,30 @@
 /**
- * Engine client — persistent Claude Code/OpenCC CLI stream-json transport.
+ * Engine client - persistent Claude Code CLI stream-json transport.
  *
- * This intentionally reuses the mature `cli.js -p` Agent SDK path instead of
- * maintaining a separate desktop-only agent loop. The CLI owns tools, MCP,
- * permissions, compaction, partial streaming, and session state.
+ * This intentionally reuses Claude Code's `claude -p` stream-json pathway
+ * instead of maintaining a separate desktop-only agent loop. The CLI owns
+ * tools, MCP, permissions, compaction, partial streaming, and session state.
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, appendFileSync, copyFileSync, mkdirSync } from 'node:fs';
-import { createInterface } from 'node:readline';
+import { appendFileSync, existsSync, mkdirSync } from 'node:fs';
+import { tmpdir, homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { homedir, tmpdir } from 'node:os';
+import { createInterface } from 'node:readline';
 
-// File-based diagnostic logger for packaged-app troubleshooting.
-// Writes to %TEMP%/autoagent-userdata/engine.log.
 const LOG_FILE = join(tmpdir(), 'autoagent-userdata', 'engine.log');
 
 function ensureLogDir(): void {
-  try { mkdirSync(dirname(LOG_FILE), { recursive: true }); } catch {}
+  try {
+    mkdirSync(dirname(LOG_FILE), { recursive: true });
+  } catch {}
 }
 
 function logToFile(...args: unknown[]): void {
   try {
     ensureLogDir();
     const ts = new Date().toISOString().replace('T', ' ').slice(0, 23);
-    const line = args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
+    const line = args.map((arg) => (typeof arg === 'string' ? arg : JSON.stringify(arg))).join(' ');
     appendFileSync(LOG_FILE, `[${ts}] ${line}\n`);
   } catch {}
 }
@@ -34,7 +33,7 @@ function resolveBundledRipgrepPath(): string | null {
   const candidates = [
     process.env.AUTOAGENT_RG_PATH,
     process.resourcesPath ? join(process.resourcesPath, 'rg.exe') : null,
-  ].filter((value): value is string => !!value);
+  ].filter((value): value is string => Boolean(value));
 
   for (const candidate of candidates) {
     if (existsSync(candidate)) return candidate;
@@ -43,26 +42,137 @@ function resolveBundledRipgrepPath(): string | null {
   return null;
 }
 
-function ensurePackagedEnginePath(): string {
-  const bundledCli = process.resourcesPath ? join(process.resourcesPath, 'opencc-dist', 'cli.js') : '';
-  if (!bundledCli || !existsSync(bundledCli)) return bundledCli;
-
-  const stagedDir = join(tmpdir(), 'autoagent-userdata', 'opencc-dist');
-  const stagedCli = join(stagedDir, 'cli.js');
-
-  try {
-    mkdirSync(stagedDir, { recursive: true });
-    if (!existsSync(stagedCli)) copyFileSync(bundledCli, stagedCli);
-    return stagedCli;
-  } catch (error) {
-    logToFile('ensurePackagedEnginePath failed:', error);
-    return bundledCli;
-  }
-}
-
 function resolveSpawnCwd(cwd?: string): string {
   if (cwd && existsSync(cwd)) return cwd;
   return process.cwd();
+}
+
+function tokenizeCliArgs(value?: string): string[] {
+  if (!value?.trim()) return [];
+  const matches = value.match(/"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)'|[^\s]+/g) || [];
+  return matches.map((token) => {
+    if ((token.startsWith('"') && token.endsWith('"')) || (token.startsWith('\'') && token.endsWith('\''))) {
+      return token.slice(1, -1);
+    }
+    return token;
+  });
+}
+
+function splitCommand(command?: string): { executable: string; args: string[] } {
+  const tokens = tokenizeCliArgs(command);
+  return {
+    executable: tokens[0] || 'opencc',
+    args: tokens.slice(1),
+  };
+}
+
+function shouldSpawnViaShell(executable: string): boolean {
+  if (process.platform !== 'win32') return false;
+  return /\.(bat|cmd)$/i.test(executable);
+}
+
+function buildSpawnCommand(
+  split: { executable: string; args: string[] },
+  args: string[],
+): { command: string; args: string[]; shell: boolean } {
+  if (!shouldSpawnViaShell(split.executable)) {
+    return {
+      command: split.executable,
+      args: [...split.args, ...args],
+      shell: false,
+    };
+  }
+
+  return {
+    command: process.env.ComSpec || 'cmd.exe',
+    args: ['/d', '/c', split.executable, ...split.args, ...args],
+    shell: false,
+  };
+}
+
+const supportedFlagsCache = new Map<string, Set<string>>();
+
+function pushOption(args: string[], flag: string, value?: string | number | null): void {
+  if (value === undefined || value === null || value === '') return;
+  args.push(flag, String(value));
+}
+
+function pushListOption(args: string[], flag: string, values?: string[]): void {
+  if (!values?.length) return;
+  args.push(flag, values.join(','));
+}
+
+function parseSupportedFlags(helpText: string): Set<string> {
+  const supported = new Set<string>();
+  for (const line of helpText.split(/\r?\n/)) {
+    const matches = line.match(/--[a-zA-Z0-9][a-zA-Z0-9-]*/g);
+    if (!matches) continue;
+    for (const flag of matches) supported.add(flag);
+  }
+  return supported;
+}
+
+async function detectSupportedFlags(split: { executable: string; args: string[] }, cwd?: string): Promise<Set<string> | null> {
+  const cacheKey = [split.executable, ...split.args].join('\u0000');
+  const cached = supportedFlagsCache.get(cacheKey);
+  if (cached) return cached;
+
+  const spawnCommand = buildSpawnCommand(split, ['--help']);
+
+  const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve) => {
+    const child = spawn(spawnCommand.command, spawnCommand.args, {
+      cwd: resolveSpawnCwd(cwd),
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: spawnCommand.shell,
+      env: process.env,
+    });
+
+    let stdout = '';
+    let stderr = '';
+    child.stdout?.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+    child.on('error', () => resolve({ code: null, stdout, stderr }));
+    child.on('close', (code) => resolve({ code, stdout, stderr }));
+  });
+
+  const text = `${result.stdout}\n${result.stderr}`.trim();
+  if (!text) {
+    logToFile('flag detection failed: empty help output for', split.executable);
+    return null;
+  }
+
+  const parsed = parseSupportedFlags(text);
+  supportedFlagsCache.set(cacheKey, parsed);
+  logToFile('detected supported flags count=', parsed.size, 'for', split.executable);
+  return parsed;
+}
+
+function pushSupportedOption(args: string[], supportedFlags: Set<string> | null, flag: string, value?: string | number | null): void {
+  if (supportedFlags && !supportedFlags.has(flag)) return;
+  pushOption(args, flag, value);
+}
+
+function pushSupportedListOption(args: string[], supportedFlags: Set<string> | null, flag: string, values?: string[]): void {
+  if (supportedFlags && !supportedFlags.has(flag)) return;
+  pushListOption(args, flag, values);
+}
+
+function pushSupportedBoolean(args: string[], supportedFlags: Set<string> | null, flag: string, enabled?: boolean): void {
+  if (!enabled) return;
+  if (supportedFlags && !supportedFlags.has(flag)) return;
+  args.push(flag);
+}
+
+function resolveFallbackModel(params: EngineQueryParams): string | undefined {
+  const fallback = params.fallbackModel?.trim();
+  const model = params.model?.trim();
+  if (!fallback) return undefined;
+  if (model && fallback === model) return undefined;
+  return fallback;
 }
 
 export interface StreamEvent {
@@ -72,16 +182,52 @@ export interface StreamEvent {
 }
 
 export interface EngineQueryParams {
+  claudeCommand?: string;
+  claudeConfigDir?: string;
   model?: string;
+  fallbackModel?: string;
+  agentName?: string;
+  thinkingMode?: string;
+  maxThinkingTokens?: number | null;
+  thinkingDisplay?: string;
+  effort?: string;
+  maxBudgetUsd?: number | null;
+  taskBudget?: number | null;
   maxTurns?: number;
   cwd?: string;
   appendSystemPrompt?: string;
   resumeSessionId?: string;
+  resumeSessionAt?: string;
+  sessionId?: string;
+  continueSession?: boolean;
+  forkSession?: boolean;
+  noSessionPersistence?: boolean;
   apiKey?: string;
   baseURL?: string;
   providerId?: string;
   apiType?: string;
+  permissionMode?: string;
+  permissionPromptTool?: string;
+  allowDangerouslySkipPermissions?: boolean;
   allowedTools?: string[];
+  disallowedTools?: string[];
+  tools?: string;
+  betas?: string[];
+  jsonSchema?: string;
+  mcpConfig?: string[];
+  strictMcpConfig?: boolean;
+  settingSources?: string;
+  addDirs?: string[];
+  pluginDir?: string;
+  managedSettings?: string;
+  channels?: string[];
+  includePartialMessages?: boolean;
+  includeHookEvents?: boolean;
+  assistant?: boolean;
+  debug?: boolean;
+  debugFile?: string;
+  verbose?: boolean;
+  extraCliArgs?: string;
   messages?: Array<{
     role: string;
     content: string | Array<{ type: string; text?: string; [key: string]: unknown }>;
@@ -104,24 +250,6 @@ function extractPrompt(params: EngineQueryParams): string {
       .map((block) => block.text)
       .join('\n');
   }
-  return '';
-}
-
-function extractContentText(content: unknown): string {
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    return content
-      .map((block: any) => {
-        if (typeof block === 'string') return block;
-        if (block?.type === 'text' && typeof block.text === 'string') return block.text;
-        if (block?.type === 'tool_result') return extractContentText(block.content);
-        if (typeof block?.content === 'string') return block.content;
-        return '';
-      })
-      .filter(Boolean)
-      .join('\n');
-  }
-  if (content && typeof content === 'object' && 'text' in (content as any)) return String((content as any).text);
   return '';
 }
 
@@ -172,15 +300,12 @@ export class EngineClient {
   private stderrBuffer = '';
   private _onSpawnError: ((err: Error) => void) | null = null;
 
-  constructor(private readonly enginePath: string) {}
-
   start(): void {
-    if (!existsSync(this.enginePath)) throw new Error(`Engine not found: ${this.enginePath}`);
+    // PATH-based command resolution happens at spawn time.
   }
 
   async waitReady(): Promise<void> {
-    // The stream-json CLI path initializes when the process is spawned for the
-    // first query. Keeping this method preserves the desktop caller contract.
+    // The stream-json path initializes when the process is spawned for a query.
   }
 
   async stop(): Promise<void> {
@@ -204,7 +329,6 @@ export class EngineClient {
     let resolveNext: (() => void) | null = null;
     let terminal = false;
 
-    // Wire up spawn error callback so silent failures unblock the generator
     const prevHandler = this._onSpawnError;
     this._onSpawnError = (err) => {
       eventQueue.push({ type: 'error', error: `Engine spawn failed: ${err.message}` });
@@ -212,7 +336,7 @@ export class EngineClient {
       resolveNext?.();
     };
 
-    this.spawnCliProcess(params);
+    await this.spawnCliProcess(params);
     this._onSpawnError = prevHandler;
 
     let sawResult = false;
@@ -267,7 +391,7 @@ export class EngineClient {
         resolveNext = null;
       }
     } finally {
-      logToFile('query() finally block — cleaning up');
+      logToFile('query() finally block - cleaning up');
       this.listeners.delete(listener);
       proc?.off('close', onClose);
       if (params.signal) params.signal.removeEventListener('abort', onAbort);
@@ -275,43 +399,68 @@ export class EngineClient {
     }
   }
 
-  private spawnCliProcess(params: EngineQueryParams): void {
+  private async spawnCliProcess(params: EngineQueryParams): Promise<void> {
     if (this.proc && this.proc.exitCode === null) this.proc.kill('SIGTERM');
 
-    // Resolve bun executable with Windows-aware lookup:
-    // 1. bun/bun.exe next to cli.js (bundled deployment)
-    // 2. build-resources/bun_runtime.exe (dev mode)
-    // 3. process.resourcesPath/bun_runtime.exe (packaged electron-builder)
-    // 4. system PATH
-    const bunExe = resolveBunPath(this.enginePath);
+    const split = splitCommand(params.claudeCommand);
+    const supportedFlags = await detectSupportedFlags(split, params.cwd);
     const args = [
-      this.enginePath,
       '-p',
       '--input-format',
       'stream-json',
       '--output-format',
       'stream-json',
-      '--verbose',
-      '--include-partial-messages',
-      '--dangerously-skip-permissions',
-      '--model',
-      params.model || 'deepseek-v4-pro[1m]',
-      '--max-turns',
-      String(params.maxTurns || 1024),
-      '--permission-mode',
-      'bypassPermissions',
     ];
-    if (params.resumeSessionId) args.push('--resume', params.resumeSessionId);
 
-    const allowedTools = params.allowedTools?.length ? params.allowedTools : DEFAULT_TOOLS;
-    args.push('--allowedTools', allowedTools.join(','));
-    if (params.appendSystemPrompt?.trim()) args.push('--append-system-prompt', params.appendSystemPrompt);
+    pushSupportedBoolean(args, supportedFlags, '--verbose', params.verbose !== false);
+    pushSupportedBoolean(args, supportedFlags, '--include-partial-messages', params.includePartialMessages !== false);
+    pushSupportedBoolean(args, supportedFlags, '--include-hook-events', params.includeHookEvents);
+    pushSupportedBoolean(args, supportedFlags, '--debug', params.debug);
+
+    pushSupportedOption(args, supportedFlags, '--debug-file', params.debugFile);
+    pushSupportedOption(args, supportedFlags, '--thinking', params.thinkingMode);
+    pushSupportedOption(args, supportedFlags, '--max-thinking-tokens', params.maxThinkingTokens);
+    pushSupportedOption(args, supportedFlags, '--thinking-display', params.thinkingDisplay);
+    pushSupportedOption(args, supportedFlags, '--effort', params.effort);
+    pushSupportedOption(args, supportedFlags, '--max-budget-usd', params.maxBudgetUsd);
+    pushSupportedOption(args, supportedFlags, '--task-budget', params.taskBudget);
+    pushSupportedOption(args, supportedFlags, '--model', params.model || 'sonnet');
+    pushSupportedOption(args, supportedFlags, '--fallback-model', resolveFallbackModel(params));
+    pushSupportedOption(args, supportedFlags, '--agent', params.agentName);
+    pushSupportedOption(args, supportedFlags, '--max-turns', params.maxTurns || 1024);
+    pushSupportedOption(args, supportedFlags, '--json-schema', params.jsonSchema);
+    pushSupportedOption(args, supportedFlags, '--permission-mode', params.permissionMode || 'default');
+    pushSupportedOption(args, supportedFlags, '--permission-prompt-tool', params.permissionPromptTool);
+
+    pushSupportedBoolean(args, supportedFlags, '--dangerously-skip-permissions', params.permissionMode === 'bypassPermissions');
+    pushSupportedBoolean(args, supportedFlags, '--allow-dangerously-skip-permissions', params.allowDangerouslySkipPermissions);
+
+    pushSupportedListOption(args, supportedFlags, '--allowedTools', params.allowedTools?.length ? params.allowedTools : DEFAULT_TOOLS);
+    pushSupportedListOption(args, supportedFlags, '--disallowedTools', params.disallowedTools);
+    pushSupportedOption(args, supportedFlags, '--tools', params.tools);
+    pushSupportedListOption(args, supportedFlags, '--betas', params.betas);
+    pushSupportedListOption(args, supportedFlags, '--mcp-config', params.mcpConfig);
+    pushSupportedOption(args, supportedFlags, '--setting-sources', params.settingSources);
+    pushSupportedListOption(args, supportedFlags, '--add-dir', params.addDirs);
+    pushSupportedOption(args, supportedFlags, '--plugin-dir', params.pluginDir);
+    pushSupportedOption(args, supportedFlags, '--managed-settings', params.managedSettings);
+    pushSupportedListOption(args, supportedFlags, '--channels', params.channels);
+    pushSupportedOption(args, supportedFlags, '--session-id', params.sessionId);
+    pushSupportedBoolean(args, supportedFlags, '--fork-session', params.forkSession);
+    pushSupportedBoolean(args, supportedFlags, '--continue', params.continueSession && !params.resumeSessionId);
+    pushSupportedOption(args, supportedFlags, '--resume', params.resumeSessionId);
+    pushSupportedOption(args, supportedFlags, '--resume-session-at', params.resumeSessionAt);
+    pushSupportedBoolean(args, supportedFlags, '--no-session-persistence', params.noSessionPersistence);
+    pushSupportedBoolean(args, supportedFlags, '--strict-mcp-config', params.strictMcpConfig);
+    pushSupportedBoolean(args, supportedFlags, '--assistant', params.assistant);
+    pushSupportedOption(args, supportedFlags, '--append-system-prompt', params.appendSystemPrompt?.trim() ? params.appendSystemPrompt : '');
+    args.push(...tokenizeCliArgs(params.extraCliArgs));
 
     const env: Record<string, string> = {
       ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string')),
-      CLAUDE_CONFIG_DIR: join(homedir(), '.autoagent'),
       CLAUDE_CODE_ENTRYPOINT: 'claude-desktop',
       CLAUDE_CODE_INCLUDE_PARTIAL_MESSAGES: '1',
+      CLAUDE_CONFIG_DIR: params.claudeConfigDir?.trim() || join(homedir(), '.autoagent'),
     };
     const bundledRipgrep = resolveBundledRipgrepPath();
     if (bundledRipgrep) env.AUTOAGENT_RG_PATH = bundledRipgrep;
@@ -322,21 +471,27 @@ export class EngineClient {
       env.ANTHROPIC_CUSTOM_MODEL_OPTION = params.model;
     }
 
-    this.proc = spawn(bunExe, args, {
+    const spawnCommand = buildSpawnCommand(split, args);
+
+    this.proc = spawn(spawnCommand.command, spawnCommand.args, {
       cwd: resolveSpawnCwd(params.cwd),
       stdio: ['pipe', 'pipe', 'pipe'],
       env,
+      shell: spawnCommand.shell,
     });
     this.stderrBuffer = '';
 
-    // Diagnostic logging
-    logToFile('Spawning: bun=', bunExe, 'cli=', this.enginePath);
+    logToFile('Spawning opencc command=', split.executable);
     logToFile('CLAUDE_CONFIG_DIR=', env.CLAUDE_CONFIG_DIR);
     logToFile('ANTHROPIC_API_KEY set=', !!env.ANTHROPIC_API_KEY, 'len=', (env.ANTHROPIC_API_KEY || '').length);
     logToFile('ANTHROPIC_BASE_URL=', env.ANTHROPIC_BASE_URL);
+    logToFile('spawnCommand=', spawnCommand.command);
+    logToFile('spawnShell=', spawnCommand.shell);
+    logToFile('spawnArgs=', spawnCommand.args);
+    logToFile('supportedFlagsDetected=', supportedFlags ? [...supportedFlags].sort().join(',') : 'unknown');
     logToFile('args=', args);
     logToFile('CWD=', resolveSpawnCwd(params.cwd));
-    console.error(`[engine] Spawning: bun=${bunExe} cli=${this.enginePath}`);
+    console.error(`[engine] Spawning: ${spawnCommand.command} ${spawnCommand.args.join(' ')}`);
 
     this.proc.on('error', (err: Error) => {
       console.error(`[engine] Process spawn error: ${err.message}`);
@@ -359,8 +514,8 @@ export class EngineClient {
 
     const rl = createInterface({ input: this.proc.stdout! });
     void this.readLoop(rl);
-    console.error(`[engine] cli stream-json process spawned (pid: ${this.proc.pid})`);
-    logToFile('cli stream-json process spawned (pid:', this.proc.pid, ')');
+    console.error(`[engine] claude stream-json process spawned (pid: ${this.proc.pid})`);
+    logToFile('claude stream-json process spawned (pid:', this.proc.pid, ')');
   }
 
   private writeUserMessage(prompt: string): void {
@@ -405,94 +560,8 @@ export class EngineClient {
       }
     }
   }
-
-}
-
-function resolveBunPath(enginePath: string): string {
-  const dir = dirname(enginePath);
-
-  // 1. Check for bun next to cli.js (with .exe on Windows)
-  const candidates = process.platform === 'win32'
-    ? ['bun.exe', 'bun.cmd', 'bun']
-    : ['bun'];
-  for (const name of candidates) {
-    const candidate = join(dir, name);
-    if (existsSync(candidate)) {
-      console.error(`[resolveBunPath] step1 found: ${candidate}`);
-      logToFile('resolveBunPath step1 found:', candidate);
-      return candidate;
-    }
-  }
-
-  // 2. Dev mode: build-resources/bun_runtime.exe (walk up to find project root)
-  let probe = dir;
-  for (let i = 0; i < 5; i++) {
-    const p = join(probe, 'build-resources', 'bun_runtime.exe');
-    if (existsSync(p)) {
-      console.error(`[resolveBunPath] step2 found: ${p}`);
-      logToFile('resolveBunPath step2 found:', p);
-      return p;
-    }
-    const parent = dirname(probe);
-    if (parent === probe) break;
-    probe = parent;
-  }
-
-  // 3. Packaged electron-builder: extraResources/bun_runtime.exe
-  if (process.resourcesPath) {
-    const p = join(process.resourcesPath, 'bun_runtime.exe');
-    if (existsSync(p)) {
-      console.error(`[resolveBunPath] step3 found: ${p}`);
-      logToFile('resolveBunPath step3 found:', p);
-      return p;
-    }
-    console.error(`[resolveBunPath] step3 missing: ${p} (resourcesPath=${process.resourcesPath})`);
-    logToFile('resolveBunPath step3 missing:', p, 'resourcesPath=', process.resourcesPath);
-  } else {
-    console.error(`[resolveBunPath] step3 skipped — process.resourcesPath is undefined`);
-    logToFile('resolveBunPath step3 skipped — process.resourcesPath is undefined');
-  }
-
-  // 4. System PATH fallback
-  console.error(`[resolveBunPath] step4 fallback to system PATH: bun`);
-  logToFile('resolveBunPath step4 fallback to system PATH: bun');
-  return 'bun';
 }
 
 function normalizeAnthropicBaseURL(baseURL: string): string {
   return baseURL.replace(/\/chat\/completions\/?$/, '').replace(/\/v1\/?$/, '');
-}
-
-export function resolveEnginePath(): string {
-  // Packaged mode: extraResources (outside asar, accessible by subprocess)
-  if (process.resourcesPath) {
-    const bundledCli = join(process.resourcesPath, 'opencc-dist', 'cli.js');
-    if (existsSync(bundledCli)) {
-      const stagedCli = ensurePackagedEnginePath();
-      console.error(`[resolveEnginePath] step1 (packaged) found: ${bundledCli}`);
-      logToFile('resolveEnginePath step1 (packaged) found:', bundledCli);
-      logToFile('resolveEnginePath step1 staged:', stagedCli);
-      return stagedCli;
-    }
-    console.error(`[resolveEnginePath] step1 missing: ${bundledCli}`);
-    logToFile('resolveEnginePath step1 missing:', bundledCli);
-  } else {
-    console.error(`[resolveEnginePath] step1 skipped — process.resourcesPath is undefined`);
-    logToFile('resolveEnginePath step1 skipped — process.resourcesPath is undefined');
-  }
-
-  // Dev mode: bundled next to compiled main.js
-  const __dirname = dirname(fileURLToPath(import.meta.url));
-  const installed = join(__dirname, 'cli.js');
-  if (existsSync(installed)) {
-    console.error(`[resolveEnginePath] step2 (dev) found: ${installed}`);
-    logToFile('resolveEnginePath step2 (dev) found:', installed);
-    return installed;
-  }
-
-  // Monorepo dev: packages/opencc/dist/cli.js
-  const monorepo = join(__dirname, '..', 'packages', 'opencc', 'dist', 'cli.js');
-  console.error(`[resolveEnginePath] step3 (monorepo) fallback: ${monorepo}`);
-  logToFile('resolveEnginePath step3 (monorepo) fallback:', monorepo);
-  return monorepo;
 }

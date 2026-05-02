@@ -16,11 +16,13 @@ import {
 import { copyFile, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
+import { createServer, type Server } from 'node:http';
 import { homedir, tmpdir } from 'node:os';
+import type { AddressInfo } from 'node:net';
 import { dirname, extname, isAbsolute, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { EngineClient, resolveEnginePath } from './engine-client.js';
+import { EngineClient } from './engine-client.js';
 import { BUILTIN_PROVIDERS, CUSTOM_PROVIDERS, resolveProviderEndpoint } from './providers/config.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
@@ -42,19 +44,58 @@ import {
 } from './chatwise/git.js';
 
 type ApiType = 'anthropic-messages' | 'codex-completions';
-type PermissionMode = 'bypassPermissions' | 'acceptEdits' | 'default';
+type PermissionMode = 'bypassPermissions' | 'acceptEdits' | 'auto' | 'default';
 
 interface DesktopSettings {
+  claudeCommand: string;
+  claudeConfigDir: string;
   providerId: string;
   apiType: ApiType;
   model: string;
+  fallbackModel: string;
+  agentName: string;
   apiKey: string;
   baseURL: string;
   cwd: string;
   permissionMode: PermissionMode;
+  allowDangerouslySkipPermissions: boolean;
+  thinkingMode: string;
+  maxThinkingTokens: number | null;
+  thinkingDisplay: string;
+  effort: string;
+  maxBudgetUsd: number | null;
+  taskBudget: number | null;
   maxTurns: number;
   allowedTools: string[];
+  disallowedTools: string[];
+  tools: string;
+  betas: string[];
+  jsonSchema: string;
+  permissionPromptTool: string;
+  mcpConfig: string[];
+  strictMcpConfig: boolean;
+  settingSources: string;
+  addDirs: string[];
+  pluginDir: string;
+  managedSettings: string;
+  channels: string[];
+  sessionId: string;
+  forkSession: boolean;
+  continueSession: boolean;
+  resumeSessionAt: string;
+  noSessionPersistence: boolean;
+  includePartialMessages: boolean;
+  includeHookEvents: boolean;
+  assistant: boolean;
+  debug: boolean;
+  debugFile: string;
+  verbose: boolean;
+  extraCliArgs: string;
   appendSystemPrompt: string;
+  leftSidebarOpen: boolean;
+  leftSidebarWidth: number;
+  rightPanelOpen: boolean;
+  rightPanelWidth: number;
 }
 
 interface ChatRecord {
@@ -78,6 +119,16 @@ interface SendRequest {
   chatId: string;
   prompt: string;
   settings?: Partial<DesktopSettings>;
+}
+
+interface ArtifactRecord {
+  id: string;
+  title: string;
+  description: string;
+  path: string;
+  createdAt: number;
+  updatedAt: number;
+  lastOpenedAt: number | null;
 }
 
 interface McpServerRecord {
@@ -112,8 +163,11 @@ if (process.platform === 'linux') {
 // denied errors (拒绝访问。0x5) in locked-down environments. Also redirect
 // the disk cache to %TEMP% to bypass AppData permission restrictions.
 if (process.platform === 'win32') {
+  app.disableHardwareAcceleration();
   app.commandLine.appendSwitch('disable-gpu');
   app.commandLine.appendSwitch('disable-software-rasterizer');
+  app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
+  app.commandLine.appendSwitch('disable-gpu-program-cache');
   app.commandLine.appendSwitch('disk-cache-dir', join(tmpdir(), 'autoagent-cache'));
   // Override userData to a temp directory so Chromium can create its cache
   // subdirectories without hitting AppData permission issues.
@@ -138,13 +192,15 @@ perfMark('module init done');
 let mainWindow: BrowserWindow | null = null;
 const activeRuns = new Map<string, AbortController>();
 let sqliteDatabase: any | null = null;
+let rendererServerPromise: Promise<string> | null = null;
+let rendererServer: Server | null = null;
 
-// ---- Engine (cli.js -p stream-json headless loop) ----
-// `-p` is a mature single-run headless loop. Each desktop turn gets a fresh
-// process, while Claude Code's transcript persistence is reused via --resume.
+// ---- Engine (claude -p stream-json headless loop) ----
+// Each desktop turn gets a fresh subprocess while Claude Code's transcript
+// persistence is reused via --resume.
 async function getEngine(settings?: DesktopSettings): Promise<EngineClient> {
   if (settings) await syncEngineConfig(settings);
-  const next = new EngineClient(resolveEnginePath());
+  const next = new EngineClient();
   next.start();
   await next.waitReady();
   return next;
@@ -168,9 +224,246 @@ function userDataPath(...parts: string[]): string {
   return join(app.getPath('userData'), ...parts);
 }
 
+function slugify(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48) || 'artifact';
+}
+
+function sanitizeTitle(value: string | undefined, fallback = 'Artifact'): string {
+  return (value || '').trim() || fallback;
+}
+
+function sanitizeDescription(value: string | undefined): string {
+  return (value || '').trim();
+}
+
+function artifactDirForId(id: string, title: string): string {
+  return userDataPath('artifacts', `${slugify(title)}-${id.slice(0, 8)}`);
+}
+
+function artifactMetadataPath(dir: string): string {
+  return join(dir, 'artifact.json');
+}
+
+async function writeArtifactMetadata(record: ArtifactRecord): Promise<void> {
+  await writeFile(artifactMetadataPath(dirname(record.path)), JSON.stringify(record, null, 2) + '\n', 'utf8');
+}
+
+async function readArtifactMetadata(dir: string): Promise<ArtifactRecord | null> {
+  try {
+    const raw = await readFile(artifactMetadataPath(dir), 'utf8');
+    const parsed = JSON.parse(raw) as Partial<ArtifactRecord>;
+    if (!parsed || typeof parsed !== 'object') return null;
+    if (!parsed.id || !parsed.path || !parsed.title || typeof parsed.createdAt !== 'number') return null;
+    return {
+      id: parsed.id,
+      title: sanitizeTitle(parsed.title),
+      description: sanitizeDescription(parsed.description),
+      path: parsed.path,
+      createdAt: parsed.createdAt,
+      updatedAt: typeof parsed.updatedAt === 'number' ? parsed.updatedAt : parsed.createdAt,
+      lastOpenedAt: typeof parsed.lastOpenedAt === 'number' ? parsed.lastOpenedAt : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function artifactHtmlShell(title: string, body: string, description = ''): string {
+  const hasHtmlTag = /<html[\s>]/i.test(body);
+  if (hasHtmlTag) return body;
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${title.replace(/[<&>"]/g, '')}</title>
+  ${description ? `<meta name="description" content="${description.replace(/[<&>"]/g, '')}" />` : ''}
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #ffffff;
+      --surface: #f8fafc;
+      --line: rgba(100, 116, 139, 0.2);
+      --text: #0f172a;
+      --muted: #475569;
+      --accent: #2563eb;
+      --radius: 14px;
+      --shadow: 0 20px 50px rgba(15, 23, 42, 0.08);
+      font-family: Inter, system-ui, sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f172a;
+        --surface: #111827;
+        --line: rgba(148, 163, 184, 0.18);
+        --text: #e5eefb;
+        --muted: #9fb0c7;
+        --accent: #8ab4ff;
+        --shadow: 0 20px 50px rgba(2, 6, 23, 0.42);
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text); }
+    body { padding: 24px; }
+    main {
+      max-width: 1100px;
+      margin: 0 auto;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 24px;
+    }
+    a { color: var(--accent); }
+    header {
+      display: grid;
+      gap: 10px;
+      margin-bottom: 20px;
+      padding-bottom: 18px;
+      border-bottom: 1px solid var(--line);
+    }
+    header h1 {
+      margin: 0;
+      font-size: clamp(28px, 4vw, 40px);
+      line-height: 1.05;
+    }
+    header p {
+      margin: 0;
+      max-width: 72ch;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+    pre { white-space: pre-wrap; }
+  </style>
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+    window.addEventListener('DOMContentLoaded', async () => {
+      mermaid.initialize({ startOnLoad: false, securityLevel: 'strict' });
+      const nodes = document.querySelectorAll('pre.mermaid, code.language-mermaid, .mermaid');
+      for (const node of nodes) {
+        const source = node.textContent || '';
+        if (!source.trim()) continue;
+        const id = 'mermaid-' + Math.random().toString(36).slice(2);
+        try {
+          const { svg } = await mermaid.render(id, source);
+          const wrapper = document.createElement('div');
+          wrapper.className = 'mermaid-render';
+          wrapper.innerHTML = svg;
+          node.replaceWith(wrapper);
+        } catch (error) {
+          console.error('Mermaid render failed', error);
+        }
+      }
+    });
+  </script>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>${title.replace(/[<&>"]/g, '')}</h1>
+      ${description ? `<p>${description.replace(/[<&>"]/g, '')}</p>` : ''}
+    </header>
+    ${body}
+  </main>
+</body>
+</html>`;
+}
+
+async function listArtifacts(): Promise<ArtifactRecord[]> {
+  const root = userDataPath('artifacts');
+  if (!existsSync(root)) return [];
+  const entries = await readdir(root, { withFileTypes: true });
+  const records = await Promise.all(entries.filter((entry) => entry.isDirectory()).map((entry) => readArtifactMetadata(join(root, entry.name))));
+  return records
+    .filter((record): record is ArtifactRecord => Boolean(record))
+    .sort((a, b) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt);
+}
+
+async function createArtifact(input: { title?: string; description?: string; html: string }): Promise<ArtifactRecord> {
+  const id = crypto.randomUUID();
+  const now = Date.now();
+  const title = sanitizeTitle(input.title);
+  const description = sanitizeDescription(input.description);
+  const dir = artifactDirForId(id, title);
+  const path = join(dir, 'index.html');
+  await mkdir(dir, { recursive: true });
+  await writeFile(path, artifactHtmlShell(title, input.html, description), 'utf8');
+  const record: ArtifactRecord = {
+    id,
+    title,
+    description,
+    path,
+    createdAt: now,
+    updatedAt: now,
+    lastOpenedAt: null,
+  };
+  await writeArtifactMetadata(record);
+  return record;
+}
+
+async function touchArtifactOpen(path: string): Promise<ArtifactRecord | null> {
+  const record = await readArtifactMetadata(dirname(path));
+  if (!record) return null;
+  const next = { ...record, lastOpenedAt: Date.now() };
+  await writeArtifactMetadata(next);
+  return next;
+}
+
+async function openArtifactWindow(path: string, title?: string): Promise<void> {
+  const artifactWindow = new BrowserWindow({
+    width: 1080,
+    height: 780,
+    minWidth: 720,
+    minHeight: 520,
+    title: title || 'Artifact',
+    backgroundColor: '#ffffff',
+    autoHideMenuBar: true,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+
+  artifactWindow.webContents.setWindowOpenHandler(({ url }) => {
+    void shell.openExternal(url);
+    return { action: 'deny' };
+  });
+
+  await artifactWindow.loadFile(path);
+}
+
 function resolveDefaultWorkspaceCwd(): string {
   if (!app.isPackaged) return process.cwd() || homedir();
   return homedir();
+}
+
+function resolveDefaultOpenccCommand(): string {
+  if (process.env.AUTOAGENT_CLAUDE_COMMAND?.trim()) return process.env.AUTOAGENT_CLAUDE_COMMAND;
+  if (process.env.AUTOAGENT_OPENCC_COMMAND?.trim()) return process.env.AUTOAGENT_OPENCC_COMMAND;
+
+  if (app.isPackaged) {
+    return 'opencc';
+  }
+
+  const workspaceRoot = dirname(__dirname);
+  const openccBat = join(workspaceRoot, 'packages', 'opencc', 'opencc.bat');
+  const openccCli = join(workspaceRoot, 'packages', 'opencc', 'dist', 'cli.js');
+
+  if (process.platform === 'win32' && existsSync(openccBat)) {
+    return `"${openccBat}"`;
+  }
+
+  if (existsSync(openccCli)) {
+    return `bun run "${openccCli}" --dangerously-skip-permissions`;
+  }
+
+  return 'opencc';
 }
 
 function resolveRuntimeAssetPath(name: string): string {
@@ -258,15 +551,54 @@ function repairWindowsShortcuts(): void {
 
 function defaultSettings(): DesktopSettings {
   return {
+    claudeCommand: resolveDefaultOpenccCommand(),
+    claudeConfigDir: join(homedir(), '.autoagent'),
     providerId: 'deepseek',
     apiType: 'anthropic-messages',
     model: process.env.CODEANY_MODEL || 'deepseek-v4-pro[1m]',
+    fallbackModel: '',
+    agentName: '',
     apiKey: process.env.CODEANY_API_KEY || '',
     baseURL: process.env.CODEANY_BASE_URL || 'https://api.deepseek.com/anthropic',
     cwd: resolveDefaultWorkspaceCwd(),
     permissionMode: 'bypassPermissions',
+    allowDangerouslySkipPermissions: false,
+    thinkingMode: '',
+    maxThinkingTokens: null,
+    thinkingDisplay: '',
+    effort: '',
+    maxBudgetUsd: null,
+    taskBudget: null,
     maxTurns: 1024,
     allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'WebFetch', 'WebSearch', 'TodoWrite'],
+    disallowedTools: [],
+    tools: '',
+    betas: [],
+    jsonSchema: '',
+    permissionPromptTool: '',
+    mcpConfig: [],
+    strictMcpConfig: false,
+    settingSources: '',
+    addDirs: [],
+    pluginDir: '',
+    managedSettings: '',
+    channels: [],
+    sessionId: '',
+    forkSession: false,
+    continueSession: false,
+    resumeSessionAt: '',
+    noSessionPersistence: false,
+    includePartialMessages: true,
+    includeHookEvents: false,
+    assistant: false,
+    debug: false,
+    debugFile: '',
+    verbose: true,
+    extraCliArgs: '',
+    leftSidebarOpen: true,
+    leftSidebarWidth: 260,
+    rightPanelOpen: true,
+    rightPanelWidth: 420,
     appendSystemPrompt:
       'You are AutoAgent, a desktop coding agent. Prefer concise answers, preserve user files, and ask before destructive or external actions.',
   };
@@ -302,8 +634,22 @@ function normalizeSettings(input: Partial<DesktopSettings>): DesktopSettings {
   if (!base.baseURL && endpoint.url) base.baseURL = endpoint.url;
   base.apiType = base.providerId === 'anthropic' ? 'anthropic-messages' : base.apiType || inferApiType(base.model);
   if (!base.cwd || !existsSync(base.cwd)) base.cwd = resolveDefaultWorkspaceCwd();
+  if (!base.claudeCommand?.trim()) base.claudeCommand = defaultSettings().claudeCommand;
+  if (!base.claudeConfigDir?.trim()) base.claudeConfigDir = defaultSettings().claudeConfigDir;
   base.maxTurns = Math.max(1, Number(base.maxTurns) || 1024);
   base.allowedTools = Array.isArray(base.allowedTools) ? base.allowedTools : defaultSettings().allowedTools;
+  base.disallowedTools = Array.isArray(base.disallowedTools) ? base.disallowedTools : [];
+  base.betas = Array.isArray(base.betas) ? base.betas : [];
+  base.mcpConfig = Array.isArray(base.mcpConfig) ? base.mcpConfig : [];
+  base.addDirs = Array.isArray(base.addDirs) ? base.addDirs : [];
+  base.channels = Array.isArray(base.channels) ? base.channels : [];
+  base.maxThinkingTokens = base.maxThinkingTokens == null ? null : Math.max(0, Number(base.maxThinkingTokens) || 0);
+  base.maxBudgetUsd = base.maxBudgetUsd == null || base.maxBudgetUsd === '' ? null : Math.max(0, Number(base.maxBudgetUsd) || 0);
+  base.taskBudget = base.taskBudget == null || base.taskBudget === '' ? null : Math.max(0, Number(base.taskBudget) || 0);
+  base.leftSidebarOpen = Boolean(base.leftSidebarOpen);
+  base.rightPanelOpen = Boolean(base.rightPanelOpen);
+  base.leftSidebarWidth = Math.min(460, Math.max(220, Number(base.leftSidebarWidth) || 260));
+  base.rightPanelWidth = Math.min(760, Math.max(320, Number(base.rightPanelWidth) || 420));
   return base;
 }
 
@@ -421,6 +767,78 @@ function sendToWindow(channel: string, payload: unknown): void {
   if (!mainWindow?.isDestroyed()) mainWindow?.webContents.send(channel, payload);
 }
 
+function contentTypeForFile(path: string): string {
+  const ext = extname(path).toLowerCase();
+  if (ext === '.html') return 'text/html; charset=utf-8';
+  if (ext === '.js' || ext === '.mjs') return 'text/javascript; charset=utf-8';
+  if (ext === '.css') return 'text/css; charset=utf-8';
+  if (ext === '.json') return 'application/json; charset=utf-8';
+  if (ext === '.svg') return 'image/svg+xml';
+  if (ext === '.png') return 'image/png';
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+  if (ext === '.ico') return 'image/x-icon';
+  if (ext === '.woff2') return 'font/woff2';
+  return 'application/octet-stream';
+}
+
+async function responseFromFile(path: string): Promise<Response> {
+  try {
+    const data = await readFile(path);
+    return new Response(data, {
+      status: 200,
+      headers: {
+        'content-type': contentTypeForFile(path),
+        'cache-control': 'no-cache',
+      },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return new Response(message, { status: 404, headers: { 'content-type': 'text/plain; charset=utf-8' } });
+  }
+}
+
+async function ensureRendererServer(): Promise<string> {
+  if (rendererServerPromise) return rendererServerPromise;
+
+  rendererServerPromise = new Promise<string>((resolve, reject) => {
+    const server = createServer(async (req, res) => {
+      try {
+        const requestUrl = new URL(req.url || '/', 'http://127.0.0.1');
+        const resolved = await resolveClientFile(requestUrl.pathname);
+        const path = resolved || join(clientDir, 'index.html');
+        const body = await readFile(path);
+        res.writeHead(200, {
+          'content-type': contentTypeForFile(path),
+          'cache-control': 'no-cache',
+        });
+        res.end(body);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
+        res.end(message);
+      }
+    });
+
+    server.on('error', (error) => {
+      rendererServerPromise = null;
+      reject(error);
+    });
+
+    server.listen(0, '127.0.0.1', () => {
+      rendererServer = server;
+      const address = server.address() as AddressInfo | null;
+      if (!address) {
+        rendererServerPromise = null;
+        reject(new Error('Renderer server failed to bind'));
+        return;
+      }
+      resolve(`http://127.0.0.1:${address.port}/index.html`);
+    });
+  });
+
+  return rendererServerPromise;
+}
+
 async function resolveClientFile(pathname: string, fallback = 'index'): Promise<string | null> {
   const requested = join(clientDir, decodeURIComponent(pathname));
   const rel = relative(clientDir, requested);
@@ -450,12 +868,12 @@ function registerClientProtocol(): void {
     if (url.hostname === 'app-files') {
       const path = url.searchParams.get('path');
       if (!path) return new Response('missing path', { status: 404 });
-      return net.fetch(pathToFileURL(userDataPath('files', path)).toString());
+      return responseFromFile(userDataPath('files', path));
     }
     if (url.hostname === 'file') {
       const path = url.searchParams.get('path');
       if (!path) return new Response('missing path', { status: 404 });
-      return net.fetch(pathToFileURL(path).toString());
+      return responseFromFile(path);
     }
     if (url.hostname !== 'app') {
       return new Response('hostname mismatch', { status: 404 });
@@ -466,7 +884,7 @@ function registerClientProtocol(): void {
     if (!resolved && extname(url.pathname) && extname(url.pathname) !== '.html') {
       return new Response('not found', { status: 404 });
     }
-    return net.fetch(pathToFileURL(resolved || fallback).toString());
+    return responseFromFile(resolved || fallback);
   });
 }
 
@@ -887,6 +1305,14 @@ async function runAgent(request: SendRequest): Promise<{ runId: string }> {
   const settings = normalizeSettings({ ...baseSettings, ...request.settings });
   await writeJson(userDataPath('settings.json'), settings);
   const chatBeforeTurn = await loadChat(request.chatId);
+  const resumeSessionId = chatBeforeTurn.claudeSessionId;
+  // Desktop chats are expected to support follow-up turns reliably, so we
+  // force transcript persistence for agent runs even if the advanced toggle is
+  // enabled. Otherwise OpenCC can return a session id on turn 1 that cannot be
+  // resumed on turn 2.
+  const effectiveNoSessionPersistence = false;
+  const effectiveForkSession = Boolean(resumeSessionId) && settings.forkSession;
+  const effectiveContinueSession = !resumeSessionId && settings.continueSession;
 
   const runId = crypto.randomUUID();
   const abortController = new AbortController();
@@ -904,16 +1330,52 @@ async function runAgent(request: SendRequest): Promise<{ runId: string }> {
       // history, file cache). We only send the latest prompt; the server's
       // QueryEngine appends it to its mutableMessages.
       for await (const ev of eng.query({
+        claudeCommand: settings.claudeCommand,
+        claudeConfigDir: settings.claudeConfigDir,
         model: settings.model,
+        fallbackModel: settings.fallbackModel,
+        agentName: settings.agentName,
+        thinkingMode: settings.thinkingMode,
+        maxThinkingTokens: settings.maxThinkingTokens,
+        thinkingDisplay: settings.thinkingDisplay,
+        effort: settings.effort,
+        maxBudgetUsd: settings.maxBudgetUsd,
+        taskBudget: settings.taskBudget,
         maxTurns: settings.maxTurns,
         cwd: settings.cwd,
         appendSystemPrompt: settings.appendSystemPrompt,
-        resumeSessionId: chatBeforeTurn.claudeSessionId,
+        resumeSessionId,
+        resumeSessionAt: settings.resumeSessionAt,
+        sessionId: settings.sessionId,
+        continueSession: effectiveContinueSession,
+        forkSession: effectiveForkSession,
+        noSessionPersistence: effectiveNoSessionPersistence,
         apiKey: settings.apiKey,
         baseURL: settings.baseURL,
         providerId: settings.providerId,
         apiType: settings.apiType,
+        permissionMode: settings.permissionMode,
+        permissionPromptTool: settings.permissionPromptTool,
+        allowDangerouslySkipPermissions: settings.allowDangerouslySkipPermissions,
         allowedTools: settings.allowedTools,
+        disallowedTools: settings.disallowedTools,
+        tools: settings.tools,
+        betas: settings.betas,
+        jsonSchema: settings.jsonSchema,
+        mcpConfig: settings.mcpConfig,
+        strictMcpConfig: settings.strictMcpConfig,
+        settingSources: settings.settingSources,
+        addDirs: settings.addDirs,
+        pluginDir: settings.pluginDir,
+        managedSettings: settings.managedSettings,
+        channels: settings.channels,
+        includePartialMessages: settings.includePartialMessages,
+        includeHookEvents: settings.includeHookEvents,
+        assistant: settings.assistant,
+        debug: settings.debug,
+        debugFile: settings.debugFile,
+        verbose: settings.verbose,
+        extraCliArgs: settings.extraCliArgs,
         messages: [{ role: 'user', content: request.prompt }],
         signal: abortController.signal,
       })) {
@@ -996,10 +1458,10 @@ async function createWindow(): Promise<void> {
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     ...(process.platform === 'darwin' ? { trafficLightPosition: { x: 14, y: 18 } } : {}),
     // Hide until fully rendered — avoids flash, feels faster
-    show: false,
-    backgroundColor: '#0d0f12',
+    show: true,
+    backgroundColor: '#ffffff',
     webPreferences: {
-      preload: join(__dirname, 'preload.mjs'),
+      preload: join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
@@ -1015,10 +1477,8 @@ async function createWindow(): Promise<void> {
     return { action: 'deny' };
   });
 
-  // Show window once fully rendered (GPU paint done)
   mainWindow.once('ready-to-show', () => {
     console.error(`[perf] +${(performance.now() - t0).toFixed(0)}ms ready-to-show`);
-    mainWindow!.show();
   });
 
   // Fine-grained load timing
@@ -1031,19 +1491,36 @@ async function createWindow(): Promise<void> {
   mainWindow.webContents.on('did-finish-load', () => {
     console.error(`[perf] +${(performance.now() - t0).toFixed(0)}ms did-finish-load`);
   });
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    console.error(`[window] did-fail-load mainFrame=${isMainFrame} code=${errorCode} url=${validatedURL} error=${errorDescription}`);
+  });
+  mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    console.error(`[renderer:${level}] ${sourceId}:${line} ${message}`);
+  });
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    console.error(`[window] render-process-gone reason=${details.reason} exitCode=${details.exitCode}`);
+  });
 
-  // loadFile is the standard Electron approach for local HTML.
-  // GPU is disabled on Windows (see module-level commandLine switches) to
-  // work around ERR_FAILED (-2) caused by GPU disk cache permission errors.
+  // Serve the renderer over localhost to avoid Windows-specific navigation
+  // failures with file://, data:, and custom protocol entry documents.
   const loadStart = performance.now();
-  await mainWindow.loadFile(join(clientDir, 'index.html'));
+  try {
+    const rendererUrl = await ensureRendererServer();
+    await mainWindow.loadURL(rendererUrl);
+  } catch (error) {
+    const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+    console.error('[window] renderer shell load failed', error);
+    await mainWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(`<!doctype html><html><body style="font-family: sans-serif; padding: 24px;"><h1>AutoAgent failed to load</h1><pre>${message}</pre></body></html>`)}`);
+  }
   console.error(`[perf] +${(performance.now() - t0).toFixed(0)}ms (Δ${(performance.now() - loadStart).toFixed(0)}ms) loadURL done`);
 }
 
-// Sync provider settings to ~/.autoagent.json so the CLI engine can read them
+// Sync provider settings into the configured Claude config directory so the
+// spawned CLI sees the same credentials by default.
 async function syncEngineConfig(settings: DesktopSettings): Promise<void> {
   const t = performance.now();
-  const configPath = join(homedir(), '.autoagent', '.claude.json');
+  const configDir = settings.claudeConfigDir?.trim() || join(homedir(), '.autoagent');
+  const configPath = join(configDir, '.claude.json');
   try {
     let existing: Record<string, unknown> = {};
     try {
@@ -1078,10 +1555,11 @@ async function syncEngineConfig(settings: DesktopSettings): Promise<void> {
 
 ipcMain.handle('app:bootstrap', async () => {
   const t = performance.now();
-  const [settings, chats, mcpServers] = await Promise.all([
+  const [settings, chats, mcpServers, artifacts] = await Promise.all([
     loadSettings(),
     listChats(),
     listMcpServersFromDatabase(),
+    listArtifacts(),
   ]);
   console.error(`[perf] bootstrap IPC: loadSettings=${(performance.now() - t).toFixed(0)}ms`);
   return {
@@ -1089,6 +1567,7 @@ ipcMain.handle('app:bootstrap', async () => {
     providers: providerCatalog(),
     chats,
     mcpServers,
+    artifacts,
     chatwise: { defaultMcpServers },
   };
 });
@@ -1151,6 +1630,22 @@ ipcMain.handle('agent:stop', async (_event, runId: string) => {
   return { stopped: true };
 });
 ipcMain.handle('shell:open-external', async (_event, url: string) => shell.openExternal(url));
+ipcMain.handle('artifact:create', async (_event, input: { title?: string; description?: string; html: string }) => {
+  const artifact = await createArtifact(input);
+  await openArtifactWindow(artifact.path, artifact.title);
+  return (await touchArtifactOpen(artifact.path)) || artifact;
+});
+ipcMain.handle('artifact:list', async () => listArtifacts());
+ipcMain.handle('artifact:load', async (_event, input: { id?: string; path?: string }) => {
+  if (input.path) return readArtifactMetadata(dirname(input.path));
+  if (!input.id) return null;
+  const artifacts = await listArtifacts();
+  return artifacts.find((artifact) => artifact.id === input.id) || null;
+});
+ipcMain.handle('artifact:open', async (_event, input: { path: string; title?: string }) => {
+  await openArtifactWindow(input.path, input.title);
+  return { opened: true, artifact: await touchArtifactOpen(input.path) };
+});
 
 ipcMain.handle('mcp:list', async () => listMcpServersFromDatabase());
 ipcMain.handle('mcp:save', async (_event, input: Partial<McpServerRecord>) => saveMcpServer(input));
@@ -1625,4 +2120,5 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   for (const run of activeRuns.values()) run.abort();
   killElectronExecChildren();
+  try { rendererServer?.close(); } catch {}
 });

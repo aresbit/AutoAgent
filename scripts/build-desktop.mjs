@@ -91,18 +91,15 @@ async function main() {
   runBun([
     'build',
     'src/preload.ts',
-    '--outdir',
-    'dist',
+    '--outfile',
+    'dist/preload.cjs',
     '--target',
     'node',
+    '--format',
+    'cjs',
     '--external',
     'electron',
   ])
-
-  await safeRename(
-    path.join(rootDir, 'dist', 'preload.js'),
-    path.join(rootDir, 'dist', 'preload.mjs'),
-  )
 
   await rm(path.join(rootDir, 'dist', 'client'), {
     recursive: true,
