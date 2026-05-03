@@ -2062,13 +2062,45 @@ async function createWindow(): Promise<void> {
   // Serve the renderer over localhost to avoid Windows-specific navigation
   // failures with file://, data:, and custom protocol entry documents.
   const loadStart = performance.now();
+  let loaded = false;
   try {
     const rendererUrl = await ensureRendererServer();
+    // Small delay to let the server socket fully accept connections
+    await new Promise((r) => setTimeout(r, 100));
     await mainWindow.loadURL(rendererUrl);
+    loaded = true;
   } catch (error) {
     const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
     console.error('[window] renderer shell load failed', error);
-    await mainWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(`<!doctype html><html><body style="font-family: sans-serif; padding: 24px;"><h1>AutoAgent failed to load</h1><pre>${message}</pre></body></html>`)}`);
+    // Retry once — first request may race with server readiness
+    if (!loaded && rendererServer) {
+      try {
+        const address = rendererServer.address() as AddressInfo | null;
+        if (address) {
+          console.error('[window] retrying renderer load...');
+          await mainWindow.loadURL(`http://127.0.0.1:${address.port}/index.html`);
+          loaded = true;
+        }
+      } catch (retryError) {
+        console.error('[window] renderer retry also failed', retryError);
+      }
+    }
+  }
+  if (!loaded) {
+    try {
+      const fallbackPath = join(clientDir, 'index.html');
+      await mainWindow.loadURL(`file://${fallbackPath}`);
+      loaded = true;
+    } catch (fileError) {
+      console.error('[window] file:// fallback failed', fileError);
+      try {
+        const message = fileError instanceof Error ? fileError.message : String(fileError);
+        await mainWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(`<!doctype html><html><body style="font-family: sans-serif; padding: 24px;"><h1>AutoAgent failed to load</h1><pre>${message}</pre></body></html>`)}`);
+        loaded = true;
+      } catch {
+        console.error('[window] data: fallback also failed');
+      }
+    }
   }
   console.error(`[perf] +${(performance.now() - t0).toFixed(0)}ms (Δ${(performance.now() - loadStart).toFixed(0)}ms) loadURL done`);
 }

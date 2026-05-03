@@ -6989,24 +6989,143 @@ import {
   systemPreferences
 } from "electron";
 import { copyFile, mkdir, readFile as readFile2, rm, stat, writeFile } from "node:fs/promises";
-import { existsSync as existsSync2 } from "node:fs";
+import { existsSync as existsSync3 } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { createServer } from "node:http";
 import { homedir as homedir2, tmpdir as tmpdir2 } from "node:os";
-import { dirname as dirname2, extname, isAbsolute, join as join3, relative } from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirname as dirname3, extname, isAbsolute, join as join5, relative } from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
 import { spawnSync } from "node:child_process";
 
 // src/engine-client.ts
 import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync } from "node:fs";
+import { appendFileSync, existsSync as existsSync2, mkdirSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname as dirname2, join as join2 } from "node:path";
 import { createInterface } from "node:readline";
-var LOG_FILE = join(tmpdir(), "autoagent-userdata", "engine.log");
+
+// src/runtime-paths.ts
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+var __filename2 = fileURLToPath(import.meta.url);
+var moduleDir = dirname(__filename2);
+var appRootDir = dirname(moduleDir);
+function existingPath(candidates) {
+  for (const candidate of candidates) {
+    if (candidate && existsSync(candidate))
+      return candidate;
+  }
+  return null;
+}
+function appAsarDistDir() {
+  const resources = process.resourcesPath;
+  if (!resources)
+    return [];
+  return [
+    join(resources, "app.asar", "dist"),
+    join(resources, "app.asar.unpacked", "dist"),
+    join(resources, "dist")
+  ];
+}
+function ripgrepExecutableNames(platform = process.platform) {
+  return platform === "win32" ? ["rg.exe", "rg"] : ["rg", "rg.exe"];
+}
+function resolveRipgrepBinaryPath() {
+  const names = ripgrepExecutableNames();
+  return existingPath([
+    process.env.AUTOAGENT_RG_PATH,
+    process.env.RG_BIN,
+    process.env.RIPGREP_BIN,
+    ...names.map((name) => process.resourcesPath ? join(process.resourcesPath, name) : null),
+    ...names.map((name) => join(moduleDir, name)),
+    ...names.map((name) => join(appRootDir, "dist", name)),
+    ...names.map((name) => join(appRootDir, "build-resources", name))
+  ]);
+}
+function resolvePromptAssetsDir() {
+  const candidates = [
+    join(moduleDir, "autowork", "assets", "upstream"),
+    join(moduleDir, "assets", "upstream"),
+    join(appRootDir, "src", "autowork", "assets", "upstream"),
+    join(appRootDir, "dist", "autowork", "assets", "upstream"),
+    ...appAsarDistDir().map((dir) => join(dir, "autowork", "assets", "upstream"))
+  ];
+  const resolved = existingPath(candidates.map((candidate) => join(candidate, "desktop-system-prompts-extracted.md")))?.replace(/[\\/]desktop-system-prompts-extracted\.md$/i, "");
+  if (!resolved) {
+    throw new Error(`Autowork prompt assets not found. Tried: ${candidates.join(" | ")}`);
+  }
+  return resolved;
+}
+function resolveArtifactPreloadPath() {
+  return existingPath([
+    join(moduleDir, "artifact-preload.cjs"),
+    join(appRootDir, "dist", "artifact-preload.cjs"),
+    ...appAsarDistDir().map((dir) => join(dir, "artifact-preload.cjs"))
+  ]) || join(moduleDir, "artifact-preload.cjs");
+}
+function resolveRuntimeAssetPath(name) {
+  return existingPath([
+    process.resourcesPath ? join(process.resourcesPath, name) : null,
+    join(moduleDir, name),
+    join(appRootDir, "dist", name),
+    join(appRootDir, "assets", name),
+    ...appAsarDistDir().map((dir) => join(dir, name))
+  ]) || name;
+}
+function resolveBundledBunBinaryPath() {
+  const names = process.platform === "win32" ? ["bun_runtime.exe", "bun.exe", "bun"] : ["bun", "bun_runtime", "bun_runtime.exe"];
+  return existingPath([
+    ...names.map((name) => process.resourcesPath ? join(process.resourcesPath, name) : null),
+    ...names.map((name) => join(moduleDir, name)),
+    ...names.map((name) => join(appRootDir, "build-resources", name)),
+    ...names.map((name) => join(appRootDir, "dist", name)),
+    "/usr/lib/autoagent/bun",
+    ...names.map((name) => join("/usr", "bin", name)),
+    ...names.map((name) => join("/usr", "local", "bin", name)),
+    ...names.map((name) => join(process.env.HOME || "/root", ".bun", "bin", name))
+  ]);
+}
+function resolveOpenccCliEntryPath() {
+  return existingPath([
+    process.resourcesPath ? join(process.resourcesPath, "opencc-dist", "cli.js") : null,
+    process.resourcesPath ? join(process.resourcesPath, "cli.js") : null,
+    join(moduleDir, "cli.js"),
+    join(appRootDir, "packages", "opencc", "dist", "cli.js"),
+    "/usr/lib/autoagent/cli.js"
+  ]);
+}
+function resolveOpenccBatchWrapperPath() {
+  if (process.platform !== "win32")
+    return null;
+  return existingPath([
+    join(appRootDir, "packages", "opencc", "opencc.bat")
+  ]);
+}
+function resolveDefaultOpenccCommandValue() {
+  if (process.env.AUTOAGENT_CLAUDE_COMMAND?.trim())
+    return process.env.AUTOAGENT_CLAUDE_COMMAND;
+  if (process.env.AUTOAGENT_OPENCC_COMMAND?.trim())
+    return process.env.AUTOAGENT_OPENCC_COMMAND;
+  const batchWrapper = resolveOpenccBatchWrapperPath();
+  if (batchWrapper)
+    return `"${batchWrapper}"`;
+  const cliEntry = resolveOpenccCliEntryPath();
+  const bunBinary = resolveBundledBunBinaryPath();
+  if (cliEntry && bunBinary) {
+    return `"${bunBinary}" run "${cliEntry}" --dangerously-skip-permissions`;
+  }
+  if (cliEntry && process.platform !== "win32") {
+    return `bun run "${cliEntry}" --dangerously-skip-permissions`;
+  }
+  return "opencc";
+}
+
+// src/engine-client.ts
+var LOG_FILE = join2(tmpdir(), "autoagent-userdata", "engine.log");
 function ensureLogDir() {
   try {
-    mkdirSync(dirname(LOG_FILE), { recursive: true });
+    mkdirSync(dirname2(LOG_FILE), { recursive: true });
   } catch {}
 }
 function logToFile(...args) {
@@ -7018,19 +7137,8 @@ function logToFile(...args) {
 `);
   } catch {}
 }
-function resolveBundledRipgrepPath() {
-  const candidates = [
-    process.env.AUTOAGENT_RG_PATH,
-    process.resourcesPath ? join(process.resourcesPath, "rg.exe") : null
-  ].filter((value) => Boolean(value));
-  for (const candidate of candidates) {
-    if (existsSync(candidate))
-      return candidate;
-  }
-  return null;
-}
 function resolveSpawnCwd(cwd) {
-  if (cwd && existsSync(cwd))
+  if (cwd && existsSync2(cwd))
     return cwd;
   return process.cwd();
 }
@@ -7352,15 +7460,14 @@ class EngineClient {
     pushSupportedBoolean(args, supportedFlags, "--no-session-persistence", params.noSessionPersistence);
     pushSupportedBoolean(args, supportedFlags, "--strict-mcp-config", params.strictMcpConfig);
     pushSupportedBoolean(args, supportedFlags, "--assistant", params.assistant);
-    pushSupportedOption(args, supportedFlags, "--append-system-prompt", params.appendSystemPrompt?.trim() ? params.appendSystemPrompt : "");
     args.push(...tokenizeCliArgs(params.extraCliArgs));
     const env = {
       ...Object.fromEntries(Object.entries(process.env).filter((entry) => typeof entry[1] === "string")),
       CLAUDE_CODE_ENTRYPOINT: "claude-desktop",
       CLAUDE_CODE_INCLUDE_PARTIAL_MESSAGES: "1",
-      CLAUDE_CONFIG_DIR: params.claudeConfigDir?.trim() || join(homedir(), ".autoagent")
+      CLAUDE_CONFIG_DIR: params.claudeConfigDir?.trim() || join2(homedir(), ".autoagent")
     };
-    const bundledRipgrep = resolveBundledRipgrepPath();
+    const bundledRipgrep = resolveRipgrepBinaryPath();
     if (bundledRipgrep)
       env.AUTOAGENT_RG_PATH = bundledRipgrep;
     if (params.apiKey)
@@ -7411,6 +7518,7 @@ class EngineClient {
     this.readLoop(rl);
     console.error(`[engine] claude stream-json process spawned (pid: ${this.proc.pid})`);
     logToFile("claude stream-json process spawned (pid:", this.proc.pid, ")");
+    this.writeInitializeRequest(params);
   }
   writeUserMessage(prompt) {
     if (!this.proc?.stdin)
@@ -7425,6 +7533,24 @@ class EngineClient {
       parent_tool_use_id: null
     }) + `
 `);
+  }
+  writeInitializeRequest(params) {
+    if (!this.proc?.stdin)
+      throw new Error("Engine process not running");
+    const appendSystemPrompt = params.appendSystemPrompt?.trim();
+    if (!appendSystemPrompt)
+      return;
+    const requestId = crypto.randomUUID();
+    this.proc.stdin.write(JSON.stringify({
+      type: "control_request",
+      request_id: requestId,
+      request: {
+        subtype: "initialize",
+        appendSystemPrompt
+      }
+    }) + `
+`);
+    logToFile("Initialize request written, appendSystemPrompt_len=", appendSystemPrompt.length);
   }
   handleControlRequest(message) {
     if (message?.type !== "control_request" || !this.proc?.stdin)
@@ -7462,6 +7588,376 @@ class EngineClient {
 }
 function normalizeAnthropicBaseURL(baseURL) {
   return baseURL.replace(/\/chat\/completions\/?$/, "").replace(/\/v1\/?$/, "");
+}
+
+// src/autowork/prompt-assets.ts
+import { readFileSync } from "node:fs";
+import { join as join3 } from "node:path";
+
+// src/autowork/markdown-sections.ts
+function parseMarkdownSections(markdown) {
+  const lines = markdown.replace(/^\uFEFF/, "").split(/\r?\n/);
+  const root = { level: 0, title: "", content: "", children: [] };
+  const stack = [root];
+  let current = root;
+  let inFence = false;
+  for (const line of lines) {
+    if (/^```/.test(line.trim())) {
+      inFence = !inFence;
+      current.content += `${line}
+`;
+      continue;
+    }
+    if (inFence) {
+      current.content += `${line}
+`;
+      continue;
+    }
+    const match = line.match(/^(#{1,6})\s+(.*)$/);
+    if (match) {
+      const level = match[1].length;
+      const title = match[2].trim();
+      while (stack.length > 1 && stack[stack.length - 1].level >= level)
+        stack.pop();
+      const parent = stack[stack.length - 1];
+      const node = { level, title, content: "", children: [], parent };
+      parent.children.push(node);
+      stack.push(node);
+      current = node;
+      continue;
+    }
+    current.content += `${line}
+`;
+  }
+  const stripParent = (node) => ({
+    level: node.level,
+    title: node.title,
+    content: node.content.trim(),
+    children: node.children.map(stripParent)
+  });
+  return root.children.map(stripParent);
+}
+function normalizeTitle(value) {
+  return value.replace(/[`*]/g, "").replace(/\s+/g, " ").replace(/[()（）]/g, "").trim().toLowerCase();
+}
+function findSection(sections, path) {
+  const direct = findSectionFromSiblings(sections, path);
+  if (direct)
+    return direct;
+  for (const section of sections) {
+    const nested = findSection(section.children, path);
+    if (nested)
+      return nested;
+  }
+  return null;
+}
+function findSectionFromSiblings(sections, path) {
+  let cursor = null;
+  let siblings = sections;
+  for (const segment of path) {
+    const normalized = normalizeTitle(segment);
+    cursor = siblings.find((section) => normalizeTitle(section.title) === normalized) || null;
+    if (!cursor)
+      return null;
+    siblings = cursor.children;
+  }
+  return cursor;
+}
+function extractFirstCodeBlock(markdown) {
+  const match = markdown.match(/```(?:[a-zA-Z0-9_-]+)?\r?\n([\s\S]*?)```/);
+  return match ? match[1].trim() : null;
+}
+function cleanSectionBody(markdown) {
+  return markdown.replace(/^\*\*源码位置：\*\*.*$/gm, "").replace(/^\*\*关键证据：\*\*.*$/gm, "").replace(/^> 来源：.*$/gm, "").replace(/^> 提取日期：.*$/gm, "").replace(/\n{3,}/g, `
+
+`).trim();
+}
+function parseMarkdownTable(markdown) {
+  const lines = markdown.split(/\r?\n/).filter((line) => line.trim().startsWith("|"));
+  if (lines.length < 2)
+    return [];
+  const header = lines[0].split("|").slice(1, -1).map((cell) => cell.trim());
+  const rows = lines.slice(2);
+  return rows.map((line) => line.split("|").slice(1, -1).map((cell) => cell.trim())).filter((cells) => cells.length === header.length).map((cells) => Object.fromEntries(header.map((key, index) => [key, cells[index] || ""])));
+}
+
+// src/autowork/prompt-assets.ts
+var cache = new Map;
+var resolvedAssetsDir = null;
+function resolveAssetsDir() {
+  if (resolvedAssetsDir)
+    return resolvedAssetsDir;
+  resolvedAssetsDir = resolvePromptAssetsDir();
+  return resolvedAssetsDir;
+}
+function loadAsset(name) {
+  const cached = cache.get(name);
+  if (cached)
+    return cached;
+  const raw = readFileSync(join3(resolveAssetsDir(), name), "utf8");
+  const loaded = { raw, sections: parseMarkdownSections(raw) };
+  cache.set(name, loaded);
+  return loaded;
+}
+function getPromptSourceIndex() {
+  const asset = loadAsset("desktop-system-prompts-extracted.md");
+  const section = findSection(asset.sections, ["七、关键源码索引"]);
+  if (!section)
+    return [];
+  return parseMarkdownTable(section.content).map((row) => ({
+    component: row["组件"] || "",
+    symbol: row["变量/函数名"] || "",
+    file: row["文件"] || "",
+    line: row["行号"] || ""
+  }));
+}
+function getSection(name, path) {
+  const asset = loadAsset(name);
+  const section = findSection(asset.sections, path);
+  if (!section)
+    throw new Error(`Prompt asset section not found: ${name} -> ${path.join(" / ")}`);
+  return section;
+}
+function getCodeBlock(name, path) {
+  const code = extractFirstCodeBlock(getSection(name, path).content);
+  if (!code)
+    throw new Error(`Expected code block in prompt asset section: ${name} -> ${path.join(" / ")}`);
+  return code;
+}
+function getCleanBody(name, path) {
+  return cleanSectionBody(getSection(name, path).content);
+}
+function loadDesktopReplicaPromptParts() {
+  return {
+    coworkSystemPrompt: getCodeBlock("desktop-system-prompts-extracted.md", ["一、Cowork 基础系统提示 (`nkr` / `cowork_system_prompt`)"]),
+    artifactsSection: getCodeBlock("desktop-system-prompts-extracted.md", ["二、系统提示组装流程 (`Rbr()`)", "2.4 Artifacts 段 (`Sbr(e)`)"]),
+    imagineBase: getCodeBlock("desktop-system-prompts-extracted.md", ["四、Imagine — Visual Creation Suite", "4.1 基础设计系统 (`sJn`)"]),
+    imaginePalette: getCleanBody("desktop-system-prompts-extracted.md", ["四、Imagine — Visual Creation Suite", "4.2 颜色调色板 (`x5`)"]),
+    imagineUiComponents: getCleanBody("desktop-system-prompts-extracted.md", ["四、Imagine — Visual Creation Suite", "4.3 UI 组件规范 (`oJn(e)`)"]),
+    imagineElicitation: getCodeBlock("desktop-system-prompts-extracted.md", ["四、Imagine — Visual Creation Suite", "4.4 Elicitation 表单系统 (`aJn`)"]),
+    imagineSvgGuide: getCleanBody("desktop-system-prompts-extracted.md", ["四、Imagine — Visual Creation Suite", "4.5 SVG 教程 (`Xri(e)`)"]),
+    imagineDiagramRules: getCleanBody("desktop-system-prompts-extracted.md", ["四、Imagine — Visual Creation Suite", "4.6 图表规则 (`cJn(e)`)"]),
+    imagineDataVizRules: getCodeBlock("desktop-system-prompts-extracted.md", ["四、Imagine — Visual Creation Suite", "4.7 数据可视化规则 (`Cst`)"]),
+    imagineArtRules: getCodeBlock("desktop-system-prompts-extracted.md", ["四、Imagine — Visual Creation Suite", "4.8 艺术规则 (`gJn`)"]),
+    visualizeServer: getCleanBody("desktop-system-prompts-extracted.md", ["五、Visualize MCP 服务定义"]),
+    uiGenerationNotes: getCleanBody("claude-desktop-ui-generation.md", ["七、关键发现"]),
+    artifactMechanismNotes: getCleanBody("claude-desktop-artifacts-mechanism.md", ["十、关键结论"]),
+    internalMcpNotes: getCleanBody("claude-code-internal-mcp-servers.md", ["六、关键发现"])
+  };
+}
+
+// src/autowork/desktop-replica.ts
+function wrap(tag, content) {
+  return `<${tag}>
+${content.trim()}
+</${tag}>`;
+}
+function composeAutoworkSystemPrompt(context) {
+  const parts = loadDesktopReplicaPromptParts();
+  const sourceIndex = getPromptSourceIndex();
+  return [
+    parts.coworkSystemPrompt.trim().replace(/\bCowork\b/g, "Autowork").replace(/\bcowork\b/g, "autowork"),
+    wrap("autowork_desktop_replica", [
+      "Autowork is a Claude Desktop style replica mode implemented inside AutoAgent.",
+      "It should inherit the behavior, prompt layering, artifact workflow, and visual-generation expectations described in the upstream extracted prompt assets bundled with this app.",
+      "Autowork should not describe itself as Claude Code unless directly relevant."
+    ].join(`
+
+`)),
+    wrap("autowork_prompt_assembly", [
+      "The effective prompt should conceptually mirror the upstream Rbr() layering:",
+      "1. Cowork desktop system prompt",
+      "2. Dynamic workspace and runtime context",
+      "3. Skills and project guidance",
+      "4. Computer-use guidance",
+      "5. Imagine prompt",
+      "6. Artifacts host prompt",
+      "7. Hidden local AutoAgent directives"
+    ].join(`
+`)),
+    wrap("autowork_artifact_stability_rules", [
+      "When creating an artifact, prefer returning a fenced artifact-html block with the full widget markup.",
+      "If you also save an .html file to the workspace, explicitly mention the resulting filename or absolute path in plain text so the host can ingest it.",
+      "Do not only say that a file was created without naming the .html artifact file."
+    ].join(`
+`)),
+    wrap("autowork_artifacts_host", parts.artifactsSection.replace(/\bCowork\b/g, "Autowork").replace(/\bcowork\b/g, "autowork")),
+    parts.imagineBase.trim(),
+    wrap("imagine_palette", parts.imaginePalette),
+    wrap("imagine_ui_components", parts.imagineUiComponents),
+    parts.imagineElicitation.trim(),
+    wrap("imagine_svg_guide", parts.imagineSvgGuide),
+    wrap("imagine_diagram_rules", parts.imagineDiagramRules),
+    parts.imagineDataVizRules.trim(),
+    parts.imagineArtRules.trim(),
+    wrap("visualize_server_definition", parts.visualizeServer.replace(/\bCowork\b/g, "Autowork").replace(/\bcowork\b/g, "autowork")),
+    wrap("artifact_mechanism_notes", parts.artifactMechanismNotes.replace(/\bCowork\b/g, "Autowork").replace(/\bcowork\b/g, "autowork")),
+    wrap("ui_generation_notes", parts.uiGenerationNotes.replace(/\bCowork\b/g, "Autowork").replace(/\bcowork\b/g, "autowork")),
+    wrap("internal_mcp_notes", parts.internalMcpNotes.replace(/\bCowork\b/g, "Autowork").replace(/\bcowork\b/g, "autowork")),
+    wrap("env", [
+      `Today's date: ${context.currentDateTime}`,
+      `Current timezone: ${context.currentTimezone}`,
+      `Model: ${context.modelName}`,
+      `User name: ${context.accountName || "User"}`,
+      `Working directory: ${context.cwd}`,
+      `Workspace folder: ${context.workspaceFolder}`,
+      `User selected a folder: ${context.folderSelected}`
+    ].join(`
+`)),
+    context.hiddenAppend?.trim() || "",
+    wrap("autowork_source_index", JSON.stringify(sourceIndex))
+  ].filter(Boolean).join(`
+
+`);
+}
+
+// src/autowork/visualize.ts
+var allowedModules = new Set([
+  "diagram",
+  "mockup",
+  "interactive",
+  "data_viz",
+  "art",
+  "chart",
+  "elicitation"
+]);
+function replaceCoworkTerms(value) {
+  return value.replace(/\bCowork\b/g, "Autowork").replace(/\bcowork\b/g, "autowork");
+}
+function toModuleList(input) {
+  if (!input)
+    return [];
+  const values = Array.isArray(input) ? input : [input];
+  const filtered = values.filter((value) => allowedModules.has(value));
+  return [...new Set(filtered)];
+}
+function platformWidthNote(platform) {
+  if (platform === "mobile")
+    return "Target a compact mobile layout around 380px wide.";
+  if (platform === "desktop")
+    return "Target a desktop layout around 680px wide.";
+  return "Design responsively for both desktop and mobile host widths.";
+}
+function moduleSections(moduleName, platform) {
+  const parts = loadDesktopReplicaPromptParts();
+  const width = platformWidthNote(platform);
+  switch (moduleName) {
+    case "diagram":
+      return [
+        `# Module: diagram
+${width}`,
+        replaceCoworkTerms(parts.imaginePalette),
+        replaceCoworkTerms(parts.imagineSvgGuide),
+        replaceCoworkTerms(parts.imagineDiagramRules)
+      ];
+    case "mockup":
+      return [
+        `# Module: mockup
+${width}`,
+        replaceCoworkTerms(parts.imagineUiComponents),
+        replaceCoworkTerms(parts.imaginePalette)
+      ];
+    case "interactive":
+      return [
+        `# Module: interactive
+${width}`,
+        replaceCoworkTerms(parts.imagineUiComponents),
+        replaceCoworkTerms(parts.imaginePalette)
+      ];
+    case "data_viz":
+      return [
+        `# Module: data_viz
+${width}`,
+        replaceCoworkTerms(parts.imagineUiComponents),
+        replaceCoworkTerms(parts.imaginePalette),
+        replaceCoworkTerms(parts.imagineDataVizRules)
+      ];
+    case "art":
+      return [
+        `# Module: art
+${width}`,
+        replaceCoworkTerms(parts.imagineSvgGuide),
+        replaceCoworkTerms(parts.imagineArtRules)
+      ];
+    case "chart":
+      return [
+        `# Module: chart
+${width}`,
+        replaceCoworkTerms(parts.imagineUiComponents),
+        replaceCoworkTerms(parts.imaginePalette),
+        replaceCoworkTerms(parts.imagineDataVizRules)
+      ];
+    case "elicitation":
+      return [
+        `# Module: elicitation
+${width}`,
+        replaceCoworkTerms(parts.imagineElicitation)
+      ];
+  }
+}
+function buildReadMe(modules, platform) {
+  const parts = loadDesktopReplicaPromptParts();
+  const intro = [
+    "# Visualize read_me",
+    replaceCoworkTerms(parts.imagineBase.trim()),
+    "",
+    platformWidthNote(platform),
+    "",
+    modules.length ? `Loaded modules: ${modules.join(", ")}` : "No module selected yet. Call read_me again with one or more modules: diagram, mockup, interactive, data_viz, art, chart, elicitation."
+  ].join(`
+`);
+  const details = modules.flatMap((moduleName) => moduleSections(moduleName, platform));
+  return [intro, ...details].filter(Boolean).join(`
+
+`);
+}
+function toTextResult(text, structuredContent) {
+  return {
+    content: [{ type: "text", text }],
+    structuredContent
+  };
+}
+async function maybeInvokeAutoworkInternalTool(serverHint, toolName, rawArgs, context) {
+  const isVisualizeTool = toolName === "read_me" || toolName === "show_widget";
+  if (serverHint && serverHint !== "visualize" && serverHint !== "autowork")
+    return;
+  if (!isVisualizeTool)
+    return;
+  if (toolName === "read_me") {
+    const args2 = rawArgs && typeof rawArgs === "object" ? rawArgs : {};
+    const modules = toModuleList(args2.modules);
+    const platform = args2.platform || "unknown";
+    const text = buildReadMe(modules, platform);
+    return toTextResult(text, {
+      server: "visualize",
+      tool: "read_me",
+      modules,
+      platform
+    });
+  }
+  const args = rawArgs && typeof rawArgs === "object" ? rawArgs : {};
+  const loadingMessages = Array.isArray(args.loading_messages) ? args.loading_messages.filter((value) => typeof value === "string" && value.trim().length > 0).slice(0, 4) : [];
+  if (!loadingMessages.length)
+    throw new Error("visualize/show_widget requires at least one loading_messages entry.");
+  const title = (args.title || "").trim();
+  if (!title)
+    throw new Error("visualize/show_widget requires a title.");
+  const widgetCode = (args.widget_code || "").trim();
+  if (!widgetCode)
+    throw new Error("visualize/show_widget requires widget_code.");
+  const artifact = await context.createArtifact({
+    title,
+    description: (args.description || "").trim(),
+    html: widgetCode
+  });
+  if (args.open && context.openArtifact)
+    await context.openArtifact(artifact.path, artifact.title);
+  return toTextResult(`Rendered widget "${artifact.title}" as an Autowork artifact.`, {
+    server: "visualize",
+    tool: "show_widget",
+    loading_messages: loadingMessages,
+    artifact
+  });
 }
 
 // src/providers/config.ts
@@ -17050,7 +17546,7 @@ function killElectronExecChildren() {
 
 // src/chatwise/git.ts
 import { readFile } from "node:fs/promises";
-import { join as join2 } from "node:path";
+import { join as join4 } from "node:path";
 import { spawn as spawn4 } from "node:child_process";
 async function runProcess(command, args, cwd) {
   return new Promise((resolve) => {
@@ -17157,7 +17653,7 @@ async function getGitDiffFileContent(input) {
   const original = await runProcess("git", ["show", `HEAD:${headPath}`], workDir);
   let currentContent = null;
   try {
-    currentContent = await readFile(join2(workDir || process.cwd(), currentPath), "utf8");
+    currentContent = await readFile(join4(workDir || process.cwd(), currentPath), "utf8");
   } catch {
     currentContent = null;
   }
@@ -17216,8 +17712,8 @@ if (process.platform === "win32") {
   app.commandLine.appendSwitch("disable-software-rasterizer");
   app.commandLine.appendSwitch("disable-gpu-shader-disk-cache");
   app.commandLine.appendSwitch("disable-gpu-program-cache");
-  app.commandLine.appendSwitch("disk-cache-dir", join3(tmpdir2(), "autoagent-cache"));
-  app.setPath("userData", join3(tmpdir2(), "autoagent-userdata"));
+  app.commandLine.appendSwitch("disk-cache-dir", join5(tmpdir2(), "autoagent-cache"));
+  app.setPath("userData", join5(tmpdir2(), "autoagent-userdata"));
 }
 app.setName(process.platform === "linux" ? LINUX_DESKTOP_NAME : PRODUCT_NAME);
 if (process.platform === "linux") {
@@ -17225,9 +17721,9 @@ if (process.platform === "linux") {
 }
 if (process.platform === "win32")
   app.setAppUserModelId(WINDOWS_APP_ID);
-var __filename2 = fileURLToPath(import.meta.url);
-var __dirname2 = dirname2(__filename2);
-var clientDir = join3(__dirname2, "client");
+var __filename3 = fileURLToPath2(import.meta.url);
+var __dirname2 = dirname3(__filename3);
+var clientDir = join5(__dirname2, "client");
 perfMark("module init done");
 var mainWindow = null;
 var activeRuns = new Map;
@@ -17256,7 +17752,7 @@ protocol.registerSchemesAsPrivileged([
   }
 ]);
 function userDataPath(...parts) {
-  return join3(app.getPath("userData"), ...parts);
+  return join5(app.getPath("userData"), ...parts);
 }
 function slugify2(value) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "artifact";
@@ -17268,47 +17764,61 @@ function sanitizeDescription(value) {
   return (value || "").trim();
 }
 function artifactDirForId(id, title) {
-  return userDataPath("artifacts", `${slugify2(title)}-${id.slice(0, 8)}`);
+  return userDataPath("artifacts", id || slugify2(title));
 }
-function artifactMetadataPath(dir) {
-  return join3(dir, "artifact.json");
+function artifactsRootPath() {
+  return userDataPath("artifacts");
 }
-async function writeArtifactMetadata(record3) {
-  await writeFile(artifactMetadataPath(dirname2(record3.path)), JSON.stringify(record3, null, 2) + `
-`, "utf8");
+function artifactIndexHtmlPath(dir) {
+  return join5(dir, "index.html");
 }
-async function readArtifactMetadata(dir) {
+function artifactThumbnailPath(dir) {
+  return join5(dir, "thumbnail.png");
+}
+function artifactVersionsDir(dir) {
+  return join5(dir, "versions");
+}
+function artifactManifestPath() {
+  return join5(artifactsRootPath(), "manifest.json");
+}
+function escapeHtml(value) {
+  return value.replace(/[&<>"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[char] || char);
+}
+function stripArtifactMetaScript(html) {
+  return html.replace(/\s*<script\b(?=[^>]*\bid="(?:cowork|autowork)-artifact-meta")(?=[^>]*\btype="application\/json")[^>]*>[\s\S]*?<\/script>\s*/i, "");
+}
+function injectArtifactMetaScript(html, meta2) {
+  const cleaned = stripArtifactMetaScript(html);
+  const payload = JSON.stringify(meta2, null, 2).replace(/<\//g, "<\\/");
+  const metaScript = `<script type="application/json" id="cowork-artifact-meta">
+${payload}
+</script>
+`;
+  const doctypeMatch = cleaned.match(/^\s*<!doctype[^>]*>\s*/i);
+  if (doctypeMatch)
+    return `${doctypeMatch[0]}${metaScript}${cleaned.slice(doctypeMatch[0].length)}`;
+  return `${metaScript}${cleaned}`;
+}
+function extractArtifactMetaFromHtml(html) {
+  const match = html.match(/<script\b(?=[^>]*\bid="(?:cowork|autowork)-artifact-meta")(?=[^>]*\btype="application\/json")[^>]*>([\s\S]*?)<\/script>/i);
+  if (!match)
+    return null;
   try {
-    const raw = await readFile2(artifactMetadataPath(dir), "utf8");
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object")
-      return null;
-    if (!parsed.id || !parsed.path || !parsed.title || typeof parsed.createdAt !== "number")
-      return null;
-    return {
-      id: parsed.id,
-      title: sanitizeTitle(parsed.title),
-      description: sanitizeDescription(parsed.description),
-      path: parsed.path,
-      createdAt: parsed.createdAt,
-      updatedAt: typeof parsed.updatedAt === "number" ? parsed.updatedAt : parsed.createdAt,
-      lastOpenedAt: typeof parsed.lastOpenedAt === "number" ? parsed.lastOpenedAt : null
-    };
+    const parsed = JSON.parse(match[1]);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
   }
 }
 function artifactHtmlShell(title, body, description = "") {
   const hasHtmlTag = /<html[\s>]/i.test(body);
-  if (hasHtmlTag)
-    return body;
-  return `<!doctype html>
+  const fullDocument = hasHtmlTag ? body : `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>${title.replace(/[<&>"]/g, "")}</title>
-  ${description ? `<meta name="description" content="${description.replace(/[<&>"]/g, "")}" />` : ""}
+  <title>${escapeHtml(title)}</title>
+  ${description ? `<meta name="description" content="${escapeHtml(description)}" />` : ""}
   <style>
     :root {
       color-scheme: light dark;
@@ -17391,49 +17901,201 @@ function artifactHtmlShell(title, body, description = "") {
 <body>
   <main>
     <header>
-      <h1>${title.replace(/[<&>"]/g, "")}</h1>
-      ${description ? `<p>${description.replace(/[<&>"]/g, "")}</p>` : ""}
+      <h1>${escapeHtml(title)}</h1>
+      ${description ? `<p>${escapeHtml(description)}</p>` : ""}
     </header>
     ${body}
   </main>
 </body>
 </html>`;
+  return injectArtifactMetaScript(fullDocument, {
+    name: title,
+    schemaVersion: 1,
+    description
+  });
 }
-async function listArtifacts() {
-  const root = userDataPath("artifacts");
-  if (!existsSync2(root))
+async function loadArtifactManifest() {
+  try {
+    const raw = await readFile2(artifactManifestPath(), "utf8");
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed))
+      return [];
+    return parsed.filter((item) => Boolean(item && typeof item === "object")).map((item) => ({
+      id: String(item.id || ""),
+      title: sanitizeTitle(item.title),
+      description: sanitizeDescription(item.description),
+      path: String(item.path || ""),
+      createdAt: typeof item.createdAt === "number" ? item.createdAt : Date.now(),
+      updatedAt: typeof item.updatedAt === "number" ? item.updatedAt : typeof item.createdAt === "number" ? item.createdAt : Date.now(),
+      lastOpenedAt: typeof item.lastOpenedAt === "number" ? item.lastOpenedAt : null,
+      versions: Array.isArray(item.versions) ? item.versions.filter((value) => typeof value === "number") : [],
+      isStarred: item.isStarred !== false,
+      mcpTools: Array.isArray(item.mcpTools) ? item.mcpTools.filter((value) => typeof value === "string") : [],
+      mcpServerNames: Array.isArray(item.mcpServerNames) ? item.mcpServerNames.filter((value) => typeof value === "string") : [],
+      thumbnailPath: typeof item.thumbnailPath === "string" ? item.thumbnailPath : null
+    })).filter((item) => item.id && item.path);
+  } catch {
+    return [];
+  }
+}
+async function saveArtifactManifest(records) {
+  await mkdir(artifactsRootPath(), { recursive: true });
+  await writeFile(artifactManifestPath(), JSON.stringify(records, null, 2) + `
+`, "utf8");
+}
+async function readArtifactRecordFromHtml(dir) {
+  try {
+    const path = artifactIndexHtmlPath(dir);
+    const raw = await readFile2(path, "utf8");
+    const meta2 = extractArtifactMetaFromHtml(raw) || {};
+    const title = sanitizeTitle(typeof meta2.name === "string" ? meta2.name : undefined, dir.split(/[/\\]/).pop() || "Artifact");
+    const description = sanitizeDescription(typeof meta2.description === "string" ? meta2.description : "");
+    const info = await stat(path);
+    return {
+      id: dir.split(/[/\\]/).pop() || slugify2(title),
+      title,
+      description,
+      path,
+      createdAt: info.birthtimeMs || info.mtimeMs,
+      updatedAt: info.mtimeMs,
+      lastOpenedAt: null,
+      versions: [],
+      isStarred: true,
+      mcpTools: Array.isArray(meta2.mcpTools) ? meta2.mcpTools.filter((value) => typeof value === "string") : [],
+      mcpServerNames: Array.isArray(meta2.mcpServerNames) ? meta2.mcpServerNames.filter((value) => typeof value === "string") : [],
+      thumbnailPath: existsSync3(artifactThumbnailPath(dir)) ? artifactThumbnailPath(dir) : null
+    };
+  } catch {
+    return null;
+  }
+}
+async function refreshArtifactManifestFromDisk() {
+  const root = artifactsRootPath();
+  if (!existsSync3(root))
     return [];
   const entries = await readdir(root, { withFileTypes: true });
-  const records = await Promise.all(entries.filter((entry) => entry.isDirectory()).map((entry) => readArtifactMetadata(join3(root, entry.name))));
-  return records.filter((record3) => Boolean(record3)).sort((a, b) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt);
+  const records = await Promise.all(entries.filter((entry) => entry.isDirectory()).map((entry) => readArtifactRecordFromHtml(join5(root, entry.name))));
+  const normalized = records.filter((record3) => Boolean(record3)).sort((a, b) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt);
+  await saveArtifactManifest(normalized);
+  return normalized;
+}
+async function findArtifactByPath(path) {
+  const manifest = await loadArtifactManifest();
+  return manifest.find((record3) => record3.path === path) || null;
+}
+async function upsertArtifactRecord(record3) {
+  const manifest = await loadArtifactManifest();
+  const next = [...manifest.filter((item) => item.id !== record3.id), record3].sort((a, b) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt);
+  await saveArtifactManifest(next);
+  sendToWindow("artifact:event", { kind: "changed", artifacts: next });
+  return record3;
+}
+async function listArtifacts() {
+  const manifest = await loadArtifactManifest();
+  if (manifest.length)
+    return manifest;
+  return refreshArtifactManifestFromDisk();
 }
 async function createArtifact(input) {
-  const id = crypto.randomUUID();
-  const now = Date.now();
   const title = sanitizeTitle(input.title);
+  const id = slugify2(title);
+  const now = Date.now();
   const description = sanitizeDescription(input.description);
   const dir = artifactDirForId(id, title);
-  const path = join3(dir, "index.html");
+  const path = artifactIndexHtmlPath(dir);
+  const versionsDir = artifactVersionsDir(dir);
+  const existing = (await listArtifacts()).find((record4) => record4.id === id) || await readArtifactRecordFromHtml(dir);
   await mkdir(dir, { recursive: true });
+  if (existing && existsSync3(existing.path)) {
+    await mkdir(versionsDir, { recursive: true });
+    await copyFile(existing.path, join5(versionsDir, `${existing.updatedAt || existing.createdAt}.html`));
+  }
   await writeFile(path, artifactHtmlShell(title, input.html, description), "utf8");
   const record3 = {
     id,
     title,
     description,
     path,
-    createdAt: now,
+    createdAt: existing?.createdAt || now,
     updatedAt: now,
-    lastOpenedAt: null
+    lastOpenedAt: existing?.lastOpenedAt || null,
+    versions: [...existing?.versions || [], ...existing ? [existing.updatedAt || existing.createdAt] : []].slice(-100),
+    isStarred: true,
+    mcpTools: existing?.mcpTools || [],
+    mcpServerNames: existing?.mcpServerNames || [],
+    thumbnailPath: existsSync3(artifactThumbnailPath(dir)) ? artifactThumbnailPath(dir) : null
   };
-  await writeArtifactMetadata(record3);
-  return record3;
+  return upsertArtifactRecord(record3);
+}
+async function listArtifactVersions(id) {
+  const record3 = (await listArtifacts()).find((artifact) => artifact.id === id);
+  if (!record3)
+    return [];
+  const dir = dirname3(record3.path);
+  const versionsDir = artifactVersionsDir(dir);
+  if (!existsSync3(versionsDir))
+    return [];
+  const entries = await readdir(versionsDir, { withFileTypes: true });
+  return entries.filter((entry) => entry.isFile() && /\.html$/i.test(entry.name)).map((entry) => {
+    const timestamp = Number(entry.name.replace(/\.html$/i, "")) || 0;
+    return { timestamp, path: join5(versionsDir, entry.name) };
+  }).filter((entry) => entry.timestamp > 0).sort((a, b) => b.timestamp - a.timestamp);
+}
+async function exportArtifact(id) {
+  const record3 = (await listArtifacts()).find((artifact) => artifact.id === id);
+  if (!record3)
+    throw new Error(`Artifact not found: ${id}`);
+  const defaultPath = join5(app.getPath("documents"), `${record3.id}.zip`);
+  const target = await dialog.showSaveDialog(mainWindow, {
+    title: "Export artifact",
+    defaultPath,
+    filters: [{ name: "Zip archive", extensions: ["zip"] }]
+  });
+  if (target.canceled || !target.filePath)
+    throw new Error("Export cancelled");
+  const result = await runProcess("powershell", [
+    "-NoProfile",
+    "-Command",
+    `Compress-Archive -LiteralPath '${dirname3(record3.path).replace(/'/g, "''")}\\*' -DestinationPath '${target.filePath.replace(/'/g, "''")}' -Force`
+  ]);
+  if (result.code !== 0)
+    throw new Error(result.stderr || result.stdout || "Export failed");
+  return target.filePath;
+}
+async function importArtifact() {
+  const picked = await dialog.showOpenDialog(mainWindow, {
+    title: "Import artifact",
+    properties: ["openFile"],
+    filters: [{ name: "Zip archive", extensions: ["zip"] }]
+  });
+  if (picked.canceled || !picked.filePaths[0])
+    throw new Error("Import cancelled");
+  const tempDir = join5(app.getPath("temp"), `autoagent-artifact-import-${Date.now()}`);
+  await mkdir(tempDir, { recursive: true });
+  const result = await runProcess("powershell", [
+    "-NoProfile",
+    "-Command",
+    `Expand-Archive -LiteralPath '${picked.filePaths[0].replace(/'/g, "''")}' -DestinationPath '${tempDir.replace(/'/g, "''")}' -Force`
+  ]);
+  if (result.code !== 0)
+    throw new Error(result.stderr || result.stdout || "Import failed");
+  const files = await collectFiles(tempDir, 2000);
+  const htmlRelative = files.find((file) => /(^|\/)index\.html$/i.test(file));
+  if (!htmlRelative)
+    throw new Error("Imported zip does not contain index.html");
+  const htmlPath = join5(tempDir, htmlRelative.replace(/\//g, "\\"));
+  const html = await readFile2(htmlPath, "utf8");
+  const meta2 = extractArtifactMetaFromHtml(html) || {};
+  const title = sanitizeTitle(typeof meta2.name === "string" ? meta2.name : undefined, htmlRelative.split(/[\\/]/).slice(-2, -1)[0] || "Artifact");
+  const description = sanitizeDescription(typeof meta2.description === "string" ? meta2.description : "");
+  return createArtifact({ title, description, html: stripArtifactMetaScript(html) });
 }
 async function touchArtifactOpen(path) {
-  const record3 = await readArtifactMetadata(dirname2(path));
+  const record3 = await findArtifactByPath(path);
   if (!record3)
     return null;
   const next = { ...record3, lastOpenedAt: Date.now() };
-  await writeArtifactMetadata(next);
+  await upsertArtifactRecord(next);
   return next;
 }
 async function openArtifactWindow(path, title) {
@@ -17446,6 +18108,7 @@ async function openArtifactWindow(path, title) {
     backgroundColor: "#ffffff",
     autoHideMenuBar: true,
     webPreferences: {
+      preload: resolveArtifactPreloadPath(),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true
@@ -17463,44 +18126,17 @@ function resolveDefaultWorkspaceCwd() {
   return homedir2();
 }
 function resolveDefaultOpenccCommand() {
-  if (process.env.AUTOAGENT_CLAUDE_COMMAND?.trim())
-    return process.env.AUTOAGENT_CLAUDE_COMMAND;
-  if (process.env.AUTOAGENT_OPENCC_COMMAND?.trim())
-    return process.env.AUTOAGENT_OPENCC_COMMAND;
-  if (app.isPackaged) {
-    return "opencc";
-  }
-  const workspaceRoot = dirname2(__dirname2);
-  const openccBat = join3(workspaceRoot, "packages", "opencc", "opencc.bat");
-  const openccCli = join3(workspaceRoot, "packages", "opencc", "dist", "cli.js");
-  if (process.platform === "win32" && existsSync2(openccBat)) {
-    return `"${openccBat}"`;
-  }
-  if (existsSync2(openccCli)) {
-    return `bun run "${openccCli}" --dangerously-skip-permissions`;
-  }
-  return "opencc";
-}
-function resolveRuntimeAssetPath(name) {
-  const candidates = [
-    process.resourcesPath ? join3(process.resourcesPath, name) : "",
-    join3(__dirname2, name)
-  ].filter(Boolean);
-  for (const candidate of candidates) {
-    if (existsSync2(candidate))
-      return candidate;
-  }
-  return candidates[0] || name;
+  return resolveDefaultOpenccCommandValue();
 }
 function windowsShortcutCandidates() {
   const appData = process.env.APPDATA || "";
   const userProfile = process.env.USERPROFILE || homedir2();
   const programData = process.env.ProgramData || "C:\\ProgramData";
   return [
-    join3(appData, "Microsoft", "Windows", "Start Menu", "Programs", `${PRODUCT_NAME}.lnk`),
-    join3(programData, "Microsoft", "Windows", "Start Menu", "Programs", `${PRODUCT_NAME}.lnk`),
-    join3(userProfile, "Desktop", `${PRODUCT_NAME}.lnk`),
-    join3(appData, "Microsoft", "Internet Explorer", "Quick Launch", "User Pinned", "TaskBar", `${PRODUCT_NAME}.lnk`)
+    join5(appData, "Microsoft", "Windows", "Start Menu", "Programs", `${PRODUCT_NAME}.lnk`),
+    join5(programData, "Microsoft", "Windows", "Start Menu", "Programs", `${PRODUCT_NAME}.lnk`),
+    join5(userProfile, "Desktop", `${PRODUCT_NAME}.lnk`),
+    join5(appData, "Microsoft", "Internet Explorer", "Quick Launch", "User Pinned", "TaskBar", `${PRODUCT_NAME}.lnk`)
   ];
 }
 function forceWriteWindowsShortcut(shortcutPath, executablePath, iconPath, workingDirectory, description) {
@@ -17529,14 +18165,14 @@ function repairWindowsShortcuts() {
     return;
   const iconPath = resolveRuntimeAssetPath("icon.ico");
   const executablePath = process.execPath;
-  const workingDirectory = dirname2(executablePath);
+  const workingDirectory = dirname3(executablePath);
   const description = `${PRODUCT_NAME} Desktop - AI Agent for coding automation`;
   for (const shortcutPath of windowsShortcutCandidates()) {
-    const isPinnedTaskbarShortcut = shortcutPath.includes(join3("User Pinned", "TaskBar"));
-    if (isPinnedTaskbarShortcut && !existsSync2(shortcutPath))
+    const isPinnedTaskbarShortcut = shortcutPath.includes(join5("User Pinned", "TaskBar"));
+    if (isPinnedTaskbarShortcut && !existsSync3(shortcutPath))
       continue;
     try {
-      const operation = existsSync2(shortcutPath) ? "update" : "create";
+      const operation = existsSync3(shortcutPath) ? "update" : "create";
       const updated = shell.writeShortcutLink(shortcutPath, operation, {
         target: executablePath,
         cwd: workingDirectory,
@@ -17557,7 +18193,7 @@ function repairWindowsShortcuts() {
 function defaultSettings() {
   return {
     claudeCommand: resolveDefaultOpenccCommand(),
-    claudeConfigDir: join3(homedir2(), ".autoagent"),
+    claudeConfigDir: join5(homedir2(), ".autoagent"),
     providerId: "deepseek",
     apiType: "anthropic-messages",
     model: process.env.CODEANY_MODEL || "deepseek-v4-pro[1m]",
@@ -17604,7 +18240,7 @@ function defaultSettings() {
     leftSidebarWidth: 260,
     rightPanelOpen: true,
     rightPanelWidth: 420,
-    appendSystemPrompt: "You are AutoAgent, a desktop coding agent. Prefer concise answers, preserve user files, and ask before destructive or external actions."
+    appendSystemPrompt: ""
   };
 }
 async function readJson(path, fallback) {
@@ -17616,7 +18252,7 @@ async function readJson(path, fallback) {
   }
 }
 async function writeJson(path, value) {
-  await mkdir(dirname2(path), { recursive: true });
+  await mkdir(dirname3(path), { recursive: true });
   await writeFile(path, `${JSON.stringify(value, null, 2)}
 `, "utf8");
 }
@@ -17634,7 +18270,7 @@ function normalizeSettings(input) {
   if (!base.baseURL && endpoint.url)
     base.baseURL = endpoint.url;
   base.apiType = base.providerId === "anthropic" ? "anthropic-messages" : base.apiType || inferApiType(base.model);
-  if (!base.cwd || !existsSync2(base.cwd))
+  if (!base.cwd || !existsSync3(base.cwd))
     base.cwd = resolveDefaultWorkspaceCwd();
   if (!base.claudeCommand?.trim())
     base.claudeCommand = defaultSettings().claudeCommand;
@@ -17674,12 +18310,12 @@ function providerCatalog() {
 }
 async function listChats() {
   const dir = userDataPath("sessions");
-  if (!existsSync2(dir))
+  if (!existsSync3(dir))
     return [];
   const chats = [];
   const files = await readdir(dir);
   for (const file of files.filter((name) => name.endsWith(".json"))) {
-    chats.push(await readJson(join3(dir, file), emptyChat(file.replace(/\.json$/, ""))));
+    chats.push(await readJson(join5(dir, file), emptyChat(file.replace(/\.json$/, ""))));
   }
   return chats.sort((a, b) => b.updatedAt - a.updatedAt);
 }
@@ -17760,6 +18396,110 @@ function extractEngineText(event) {
   }
   return "";
 }
+function parseArtifactDocument(source) {
+  const raw = source.replace(/^\uFEFF/, "").trim();
+  const frontmatterMatch = raw.match(/^---\s*\r?\n([\s\S]*?)\r?\n---\s*\r?\n?([\s\S]*)$/);
+  if (!frontmatterMatch) {
+    return { title: "Artifact", description: "", html: raw };
+  }
+  const metadata = {};
+  for (const line of frontmatterMatch[1].split(/\r?\n/)) {
+    const separator = line.indexOf(":");
+    if (separator <= 0)
+      continue;
+    metadata[line.slice(0, separator).trim().toLowerCase()] = line.slice(separator + 1).trim();
+  }
+  return {
+    title: sanitizeTitle(metadata.title),
+    description: sanitizeDescription(metadata.description),
+    html: frontmatterMatch[2].trim()
+  };
+}
+function extractArtifactsFromText(text) {
+  const artifacts = [];
+  const pattern = /```(?:artifact-html|artifact)\r?\n([\s\S]*?)```/gi;
+  for (const match of text.matchAll(pattern)) {
+    const body = match[1]?.trim();
+    if (!body)
+      continue;
+    artifacts.push(parseArtifactDocument(body));
+  }
+  return artifacts;
+}
+async function syncArtifactsFromAssistantText(text) {
+  const artifacts = extractArtifactsFromText(text);
+  if (!artifacts.length)
+    return [];
+  const output = [];
+  for (const artifact of artifacts) {
+    output.push(await createArtifact(artifact));
+  }
+  return output;
+}
+function extractHtmlFileReferencesFromText(text) {
+  const absoluteMatches = text.match(/[A-Za-z]:\\[^\r\n"'<>|?*]+?\.html\b/gi) || [];
+  const relativeMatches = text.match(/(?:^|[\s(【\[`'"])((?:\.{1,2}[\\/])?[A-Za-z0-9_\-./\\ ]+?\.html)\b/gi) || [];
+  const normalized = [...absoluteMatches, ...relativeMatches].map((item) => item.trim().replace(/^[\s(【\[`'"]+/, "").replace(/[),.;\]】`'"]+$/g, "")).filter((item) => item && !item.includes("://") && !item.startsWith("<"));
+  return [...new Set(normalized)];
+}
+function resolveHtmlFileReference(reference, cwd) {
+  const trimmed = reference.trim();
+  if (!trimmed)
+    return null;
+  if (isAbsolute(trimmed))
+    return trimmed;
+  const candidate = join5(cwd, trimmed);
+  return candidate;
+}
+async function createArtifactFromHtmlFile(path) {
+  try {
+    if (!existsSync3(path))
+      return null;
+    const html = await readFile2(path, "utf8");
+    if (!html.trim())
+      return null;
+    const titleMatch = html.match(/<title>([\s\S]*?)<\/title>/i);
+    const fileName = path.split(/[\\/]/).pop()?.replace(/\.html$/i, "") || "Artifact";
+    const title = sanitizeTitle(titleMatch?.[1]?.trim() || fileName);
+    const meta2 = extractArtifactMetaFromHtml(html) || {};
+    const description = sanitizeDescription(typeof meta2.description === "string" ? meta2.description : "");
+    return createArtifact({
+      title,
+      description,
+      html: stripArtifactMetaScript(html)
+    });
+  } catch {
+    return null;
+  }
+}
+function appendArtifactRefsToMessage(text, artifacts) {
+  if (!artifacts.length)
+    return text;
+  const refs = artifacts.filter((artifact) => !text.includes(`"path": "${artifact.path.replace(/\\/g, "\\\\")}"`)).map((artifact) => `
+\`\`\`artifact-ref
+${JSON.stringify({ path: artifact.path, title: artifact.title, description: artifact.description }, null, 2)}
+\`\`\`
+`).join(`
+`);
+  return refs ? `${text.trim()}
+
+${refs}` : text;
+}
+async function materializeArtifactsFromAssistantText(text, cwd) {
+  const createdFromBlocks = await syncArtifactsFromAssistantText(text);
+  if (createdFromBlocks.length)
+    return { text, artifacts: createdFromBlocks };
+  const paths = extractHtmlFileReferencesFromText(text).map((reference) => resolveHtmlFileReference(reference, cwd)).filter((path) => Boolean(path));
+  if (!paths.length)
+    return { text, artifacts: [] };
+  const artifacts = (await Promise.all(paths.map((path) => createArtifactFromHtmlFile(path)))).filter((artifact) => Boolean(artifact));
+  if (!artifacts.length)
+    return { text, artifacts: [] };
+  return {
+    text: appendArtifactRefsToMessage(text, artifacts),
+    artifacts
+  };
+}
 function sendToWindow(channel, payload) {
   if (!mainWindow?.isDestroyed())
     mainWindow?.webContents.send(channel, payload);
@@ -17809,7 +18549,7 @@ async function ensureRendererServer() {
       try {
         const requestUrl = new URL(req.url || "/", "http://127.0.0.1");
         const resolved = await resolveClientFile(requestUrl.pathname);
-        const path = resolved || join3(clientDir, "index.html");
+        const path = resolved || join5(clientDir, "index.html");
         const body = await readFile2(path);
         res.writeHead(200, {
           "content-type": contentTypeForFile(path),
@@ -17840,7 +18580,7 @@ async function ensureRendererServer() {
   return rendererServerPromise;
 }
 async function resolveClientFile(pathname, fallback = "index") {
-  const requested = join3(clientDir, decodeURIComponent(pathname));
+  const requested = join5(clientDir, decodeURIComponent(pathname));
   const rel = relative(clientDir, requested);
   if (rel.startsWith("..") || isAbsolute(rel))
     return null;
@@ -17848,14 +18588,14 @@ async function resolveClientFile(pathname, fallback = "index") {
     try {
       if (!path.endsWith("/") && !extname(path)) {
         const htmlPath = `${path}.html`;
-        if (existsSync2(htmlPath))
+        if (existsSync3(htmlPath))
           return htmlPath;
       }
       const info = await stat(path);
       if (info.isFile())
         return path;
       if (info.isDirectory())
-        return probe(join3(path, `${fallback}.html`));
+        return probe(join5(path, `${fallback}.html`));
     } catch {
       return null;
     }
@@ -17881,7 +18621,7 @@ function registerClientProtocol() {
     if (url2.hostname !== "app") {
       return new Response("hostname mismatch", { status: 404 });
     }
-    const fallback = join3(clientDir, "index.html");
+    const fallback = join5(clientDir, "index.html");
     const resolved = await resolveClientFile(url2.pathname);
     if (!resolved && extname(url2.pathname) && extname(url2.pathname) !== ".html") {
       return new Response("not found", { status: 404 });
@@ -18148,6 +18888,7 @@ async function connectMCPServer(displayId, config2) {
   await client.connect(transport);
   const toolsResult = await client.listTools();
   return {
+    client,
     status: "connected",
     tools: toolsResult.tools || [],
     close: async () => {
@@ -18247,11 +18988,152 @@ async function discoverMcpTools(input) {
   }
   return results;
 }
+function parseAutoworkToolTarget(value) {
+  const trimmed = value.trim();
+  if (trimmed.includes("/")) {
+    const [serverHint, ...rest] = trimmed.split("/");
+    return { serverHint, toolName: rest.join("/").trim() };
+  }
+  if (trimmed.includes("::")) {
+    const [serverHint, ...rest] = trimmed.split("::");
+    return { serverHint, toolName: rest.join("::").trim() };
+  }
+  if (trimmed.includes(".")) {
+    const [serverHint, ...rest] = trimmed.split(".");
+    if (rest.length)
+      return { serverHint, toolName: rest.join(".").trim() };
+  }
+  return { toolName: trimmed };
+}
+async function autoworkCallMcpTool(name, args) {
+  const target = parseAutoworkToolTarget(name);
+  const internal = await maybeInvokeAutoworkInternalTool(target.serverHint, target.toolName, args, {
+    createArtifact,
+    openArtifact: openArtifactWindow
+  });
+  if (typeof internal !== "undefined")
+    return internal;
+  const servers = (await listMcpServersFromDatabase()).filter((server) => server.enabled);
+  const ordered = target.serverHint ? [...servers.filter((server) => server.displayId === target.serverHint || server.id === target.serverHint), ...servers.filter((server) => server.displayId !== target.serverHint && server.id !== target.serverHint)] : servers;
+  let lastError = null;
+  for (const server of ordered) {
+    let connection = null;
+    try {
+      connection = await connectMCPServer(server.displayId, normalizeMcpConfig(server.config));
+      const match = connection.tools.find((tool) => tool.name === target.toolName);
+      if (!match)
+        continue;
+      const client = connection.client;
+      if (!client)
+        throw new Error("MCP client unavailable");
+      const result = await client.callTool({ name: target.toolName, arguments: args && typeof args === "object" ? args : {} });
+      return result;
+    } catch (error2) {
+      lastError = error2;
+    } finally {
+      await connection?.close().catch(() => {
+        return;
+      });
+    }
+  }
+  throw new Error(lastError instanceof Error ? lastError.message : `Autowork MCP tool not found: ${name}`);
+}
+async function autoworkAskClaude(prompt, data) {
+  const settings = await loadSettings();
+  const eng = await getEngine(settings);
+  let assistantText = "";
+  const content = typeof data === "undefined" ? prompt : `${prompt}
+
+Context data:
+${JSON.stringify(data, null, 2)}`;
+  for await (const ev of eng.query({
+    claudeCommand: settings.claudeCommand,
+    claudeConfigDir: settings.claudeConfigDir,
+    model: settings.model,
+    fallbackModel: settings.fallbackModel,
+    agentName: settings.agentName,
+    thinkingMode: settings.thinkingMode,
+    maxThinkingTokens: settings.maxThinkingTokens,
+    thinkingDisplay: settings.thinkingDisplay,
+    effort: settings.effort,
+    maxBudgetUsd: settings.maxBudgetUsd,
+    taskBudget: settings.taskBudget,
+    maxTurns: Math.min(settings.maxTurns, 8),
+    cwd: settings.cwd,
+    appendSystemPrompt: composeAutoworkSystemPrompt({
+      currentDateTime: new Date().toLocaleString(),
+      currentTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      cwd: settings.cwd,
+      workspaceFolder: settings.cwd,
+      modelName: settings.model,
+      accountName: process.env.USERNAME || process.env.USER || "",
+      folderSelected: settings.cwd ? "yes" : "no",
+      hiddenAppend: settings.appendSystemPrompt
+    }),
+    resumeSessionId: undefined,
+    resumeSessionAt: "",
+    sessionId: "",
+    continueSession: false,
+    forkSession: false,
+    noSessionPersistence: true,
+    apiKey: settings.apiKey,
+    baseURL: settings.baseURL,
+    providerId: settings.providerId,
+    apiType: settings.apiType,
+    permissionMode: settings.permissionMode,
+    permissionPromptTool: settings.permissionPromptTool,
+    allowDangerouslySkipPermissions: settings.allowDangerouslySkipPermissions,
+    allowedTools: settings.allowedTools,
+    disallowedTools: settings.disallowedTools,
+    tools: settings.tools,
+    betas: settings.betas,
+    jsonSchema: settings.jsonSchema,
+    mcpConfig: settings.mcpConfig,
+    strictMcpConfig: settings.strictMcpConfig,
+    settingSources: settings.settingSources,
+    addDirs: settings.addDirs,
+    pluginDir: settings.pluginDir,
+    managedSettings: settings.managedSettings,
+    channels: settings.channels,
+    includePartialMessages: false,
+    includeHookEvents: false,
+    assistant: settings.assistant,
+    debug: settings.debug,
+    debugFile: settings.debugFile,
+    verbose: false,
+    extraCliArgs: settings.extraCliArgs,
+    messages: [{ role: "user", content }]
+  })) {
+    const text = ev.type === "error" ? ev.error || "" : extractEngineText(ev);
+    if (ev.type === "text_delta" && text)
+      assistantText += text;
+    if (ev.type === "assistant" && text)
+      assistantText = text;
+    if (ev.type === "result" && text && !assistantText.trim())
+      assistantText = text;
+  }
+  return { text: assistantText.trim() };
+}
+async function autoworkNavigateHost(direction) {
+  const window = BrowserWindow2.getFocusedWindow() || mainWindow;
+  if (!window)
+    return { ok: false };
+  const contents = window.webContents;
+  if (direction === "back" && contents.navigationHistory.canGoBack()) {
+    contents.navigationHistory.goBack();
+    return { ok: true };
+  }
+  if (direction === "forward" && contents.navigationHistory.canGoForward()) {
+    contents.navigationHistory.goForward();
+    return { ok: true };
+  }
+  return { ok: false };
+}
 async function collectFiles(root, limit = 500, prefix = "") {
   const output = [];
   let entries;
   try {
-    entries = await readdir(join3(root, prefix), { withFileTypes: true });
+    entries = await readdir(join5(root, prefix), { withFileTypes: true });
   } catch {
     return output;
   }
@@ -18301,7 +19183,16 @@ async function runAgent(request) {
         taskBudget: settings.taskBudget,
         maxTurns: settings.maxTurns,
         cwd: settings.cwd,
-        appendSystemPrompt: settings.appendSystemPrompt,
+        appendSystemPrompt: composeAutoworkSystemPrompt({
+          currentDateTime: new Date().toLocaleString(),
+          currentTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          cwd: settings.cwd,
+          workspaceFolder: settings.cwd,
+          modelName: settings.model,
+          accountName: process.env.USERNAME || process.env.USER || "",
+          folderSelected: settings.cwd ? "yes" : "no",
+          hiddenAppend: settings.appendSystemPrompt
+        }),
         resumeSessionId,
         resumeSessionAt: settings.resumeSessionAt,
         sessionId: settings.sessionId,
@@ -18353,7 +19244,8 @@ async function runAgent(request) {
         sendToWindow("agent:event", { runId, chatId: request.chatId, kind, text, event: ev });
       }
       if (assistantText.trim()) {
-        await appendMessage(request.chatId, { role: "assistant", text: assistantText });
+        const materialized = await materializeArtifactsFromAssistantText(assistantText, settings.cwd);
+        await appendMessage(request.chatId, { role: "assistant", text: materialized.text });
       }
       sendToWindow("agent:event", { runId, chatId: request.chatId, kind: "done" });
     } catch (error2) {
@@ -18405,7 +19297,7 @@ async function createWindow() {
     show: true,
     backgroundColor: "#ffffff",
     webPreferences: {
-      preload: join3(__dirname2, "preload.cjs"),
+      preload: join5(__dirname2, "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false
@@ -18441,20 +19333,50 @@ async function createWindow() {
     console.error(`[window] render-process-gone reason=${details.reason} exitCode=${details.exitCode}`);
   });
   const loadStart = performance.now();
+  let loaded = false;
   try {
     const rendererUrl = await ensureRendererServer();
+    await new Promise((r) => setTimeout(r, 100));
     await mainWindow.loadURL(rendererUrl);
+    loaded = true;
   } catch (error2) {
     const message = error2 instanceof Error ? `${error2.name}: ${error2.message}` : String(error2);
     console.error("[window] renderer shell load failed", error2);
-    await mainWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(`<!doctype html><html><body style="font-family: sans-serif; padding: 24px;"><h1>AutoAgent failed to load</h1><pre>${message}</pre></body></html>`)}`);
+    if (!loaded && rendererServer) {
+      try {
+        const address = rendererServer.address();
+        if (address) {
+          console.error("[window] retrying renderer load...");
+          await mainWindow.loadURL(`http://127.0.0.1:${address.port}/index.html`);
+          loaded = true;
+        }
+      } catch (retryError) {
+        console.error("[window] renderer retry also failed", retryError);
+      }
+    }
+  }
+  if (!loaded) {
+    try {
+      const fallbackPath = join5(clientDir, "index.html");
+      await mainWindow.loadURL(`file://${fallbackPath}`);
+      loaded = true;
+    } catch (fileError) {
+      console.error("[window] file:// fallback failed", fileError);
+      try {
+        const message = fileError instanceof Error ? fileError.message : String(fileError);
+        await mainWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(`<!doctype html><html><body style="font-family: sans-serif; padding: 24px;"><h1>AutoAgent failed to load</h1><pre>${message}</pre></body></html>`)}`);
+        loaded = true;
+      } catch {
+        console.error("[window] data: fallback also failed");
+      }
+    }
   }
   console.error(`[perf] +${(performance.now() - t0).toFixed(0)}ms (Δ${(performance.now() - loadStart).toFixed(0)}ms) loadURL done`);
 }
 async function syncEngineConfig(settings) {
   const t = performance.now();
-  const configDir = settings.claudeConfigDir?.trim() || join3(homedir2(), ".autoagent");
-  const configPath = join3(configDir, ".claude.json");
+  const configDir = settings.claudeConfigDir?.trim() || join5(homedir2(), ".autoagent");
+  const configPath = join5(configDir, ".claude.json");
   try {
     let existing = {};
     try {
@@ -18477,7 +19399,7 @@ async function syncEngineConfig(settings) {
         ANTHROPIC_BASE_URL: settings.baseURL || ""
       }
     };
-    await mkdir(dirname2(configPath), { recursive: true });
+    await mkdir(dirname3(configPath), { recursive: true });
     await writeFile(configPath, JSON.stringify(merged, null, 2) + `
 `, "utf8");
     console.error(`[perf] syncEngineConfig done in ${(performance.now() - t).toFixed(0)}ms`);
@@ -18563,7 +19485,7 @@ ipcMain.handle("artifact:create", async (_event, input) => {
 ipcMain.handle("artifact:list", async () => listArtifacts());
 ipcMain.handle("artifact:load", async (_event, input) => {
   if (input.path)
-    return readArtifactMetadata(dirname2(input.path));
+    return findArtifactByPath(input.path);
   if (!input.id)
     return null;
   const artifacts = await listArtifacts();
@@ -18573,6 +19495,17 @@ ipcMain.handle("artifact:open", async (_event, input) => {
   await openArtifactWindow(input.path, input.title);
   return { opened: true, artifact: await touchArtifactOpen(input.path) };
 });
+ipcMain.handle("artifact:source", async (_event, input) => {
+  return { html: await readFile2(input.path, "utf8") };
+});
+ipcMain.handle("artifact:versions", async (_event, input) => listArtifactVersions(input.id));
+ipcMain.handle("artifact:export", async (_event, input) => ({ path: await exportArtifact(input.id) }));
+ipcMain.handle("artifact:import", async () => importArtifact());
+ipcMain.handle("autowork:call-mcp-tool", async (_event, input) => autoworkCallMcpTool(input.name, input.args || {}));
+ipcMain.handle("autowork:ask-claude", async (_event, input) => autoworkAskClaude(input.prompt, input.data));
+ipcMain.handle("autowork:run-scheduled-task", async () => ({ ok: false, error: "Scheduled tasks are not configured in AutoAgent yet." }));
+ipcMain.handle("autowork:navigate-host", async (_event, input) => autoworkNavigateHost(input.direction));
+ipcMain.handle("autowork:open-external-url", async (_event, input) => shell.openExternal(input.url));
 ipcMain.handle("mcp:list", async () => listMcpServersFromDatabase());
 ipcMain.handle("mcp:save", async (_event, input) => saveMcpServer(input));
 ipcMain.handle("mcp:toggle", async (_event, input) => toggleMcpServer(input));
@@ -18599,17 +19532,17 @@ async function saveEnabledSkills() {
 async function scanSkills(cwd) {
   const home = homedir2();
   const systemDirs = [
-    join3(home, ".claude", "skills"),
-    join3(home, ".codex", "skills")
+    join5(home, ".claude", "skills"),
+    join5(home, ".codex", "skills")
   ];
-  const projectDir = join3(cwd, ".claude", "skills");
+  const projectDir = join5(cwd, ".claude", "skills");
   const dirs = [
-    ...systemDirs.map((path) => ({ path, source: "system", exists: existsSync2(path) })),
-    { path: projectDir, source: "project", exists: existsSync2(projectDir) }
+    ...systemDirs.map((path) => ({ path, source: "system", exists: existsSync3(path) })),
+    { path: projectDir, source: "project", exists: existsSync3(projectDir) }
   ];
   const skills = [];
   async function collectFromDir(baseDir, source) {
-    if (!existsSync2(baseDir))
+    if (!existsSync3(baseDir))
       return;
     let entries;
     try {
@@ -18618,11 +19551,11 @@ async function scanSkills(cwd) {
       return;
     }
     for (const entry of entries) {
-      const fullPath = join3(baseDir, entry.name);
+      const fullPath = join5(baseDir, entry.name);
       if (entry.isDirectory()) {
-        const skillMd = join3(fullPath, "SKILL.md");
-        const altMd = join3(fullPath, "skill.md");
-        const mdPath = existsSync2(skillMd) ? skillMd : existsSync2(altMd) ? altMd : null;
+        const skillMd = join5(fullPath, "SKILL.md");
+        const altMd = join5(fullPath, "skill.md");
+        const mdPath = existsSync3(skillMd) ? skillMd : existsSync3(altMd) ? altMd : null;
         if (mdPath) {
           try {
             const content = await readFile2(mdPath, "utf-8");
@@ -18744,13 +19677,13 @@ ipcMain.handle("getDir", async (_event, input) => {
 ipcMain.handle("getShellEnv", async () => process.env);
 ipcMain.handle("appCacheGet", async (_event, input) => {
   const path = userDataPath("cache", `${input.key}.json`);
-  if (!existsSync2(path))
+  if (!existsSync3(path))
     return null;
   return readFile2(path, "utf8");
 });
 ipcMain.handle("appCacheSet", async (_event, input) => {
   const path = userDataPath("cache", `${input.key}.json`);
-  await mkdir(dirname2(path), { recursive: true });
+  await mkdir(dirname3(path), { recursive: true });
   await writeFile(path, input.value, "utf8");
 });
 ipcMain.handle("osInfo", async () => ({ platform: process.platform, arch: process.arch, version: process.version }));
@@ -18763,7 +19696,7 @@ ipcMain.handle("invalidateQueryClient", async (_event, input) => {
 ipcMain.handle("discoverSkill", async (_event, input) => {
   const root = workDirFrom(input) || (await loadSettings()).cwd;
   const files = await collectFiles(root, 250);
-  return files.filter((file) => /(^|\/)(skills?|\.codex|\.agents)\//i.test(file) || /SKILL\.md$/i.test(file)).map((file) => ({ id: file, name: file.split("/").pop()?.replace(/\.md$/i, "") || file, path: join3(root, file) }));
+  return files.filter((file) => /(^|\/)(skills?|\.codex|\.agents)\//i.test(file) || /SKILL\.md$/i.test(file)).map((file) => ({ id: file, name: file.split("/").pop()?.replace(/\.md$/i, "") || file, path: join5(root, file) }));
 });
 ipcMain.handle("glob", async (_event, input) => {
   const root = workDirFrom(input) || (await loadSettings()).cwd;
@@ -18838,7 +19771,7 @@ ipcMain.handle("readFile", async (_event, input) => Uint8Array.from(await readFi
 ipcMain.handle("readDir", async (_event, input) => readdir(input.path));
 ipcMain.handle("saveRecordingAsWav", async (_event, input) => {
   const path = userDataPath("recordings", input.filename);
-  await mkdir(dirname2(path), { recursive: true });
+  await mkdir(dirname3(path), { recursive: true });
   await writeFile(path, createWavBuffer(input.buffer || [], input.sampleRate || 44100));
   return path;
 });
@@ -18847,14 +19780,14 @@ ipcMain.handle("resolveInAppFiles", async (_event, input) => {
   const relativePath = typeof input === "string" ? input : input.path || input.id || "";
   return userDataPath("files", relativePath);
 });
-ipcMain.handle("pathExists", async (_event, input) => existsSync2(input.path));
+ipcMain.handle("pathExists", async (_event, input) => existsSync3(input.path));
 ipcMain.handle("ensureDir", async (_event, input) => mkdir(input.path, { recursive: true }));
 ipcMain.handle("writeTextFile", async (_event, input) => {
-  await mkdir(dirname2(input.path), { recursive: true });
+  await mkdir(dirname3(input.path), { recursive: true });
   await writeFile(input.path, input.content, "utf8");
 });
 ipcMain.handle("writeFile", async (_event, input) => {
-  await mkdir(dirname2(input.path), { recursive: true });
+  await mkdir(dirname3(input.path), { recursive: true });
   await writeFile(input.path, Buffer.from(input.content));
 });
 ipcMain.handle("removePath", async (_event, input) => rm(input.path, { recursive: true, force: true }));
@@ -18864,7 +19797,7 @@ ipcMain.handle("pathStats", async (_event, input) => {
 });
 ipcMain.handle("createDir", async (_event, input) => mkdir(input.path, { recursive: true }));
 ipcMain.handle("copyFile", async (_event, input) => {
-  await mkdir(dirname2(input.dest), { recursive: true });
+  await mkdir(dirname3(input.dest), { recursive: true });
   await copyFile(input.src, input.dest);
 });
 ipcMain.handle("zipFolder", async (_event, input) => {

@@ -78,6 +78,11 @@ cp "${DESKTOP_DIST_DIR}/main.js" "${PACKAGING_DIR}/usr/lib/autoagent/main.js"
 cp "${DESKTOP_DIST_DIR}/preload.cjs" "${PACKAGING_DIR}/usr/lib/autoagent/preload.cjs"
 rm -rf "${PACKAGING_DIR}/usr/lib/autoagent/client"
 cp -r "${DESKTOP_DIST_DIR}/client" "${PACKAGING_DIR}/usr/lib/autoagent/client"
+# Copy autowork prompt assets for desktop replica / imagine features
+rm -rf "${PACKAGING_DIR}/usr/lib/autoagent/autowork"
+cp -r "${DESKTOP_DIST_DIR}/autowork" "${PACKAGING_DIR}/usr/lib/autoagent/autowork"
+# Copy artifact preload for standalone artifact windows
+cp "${DESKTOP_DIST_DIR}/artifact-preload.cjs" "${PACKAGING_DIR}/usr/lib/autoagent/artifact-preload.cjs"
 # Copy app icon for BrowserWindow (dock/taskbar icon)
 cp "${PROJECT_DIR}/assets/icon.png" "${PACKAGING_DIR}/usr/lib/autoagent/icon.png"
 # Sync hicolor theme icons from assets
@@ -101,9 +106,11 @@ chmod 755 "${PACKAGING_DIR}/usr/lib/autoagent/electron-dist/chrome_crashpad_hand
 chmod 644 "${PACKAGING_DIR}/usr/lib/autoagent/cli.js"
 chmod 644 "${PACKAGING_DIR}/usr/lib/autoagent/main.js"
 chmod 644 "${PACKAGING_DIR}/usr/lib/autoagent/preload.cjs"
+chmod 644 "${PACKAGING_DIR}/usr/lib/autoagent/artifact-preload.cjs"
 chmod 644 "${PACKAGING_DIR}/usr/lib/autoagent/icon.png"
 chmod 644 "${PACKAGING_DIR}/usr/lib/autoagent/package.json"
 find "${PACKAGING_DIR}/usr/lib/autoagent/client" -type f -exec chmod 644 {} \;
+find "${PACKAGING_DIR}/usr/lib/autoagent/autowork" -type f -exec chmod 644 {} \;
 find "${PACKAGING_DIR}/usr/share/icons" -type f -exec chmod 644 {} \;
 find "${PACKAGING_DIR}/usr/share/applications" -type f -exec chmod 644 {} \;
 

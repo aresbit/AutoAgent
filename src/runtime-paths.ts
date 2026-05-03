@@ -84,6 +84,9 @@ export function resolveBundledBunBinaryPath(): string | null {
     ...names.map((name) => join(appRootDir, 'build-resources', name)),
     ...names.map((name) => join(appRootDir, 'dist', name)),
     '/usr/lib/autoagent/bun',
+    ...names.map((name) => join('/usr', 'bin', name)),
+    ...names.map((name) => join('/usr', 'local', 'bin', name)),
+    ...names.map((name) => join(process.env.HOME || '/root', '.bun', 'bin', name)),
   ]);
 }
 
