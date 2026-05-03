@@ -64,7 +64,7 @@ const api = {
   deleteMcpServer: (id: string) => ipcRenderer.invoke('mcp:delete', { id }),
   discoverMcpTools: (input?: unknown) => ipcRenderer.invoke('mcp:discover', input),
   listSkills: (cwd?: string) => ipcRenderer.invoke('skill:list', cwd),
-  toggleSkill: (name: string, enabled: boolean) => ipcRenderer.invoke('skill:toggle', name, enabled),
+  toggleSkill: (name: string, enabled: boolean, skillPath?: string) => ipcRenderer.invoke('skill:toggle', name, enabled, skillPath),
   gitStatus: (workDir: string) => ipcRenderer.invoke('workspace:git-status', { workDir }),
   openExternal: (url: string) => ipcRenderer.invoke('shell:open-external', url),
   onAgentEvent: (handler: (payload: unknown) => void) => {

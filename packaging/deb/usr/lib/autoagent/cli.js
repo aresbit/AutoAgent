@@ -229514,9 +229514,19 @@ var init_claudemd = __esm(() => {
         result.push(...await processMemoryFile(projectPath, "Project", processedPaths, includeExternal));
         const dotClaudePath = join47(dir, ".claude", "CLAUDE.md");
         result.push(...await processMemoryFile(dotClaudePath, "Project", processedPaths, includeExternal));
+        const dotAutoAgentPath = join47(dir, ".autoagent", "CLAUDE.md");
+        result.push(...await processMemoryFile(dotAutoAgentPath, "Project", processedPaths, includeExternal));
         const rulesDir = join47(dir, ".claude", "rules");
         result.push(...await processMdRules({
           rulesDir,
+          type: "Project",
+          processedPaths,
+          includeExternal,
+          conditionalRule: false
+        }));
+        const autoAgentRulesDir = join47(dir, ".autoagent", "rules");
+        result.push(...await processMdRules({
+          rulesDir: autoAgentRulesDir,
           type: "Project",
           processedPaths,
           includeExternal,
@@ -428461,6 +428471,7 @@ function registerMCPSkillBuilders(b6) {
 var builders = null;
 
 // packages/opencc/src/skills/loadSkillsDir.ts
+import { statSync as statSync11 } from "fs";
 import { realpath as realpath10 } from "fs/promises";
 import {
   basename as basename23,
@@ -428640,6 +428651,7 @@ async function loadSkillsFromSkillsDir(basePath, source) {
       logError2(e4);
     return [];
   }
+  entries = entries.filter((entry) => !entry.name.startsWith("."));
   const results = await Promise.all(entries.map(async (entry) => {
     try {
       if (!entry.isDirectory() && !entry.isSymbolicLink()) {
@@ -428926,7 +428938,18 @@ var init_loadSkillsDir = __esm(() => {
     const userSkillsDir = join86(getClaudeConfigHomeDir(), "skills");
     const managedSkillsDir = join86(getManagedFilePath(), ".claude", "skills");
     const projectSkillsDirs = getProjectDirsUpToHome("skills", cwd2);
-    logForDebugging(`Loading skills from: managed=${managedSkillsDir}, user=${userSkillsDir}, project=[${projectSkillsDirs.join(", ")}]`);
+    const autoAgentSkillsDirs = getProjectDirsUpToHome("skills", cwd2).flatMap((claudePath) => {
+      const autoAgentPath = claudePath.replace(/\.claude\/skills$/, ".autoagent/skills");
+      if (autoAgentPath === claudePath)
+        return [];
+      try {
+        statSync11(autoAgentPath);
+        return [autoAgentPath];
+      } catch {
+        return [];
+      }
+    });
+    logForDebugging(`Loading skills from: managed=${managedSkillsDir}, user=${userSkillsDir}, project=[${projectSkillsDirs.join(", ")}], autoagent=[${autoAgentSkillsDirs.join(", ")}]`);
     const additionalDirs = getAdditionalDirectoriesForClaudeMd();
     const skillsLocked = isRestrictedToPluginOnly("skills");
     const projectSettingsEnabled = isSettingSourceEnabled("projectSettings") && !skillsLocked;
@@ -428935,26 +428958,35 @@ var init_loadSkillsDir = __esm(() => {
         logForDebugging(`[bare] Skipping skill dir discovery (${additionalDirs.length === 0 ? "no --add-dir" : "projectSettings disabled or skillsLocked"})`);
         return [];
       }
-      const additionalSkillsNested2 = await Promise.all(additionalDirs.map((dir) => loadSkillsFromSkillsDir(join86(dir, ".claude", "skills"), "projectSettings")));
+      const additionalSkillsNested2 = await Promise.all(additionalDirs.flatMap((dir) => [
+        loadSkillsFromSkillsDir(join86(dir, ".claude", "skills"), "projectSettings"),
+        loadSkillsFromSkillsDir(join86(dir, ".autoagent", "skills"), "projectSettings")
+      ]));
       return additionalSkillsNested2.flat().map((s) => s.skill);
     }
     const [
       managedSkills,
       userSkills,
       projectSkillsNested,
+      autoAgentSkillsNested,
       additionalSkillsNested,
       legacyCommands
     ] = await Promise.all([
       isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_POLICY_SKILLS) ? Promise.resolve([]) : loadSkillsFromSkillsDir(managedSkillsDir, "policySettings"),
       isSettingSourceEnabled("userSettings") && !skillsLocked ? loadSkillsFromSkillsDir(userSkillsDir, "userSettings") : Promise.resolve([]),
       projectSettingsEnabled ? Promise.all(projectSkillsDirs.map((dir) => loadSkillsFromSkillsDir(dir, "projectSettings"))) : Promise.resolve([]),
-      projectSettingsEnabled ? Promise.all(additionalDirs.map((dir) => loadSkillsFromSkillsDir(join86(dir, ".claude", "skills"), "projectSettings"))) : Promise.resolve([]),
+      projectSettingsEnabled && autoAgentSkillsDirs.length > 0 ? Promise.all(autoAgentSkillsDirs.map((dir) => loadSkillsFromSkillsDir(dir, "projectSettings"))) : Promise.resolve([]),
+      projectSettingsEnabled ? Promise.all(additionalDirs.flatMap((dir) => [
+        loadSkillsFromSkillsDir(join86(dir, ".claude", "skills"), "projectSettings"),
+        loadSkillsFromSkillsDir(join86(dir, ".autoagent", "skills"), "projectSettings")
+      ])) : Promise.resolve([]),
       skillsLocked ? Promise.resolve([]) : loadSkillsFromCommandsDir(cwd2)
     ]);
     const allSkillsWithPaths = [
       ...managedSkills,
       ...userSkills,
       ...projectSkillsNested.flat(),
+      ...autoAgentSkillsNested.flat(),
       ...additionalSkillsNested.flat(),
       ...legacyCommands
     ];
@@ -505248,7 +505280,7 @@ var init_file_index = __esm(() => {
 });
 
 // packages/opencc/src/hooks/fileSuggestions.ts
-import { statSync as statSync11 } from "fs";
+import { statSync as statSync12 } from "fs";
 import * as path24 from "path";
 function getFileIndex() {
   if (!fileIndex) {
@@ -505296,7 +505328,7 @@ function getGitIndexMtime() {
   if (!repoRoot)
     return null;
   try {
-    return statSync11(path24.join(repoRoot, ".git", "index")).mtimeMs;
+    return statSync12(path24.join(repoRoot, ".git", "index")).mtimeMs;
   } catch {
     return null;
   }

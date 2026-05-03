@@ -569,7 +569,7 @@ function App() {
   }
 
   async function toggleSkill(skill: SkillInfo) {
-    await window.autoagent.toggleSkill(skill.name, !skill.enabled);
+    await window.autoagent.toggleSkill(skill.name, !skill.enabled, skill.path);
     const nextSkills = skills.map((item) => (item.name === skill.name ? { ...item, enabled: !item.enabled } : item));
     setSkills(nextSkills);
     if (!settings) return;

@@ -13,7 +13,7 @@ import {
   shell,
   systemPreferences,
 } from 'electron';
-import { copyFile, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, cp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
@@ -2290,12 +2290,16 @@ async function scanSkills(cwd: string): Promise<{ skills: SkillEntry[]; dirs: Ar
   const systemDirs = [
     join(home, '.claude', 'skills'),
     join(home, '.codex', 'skills'),
+    join(home, '.autoagent', 'skills'),
   ];
-  const projectDir = join(cwd, '.claude', 'skills');
+  const projectDirs = [
+    join(cwd, '.claude', 'skills'),
+    join(cwd, '.autoagent', 'skills'),
+  ];
 
   const dirs = [
     ...systemDirs.map((path) => ({ path, source: 'system' as const, exists: existsSync(path) })),
-    { path: projectDir, source: 'project' as const, exists: existsSync(projectDir) },
+    ...projectDirs.map((path) => ({ path, source: 'project' as const, exists: existsSync(path) })),
   ];
 
   const skills: SkillEntry[] = [];
@@ -2309,6 +2313,8 @@ async function scanSkills(cwd: string): Promise<{ skills: SkillEntry[]; dirs: Ar
       return;
     }
     for (const entry of entries) {
+      // Skip disabled skills and hidden directories
+      if (entry.name === '.disabled' || entry.name.startsWith('.')) continue;
       const fullPath = join(baseDir, entry.name);
       if (entry.isDirectory()) {
         // Directory with SKILL.md inside
@@ -2381,11 +2387,36 @@ ipcMain.handle('skill:list', async (_event, cwd?: string) => {
   return scanSkills(cwd || (await loadSettings()).cwd || process.cwd());
 });
 
-ipcMain.handle('skill:toggle', async (_event, name: string, enabled: boolean) => {
+ipcMain.handle('skill:toggle', async (_event, name: string, enabled: boolean, skillPath?: string) => {
+  const settings = await loadSettings();
+  const cwd = settings.cwd || process.cwd();
+  const skillsDir = join(cwd, '.autoagent', 'skills');
+  const disabledDir = join(skillsDir, '.disabled');
+  const targetDir = join(skillsDir, name);
+  const disabledTargetDir = join(disabledDir, name);
+
   if (enabled) {
     enabledSkills.add(name);
+    // Move from .disabled back to active, or copy from source path
+    if (existsSync(disabledTargetDir)) {
+      await mkdir(skillsDir, { recursive: true });
+      await cp(disabledTargetDir, targetDir, { recursive: true });
+      await rm(disabledTargetDir, { recursive: true, force: true });
+    } else if (skillPath && existsSync(skillPath)) {
+      await mkdir(skillsDir, { recursive: true });
+      // If already exists, remove first to ensure clean copy
+      if (existsSync(targetDir)) await rm(targetDir, { recursive: true, force: true });
+      await cp(skillPath, targetDir, { recursive: true });
+    }
   } else {
     enabledSkills.delete(name);
+    // Move to .disabled
+    if (existsSync(targetDir)) {
+      await mkdir(disabledDir, { recursive: true });
+      if (existsSync(disabledTargetDir)) await rm(disabledTargetDir, { recursive: true, force: true });
+      await cp(targetDir, disabledTargetDir, { recursive: true });
+      await rm(targetDir, { recursive: true, force: true });
+    }
   }
   await saveEnabledSkills();
   return { ok: true };

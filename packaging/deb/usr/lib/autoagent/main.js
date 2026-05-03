@@ -6988,7 +6988,7 @@ import {
   shell,
   systemPreferences
 } from "electron";
-import { copyFile, mkdir, readFile as readFile2, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, cp, mkdir, readFile as readFile2, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync as existsSync3 } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -19533,12 +19533,16 @@ async function scanSkills(cwd) {
   const home = homedir2();
   const systemDirs = [
     join5(home, ".claude", "skills"),
-    join5(home, ".codex", "skills")
+    join5(home, ".codex", "skills"),
+    join5(home, ".autoagent", "skills")
   ];
-  const projectDir = join5(cwd, ".claude", "skills");
+  const projectDirs = [
+    join5(cwd, ".claude", "skills"),
+    join5(cwd, ".autoagent", "skills")
+  ];
   const dirs = [
     ...systemDirs.map((path) => ({ path, source: "system", exists: existsSync3(path) })),
-    { path: projectDir, source: "project", exists: existsSync3(projectDir) }
+    ...projectDirs.map((path) => ({ path, source: "project", exists: existsSync3(path) }))
   ];
   const skills = [];
   async function collectFromDir(baseDir, source) {
@@ -19551,6 +19555,8 @@ async function scanSkills(cwd) {
       return;
     }
     for (const entry of entries) {
+      if (entry.name === ".disabled" || entry.name.startsWith("."))
+        continue;
       const fullPath = join5(baseDir, entry.name);
       if (entry.isDirectory()) {
         const skillMd = join5(fullPath, "SKILL.md");
@@ -19615,11 +19621,34 @@ function extractSkillDescription(content) {
 ipcMain.handle("skill:list", async (_event, cwd) => {
   return scanSkills(cwd || (await loadSettings()).cwd || process.cwd());
 });
-ipcMain.handle("skill:toggle", async (_event, name, enabled) => {
+ipcMain.handle("skill:toggle", async (_event, name, enabled, skillPath) => {
+  const settings = await loadSettings();
+  const cwd = settings.cwd || process.cwd();
+  const skillsDir = join5(cwd, ".autoagent", "skills");
+  const disabledDir = join5(skillsDir, ".disabled");
+  const targetDir = join5(skillsDir, name);
+  const disabledTargetDir = join5(disabledDir, name);
   if (enabled) {
     enabledSkills.add(name);
+    if (existsSync3(disabledTargetDir)) {
+      await mkdir(skillsDir, { recursive: true });
+      await cp(disabledTargetDir, targetDir, { recursive: true });
+      await rm(disabledTargetDir, { recursive: true, force: true });
+    } else if (skillPath && existsSync3(skillPath)) {
+      await mkdir(skillsDir, { recursive: true });
+      if (existsSync3(targetDir))
+        await rm(targetDir, { recursive: true, force: true });
+      await cp(skillPath, targetDir, { recursive: true });
+    }
   } else {
     enabledSkills.delete(name);
+    if (existsSync3(targetDir)) {
+      await mkdir(disabledDir, { recursive: true });
+      if (existsSync3(disabledTargetDir))
+        await rm(disabledTargetDir, { recursive: true, force: true });
+      await cp(targetDir, disabledTargetDir, { recursive: true });
+      await rm(targetDir, { recursive: true, force: true });
+    }
   }
   await saveEnabledSkills();
   return { ok: true };
