@@ -18272,8 +18272,7 @@ function normalizeSettings(input) {
   base.apiType = base.providerId === "anthropic" ? "anthropic-messages" : base.apiType || inferApiType(base.model);
   if (!base.cwd || !existsSync3(base.cwd))
     base.cwd = resolveDefaultWorkspaceCwd();
-  if (!base.claudeCommand?.trim())
-    base.claudeCommand = defaultSettings().claudeCommand;
+  base.claudeCommand = defaultSettings().claudeCommand;
   if (!base.claudeConfigDir?.trim())
     base.claudeConfigDir = defaultSettings().claudeConfigDir;
   base.maxTurns = Math.max(1, Number(base.maxTurns) || 1024);

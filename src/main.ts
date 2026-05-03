@@ -935,7 +935,9 @@ function normalizeSettings(input: Partial<DesktopSettings>): DesktopSettings {
   if (!base.baseURL && endpoint.url) base.baseURL = endpoint.url;
   base.apiType = base.providerId === 'anthropic' ? 'anthropic-messages' : base.apiType || inferApiType(base.model);
   if (!base.cwd || !existsSync(base.cwd)) base.cwd = resolveDefaultWorkspaceCwd();
-  if (!base.claudeCommand?.trim()) base.claudeCommand = defaultSettings().claudeCommand;
+  // Always recompute claudeCommand — persisted value may reference stale
+  // dev workspace paths that fail when running from the installed DEB.
+  base.claudeCommand = defaultSettings().claudeCommand;
   if (!base.claudeConfigDir?.trim()) base.claudeConfigDir = defaultSettings().claudeConfigDir;
   base.maxTurns = Math.max(1, Number(base.maxTurns) || 1024);
   base.allowedTools = Array.isArray(base.allowedTools) ? base.allowedTools : defaultSettings().allowedTools;
