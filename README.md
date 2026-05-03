@@ -137,6 +137,8 @@ In the **MCP** tab:
 
 ## Building from Source
 
+### Linux / macOS
+
 ```bash
 # Prerequisites: bun >= 1.2.0, node >= 18
 bun install
@@ -150,6 +152,59 @@ bun run build
 # Build .deb package
 bash scripts/build-deb.sh
 ```
+
+### Windows
+
+#### 环境准备
+
+1. 安装 [Bun](https://bun.sh/)（>= 1.2.0）和 Node.js（>= 18）
+2. 安装 [ripgrep](https://github.com/BurntSushi/ripgrep/releases)（`rg.exe`），确保 `rg` 在环境变量 `PATH` 中可用
+3. 安装项目依赖：
+   ```powershell
+   bun install
+   ```
+
+#### 开发调试
+
+```powershell
+# 构建并启动 Electron
+bun run dev
+```
+
+#### 打包生产版本
+
+```powershell
+# 1. 先构建桌面资源（生成 dist/、build-resources/ 等）
+bun run build
+
+# 2. 运行 Windows 本地打包脚本（生成安装程序和便携版）
+node scripts/package-win-local.mjs
+```
+
+打包产物位于 `release/` 目录下：
+- `AutoAgent-0.8.0-setup-x64.exe` — NSIS 安装程序
+- `AutoAgent-0.8.0-portable-x64.exe` — 免安装便携版
+
+#### 只打特定格式
+
+```powershell
+# 仅生成便携版
+node scripts/package-win-local.mjs -- portable
+
+# 仅生成安装程序
+node scripts/package-win-local.mjs -- nsis
+
+# 仅输出未打包目录（用于调试）
+node scripts/package-win-local.mjs --dir
+```
+
+#### 常见问题
+
+| 问题 | 解决方案 |
+|---|---|
+| `rg.exe` 找不到 | 安装 ripgrep 并添加到 PATH，或设置环境变量 `RG_BIN` 指向 `rg.exe` |
+| `app-builder.exe EPERM` | 以管理员身份运行终端，或将项目移出受限目录 |
+| 文件被占用 | 关闭所有 AutoAgent/Electron 窗口，关闭资源管理器中的 `release\win-unpacked` 预览，再重试 |
 
 ## Project Structure
 

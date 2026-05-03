@@ -213,6 +213,8 @@ interface ArtifactRecord {
   createdAt: number;
   updatedAt: number;
   lastOpenedAt: number | null;
+  versions?: number[];
+  thumbnailPath?: string | null;
 }
 
 function splitList(value: string): string[] {
@@ -335,8 +337,17 @@ function App() {
   useEffect(() => {
     void boot();
     const off = window.autoagent.onAgentEvent(handleAgentEvent);
+    const offArtifacts = window.autoagent.onArtifactEvent((payload) => {
+      const event = payload as { kind?: string; artifacts?: ArtifactRecord[] };
+      if (event.kind === 'changed' && Array.isArray(event.artifacts)) {
+        setArtifacts(event.artifacts);
+      } else {
+        void refreshArtifacts();
+      }
+    });
     return () => {
       off();
+      offArtifacts();
     };
   }, []);
 
@@ -588,6 +599,23 @@ function App() {
     await refreshArtifacts();
   }
 
+  async function exportArtifact(record: ArtifactRecord) {
+    await window.autoagent.exportArtifact({ id: record.id });
+  }
+
+  async function importArtifact() {
+    await window.autoagent.importArtifact();
+    await refreshArtifacts();
+  }
+
+  async function showArtifactVersions(record: ArtifactRecord) {
+    const versions = (await window.autoagent.listArtifactVersions({ id: record.id })) as Array<{ timestamp: number; path: string }>;
+    const message = versions.length
+      ? versions.map((item) => new Date(item.timestamp).toLocaleString()).join('\n')
+      : 'No saved versions yet';
+    window.alert(`${record.title}\n\n${message}`);
+  }
+
   if (error) {
     return <div className="fatal"><strong>Bootstrap failed</strong><pre>{error}</pre></div>;
   }
@@ -730,6 +758,9 @@ function App() {
             artifacts={artifacts}
             openArtifact={openArtifact}
             refreshArtifacts={() => void refreshArtifacts()}
+            exportArtifact={exportArtifact}
+            importArtifact={importArtifact}
+            showArtifactVersions={showArtifactVersions}
           />
         </>
       ) : null}
@@ -799,6 +830,9 @@ function ControlPanel(props: {
   artifacts: ArtifactRecord[];
   openArtifact: (record: ArtifactRecord) => Promise<void>;
   refreshArtifacts: () => void;
+  exportArtifact: (record: ArtifactRecord) => Promise<void>;
+  importArtifact: () => Promise<void>;
+  showArtifactVersions: (record: ArtifactRecord) => Promise<void>;
 }) {
   const tabs: Array<[Panel, React.ReactNode, string]> = [
     ['skills', <Boxes size={15} />, 'Skills'],
@@ -875,7 +909,6 @@ function AgentPanel(props: React.ComponentProps<typeof ControlPanel>) {
       <Field label="JSON schema"><textarea rows={4} value={settings.jsonSchema} onChange={(e) => setSettings({ ...settings, jsonSchema: e.target.value })} /></Field>
       <Field label="Debug file"><input value={settings.debugFile} onChange={(e) => setSettings({ ...settings, debugFile: e.target.value })} /></Field>
       <Field label="Extra CLI args"><textarea rows={4} value={settings.extraCliArgs} onChange={(e) => setSettings({ ...settings, extraCliArgs: e.target.value })} placeholder="--plugin-dir C:\\path --assistant" /></Field>
-      <Field label="System append"><textarea rows={7} value={settings.appendSystemPrompt} onChange={(e) => setSettings({ ...settings, appendSystemPrompt: e.target.value })} /></Field>
       <div className="stack">
         <label className="check-row"><input type="checkbox" checked={settings.allowDangerouslySkipPermissions} onChange={(e) => setSettings({ ...settings, allowDangerouslySkipPermissions: e.target.checked })} />Allow dangerously skip permissions</label>
         <label className="check-row"><input type="checkbox" checked={settings.strictMcpConfig} onChange={(e) => setSettings({ ...settings, strictMcpConfig: e.target.checked })} />Strict MCP config</label>
@@ -928,7 +961,10 @@ function formatArtifactTime(timestamp: number | null): string {
 function ArtifactsPanel(props: React.ComponentProps<typeof ControlPanel>) {
   return (
     <div className="stack">
-      <PanelTitle title={`${props.artifacts.length} artifacts`} action={<button className="ghost" onClick={props.refreshArtifacts}><RefreshCw size={15} />Refresh</button>} />
+      <PanelTitle
+        title={`${props.artifacts.length} artifacts`}
+        action={<div className="button-row"><button className="ghost" onClick={() => void props.importArtifact()}>Import</button><button className="ghost" onClick={props.refreshArtifacts}><RefreshCw size={15} />Refresh</button></div>}
+      />
       <div className="item-list">
         {props.artifacts.length === 0 ? (
           <div className="editor-card">
@@ -942,8 +978,13 @@ function ArtifactsPanel(props: React.ComponentProps<typeof ControlPanel>) {
               <span>{artifact.description || 'No description'}</span>
               <small>Updated {new Date(artifact.updatedAt).toLocaleString()}</small>
               <small>{formatArtifactTime(artifact.lastOpenedAt)}</small>
+              <small>{artifact.versions?.length || 0} saved versions</small>
             </button>
-            <button className="ghost" onClick={() => void props.openArtifact(artifact)}>Open</button>
+            <div className="artifact-actions-col">
+              <button className="ghost" onClick={() => void props.openArtifact(artifact)}>Open</button>
+              <button className="ghost" onClick={() => void props.showArtifactVersions(artifact)}>Versions</button>
+              <button className="ghost" onClick={() => void props.exportArtifact(artifact)}>Export</button>
+            </div>
           </div>
         ))}
       </div>

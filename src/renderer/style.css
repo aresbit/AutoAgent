@@ -368,6 +368,24 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   gap: 10px;
   background: #fcfcff;
 }
+.artifact-preview-shell {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  background: linear-gradient(180deg, #f8fafc, #eef2ff);
+}
+.artifact-preview-frame {
+  display: block;
+  width: 100%;
+  min-height: 180px;
+  border: 0;
+  background: transparent;
+}
+.artifact-source summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+}
 .artifact-card-head strong {
   display: block;
   font-size: 14px;
@@ -487,6 +505,7 @@ input:focus, select:focus, textarea:focus { border-color: #9bbcff; box-shadow: 0
 .item-list { display: grid; gap: 6px; }
 .mcp-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: center; }
 .artifact-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+.artifact-actions-col { display: grid; gap: 6px; }
 .artifact-main small {
   display: block;
   overflow: hidden;

@@ -23,6 +23,9 @@ import { dirname, extname, isAbsolute, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { EngineClient } from './engine-client.js';
+import { composeAutoworkSystemPrompt } from './autowork/desktop-replica.js';
+import { maybeInvokeAutoworkInternalTool } from './autowork/visualize.js';
+import { resolveArtifactPreloadPath, resolveDefaultOpenccCommandValue, resolveRuntimeAssetPath } from './runtime-paths.js';
 import { BUILTIN_PROVIDERS, CUSTOM_PROVIDERS, resolveProviderEndpoint } from './providers/config.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
@@ -129,6 +132,11 @@ interface ArtifactRecord {
   createdAt: number;
   updatedAt: number;
   lastOpenedAt: number | null;
+  versions?: number[];
+  isStarred?: boolean;
+  mcpTools?: string[];
+  mcpServerNames?: string[];
+  thumbnailPath?: string | null;
 }
 
 interface McpServerRecord {
@@ -149,6 +157,150 @@ function perfMark(label: string): void {
   const now = performance.now();
   console.error(`[perf] +${(now - t0).toFixed(0)}ms (Δ${(now - tPrev).toFixed(0)}ms) ${label}`);
   tPrev = now;
+}
+
+const AUTOAGENT_BASE_SYSTEM_PROMPT = `
+You are AutoAgent, a desktop coding agent.
+Prefer concise answers, preserve user files, and ask before destructive or external actions.
+`;
+
+const CLAUDE_DESKTOP_REPLICA_PROMPT = `
+# Claude Desktop Replica
+
+This desktop app emulates Claude Desktop system-prompt behavior for HTML artifacts and visual creation.
+Assume \`hasImagine=true\` and \`hasHtmlArtifacts=true\`.
+
+## System prompt assembly
+The effective desktop prompt is assembled in this order:
+1. Base desktop coding instructions
+2. Workspace and runtime context
+3. Skills and enabled project guidance
+4. Computer-use and filesystem capabilities
+5. Imagine prompt
+6. Artifacts prompt
+7. Hidden local app directives
+
+Follow that spirit when choosing output format and tool behavior.
+
+# Imagine — Visual Creation Suite
+
+## Modules
+Pick the closest fit when creating visual content:
+- \`diagram\` — SVG flowcharts, structural diagrams, illustrative diagrams
+- \`mockup\` — UI mockups, forms, cards, dashboards
+- \`interactive\` — interactive explainers with controls
+- \`chart\` — charts, data analysis, geographic maps
+- \`art\` — illustration and generative art
+- \`elicitation\` — information-collection forms
+
+## Complexity budget
+- Box subtitles: no more than 5 words
+- Colors: no more than 2 ramps per diagram unless color encodes meaning
+- Horizontal tier: no more than 4 boxes at full width before wrapping or splitting
+
+## Accessibility
+- For HTML widgets, begin with a visually hidden summary such as \`<h2 class="sr-only">...\`
+- For SVG widgets, use \`role="img"\` with \`<title>\` and \`<desc>\`
+
+## Core design system
+- Seamless: the visual should feel like a natural extension of the chat
+- Flat: no gradients, mesh, glow, blur, drop shadows, or decorative effects
+- Compact: keep explanation in prose, keep the visual focused
+- Text goes in the response, visuals go in the artifact HTML
+
+## Streaming-first HTML rules
+- Output order: short \`<style>\`, then content HTML, then \`<script>\` last
+- Prefer inline styles for controls when useful
+- Keep styles lean and avoid decorative CSS
+- No comments in HTML, CSS, or JS
+- No \`<!doctype html>\`, \`<html>\`, \`<head>\`, or \`<body>\` inside artifact-html blocks
+- No hidden tab panels, carousels, or nested scrolling containers
+- Never use \`position: fixed\`
+
+## Typography
+- Sentence case only
+- No ALL CAPS
+- No mid-sentence bolding
+- Use only two weights: 400 and 500
+- Minimum font size: 11px
+- Default font family should map to \`var(--font-sans)\`
+
+## HTML tokens
+- \`--color-background-primary\`
+- \`--color-background-secondary\`
+- \`--color-background-tertiary\`
+- \`--color-text-primary\`
+- \`--color-text-secondary\`
+- \`--color-text-tertiary\`
+- \`--color-border-tertiary\`
+- \`--color-border-secondary\`
+- \`--color-border-primary\`
+- \`--color-border-info\`
+- \`--color-border-success\`
+- \`--color-border-warning\`
+- \`--color-border-danger\`
+- \`--font-sans\`
+- \`--font-serif\`
+- \`--font-mono\`
+- \`--border-radius-md\`
+- \`--border-radius-lg\`
+- \`--border-radius-xl\`
+
+## Color ramps
+Use these ramps and semantic meanings consistently:
+- purple: 50 #EEEDFE, 100 #CECBF6, 200 #AFA9EC, 400 #7F77DD, 600 #534AB7, 800 #3C3489, 900 #26215C
+- teal: 50 #E1F5EE, 100 #9FE1CB, 200 #5DCAA5, 400 #1D9E75, 600 #0F6E56, 800 #085041, 900 #04342C
+- coral: 50 #FAECE7, 100 #F5C4B3, 200 #F0997B, 400 #D85A30, 600 #993C1D, 800 #712B13, 900 #4A1B0C
+- pink: 50 #FBEAF0, 100 #F4C0D1, 200 #ED93B1, 400 #D4537E, 600 #993556, 800 #72243E, 900 #4B1528
+- gray: 50 #F1EFE8, 100 #D3D1C7, 200 #B4B2A9, 400 #888780, 600 #5F5E5A, 800 #444441, 900 #2C2C2A
+- blue: 50 #E6F1FB, 100 #B5D4F4, 200 #85B7EB, 400 #378ADD, 600 #185FA5, 800 #0C447C, 900 #042C53
+- green: 50 #EAF3DE, 100 #C0DD97, 200 #97C459, 400 #639922, 600 #3B6D11, 800 #27500A, 900 #173404
+- amber: 50 #FAEEDA, 100 #FAC775, 200 #EF9F27, 400 #BA7517, 600 #854F0B, 800 #633806, 900 #412402
+- red: 50 #FCEBEB, 100 #F7C1C1, 200 #F09595, 400 #E24B4A, 600 #A32D2D, 800 #791F1F, 900 #501313
+
+Color usage rules:
+- Use color to encode meaning, not sequence
+- Prefer 2 to 3 colors total in one visual
+- Use gray for neutral structure
+- Prefer purple, teal, coral, and pink for general emphasis
+- Reserve blue, green, amber, and red for semantic meaning
+
+## UI component guidance
+- Desktop artifact width target: about 680px
+- Mobile artifact width target: about 380px
+- Cards: 0.5px border, radius 12px, padding around 1rem to 1.25rem
+- Metric cards: muted 13px label, larger 24px number, no heavy decoration
+- Compare options: side-by-side cards, recommended option can use a 2px info border
+- Data records: single bounded card
+- Tables: fixed layout with explicit widths
+- Round displayed numbers
+
+## Elicitation forms
+- Infer missing values from the conversation before asking
+- Questions must read naturally, not like field labels
+- Use classes and data attributes, not inline onclick handlers
+- Zero custom script for elicitation scaffolding
+
+## Artifact behavior
+When the user asks for an artifact or interactive HTML:
+- Do not merely write a local html file and point to its path
+- Respond with brief prose plus a fenced \`artifact-html\` block
+- The block may include frontmatter with \`title:\` and \`description:\`
+- The block must contain the actual HTML fragment for rendering
+- Keep it self-contained and dark-mode safe
+- External resources may only come from \`cdnjs.cloudflare.com\`, \`esm.sh\`, \`cdn.jsdelivr.net\`, or \`unpkg.com\`
+
+Bad:
+"I created D:\\\\demo\\\\tree.html, open it in your browser."
+
+Good:
+Brief explanation plus a fenced \`artifact-html\` block containing the real artifact markup.
+`;
+
+function composeDesktopSystemPrompt(hiddenAppend: string): string {
+  return [AUTOAGENT_BASE_SYSTEM_PROMPT.trim(), CLAUDE_DESKTOP_REPLICA_PROMPT.trim(), hiddenAppend.trim()]
+    .filter(Boolean)
+    .join('\n\n');
 }
 
 const PRODUCT_NAME = 'AutoAgent';
@@ -241,32 +393,52 @@ function sanitizeDescription(value: string | undefined): string {
 }
 
 function artifactDirForId(id: string, title: string): string {
-  return userDataPath('artifacts', `${slugify(title)}-${id.slice(0, 8)}`);
+  return userDataPath('artifacts', id || slugify(title));
 }
 
-function artifactMetadataPath(dir: string): string {
-  return join(dir, 'artifact.json');
+function artifactsRootPath(): string {
+  return userDataPath('artifacts');
 }
 
-async function writeArtifactMetadata(record: ArtifactRecord): Promise<void> {
-  await writeFile(artifactMetadataPath(dirname(record.path)), JSON.stringify(record, null, 2) + '\n', 'utf8');
+function artifactIndexHtmlPath(dir: string): string {
+  return join(dir, 'index.html');
 }
 
-async function readArtifactMetadata(dir: string): Promise<ArtifactRecord | null> {
+function artifactThumbnailPath(dir: string): string {
+  return join(dir, 'thumbnail.png');
+}
+
+function artifactVersionsDir(dir: string): string {
+  return join(dir, 'versions');
+}
+
+function artifactManifestPath(): string {
+  return join(artifactsRootPath(), 'manifest.json');
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[char] || char));
+}
+
+function stripArtifactMetaScript(html: string): string {
+  return html.replace(/\s*<script\b(?=[^>]*\bid="(?:cowork|autowork)-artifact-meta")(?=[^>]*\btype="application\/json")[^>]*>[\s\S]*?<\/script>\s*/i, '');
+}
+
+function injectArtifactMetaScript(html: string, meta: Record<string, unknown>): string {
+  const cleaned = stripArtifactMetaScript(html);
+  const payload = JSON.stringify(meta, null, 2).replace(/<\//g, '<\\/');
+  const metaScript = `<script type="application/json" id="cowork-artifact-meta">\n${payload}\n<\/script>\n`;
+  const doctypeMatch = cleaned.match(/^\s*<!doctype[^>]*>\s*/i);
+  if (doctypeMatch) return `${doctypeMatch[0]}${metaScript}${cleaned.slice(doctypeMatch[0].length)}`;
+  return `${metaScript}${cleaned}`;
+}
+
+function extractArtifactMetaFromHtml(html: string): Record<string, unknown> | null {
+  const match = html.match(/<script\b(?=[^>]*\bid="(?:cowork|autowork)-artifact-meta")(?=[^>]*\btype="application\/json")[^>]*>([\s\S]*?)<\/script>/i);
+  if (!match) return null;
   try {
-    const raw = await readFile(artifactMetadataPath(dir), 'utf8');
-    const parsed = JSON.parse(raw) as Partial<ArtifactRecord>;
-    if (!parsed || typeof parsed !== 'object') return null;
-    if (!parsed.id || !parsed.path || !parsed.title || typeof parsed.createdAt !== 'number') return null;
-    return {
-      id: parsed.id,
-      title: sanitizeTitle(parsed.title),
-      description: sanitizeDescription(parsed.description),
-      path: parsed.path,
-      createdAt: parsed.createdAt,
-      updatedAt: typeof parsed.updatedAt === 'number' ? parsed.updatedAt : parsed.createdAt,
-      lastOpenedAt: typeof parsed.lastOpenedAt === 'number' ? parsed.lastOpenedAt : null,
-    };
+    const parsed = JSON.parse(match[1]) as Record<string, unknown>;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
   }
@@ -274,15 +446,13 @@ async function readArtifactMetadata(dir: string): Promise<ArtifactRecord | null>
 
 function artifactHtmlShell(title: string, body: string, description = ''): string {
   const hasHtmlTag = /<html[\s>]/i.test(body);
-  if (hasHtmlTag) return body;
-
-  return `<!doctype html>
+  const fullDocument = hasHtmlTag ? body : `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>${title.replace(/[<&>"]/g, '')}</title>
-  ${description ? `<meta name="description" content="${description.replace(/[<&>"]/g, '')}" />` : ''}
+  <title>${escapeHtml(title)}</title>
+  ${description ? `<meta name="description" content="${escapeHtml(description)}" />` : ''}
   <style>
     :root {
       color-scheme: light dark;
@@ -365,52 +535,215 @@ function artifactHtmlShell(title: string, body: string, description = ''): strin
 <body>
   <main>
     <header>
-      <h1>${title.replace(/[<&>"]/g, '')}</h1>
-      ${description ? `<p>${description.replace(/[<&>"]/g, '')}</p>` : ''}
+      <h1>${escapeHtml(title)}</h1>
+      ${description ? `<p>${escapeHtml(description)}</p>` : ''}
     </header>
     ${body}
   </main>
 </body>
 </html>`;
+
+  return injectArtifactMetaScript(fullDocument, {
+    name: title,
+    schemaVersion: 1,
+    description,
+  });
+}
+
+async function loadArtifactManifest(): Promise<ArtifactRecord[]> {
+  try {
+    const raw = await readFile(artifactManifestPath(), 'utf8');
+    const parsed = JSON.parse(raw) as Partial<ArtifactRecord>[];
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((item): item is Partial<ArtifactRecord> => Boolean(item && typeof item === 'object'))
+      .map((item) => ({
+        id: String(item.id || ''),
+        title: sanitizeTitle(item.title),
+        description: sanitizeDescription(item.description),
+        path: String(item.path || ''),
+        createdAt: typeof item.createdAt === 'number' ? item.createdAt : Date.now(),
+        updatedAt: typeof item.updatedAt === 'number' ? item.updatedAt : (typeof item.createdAt === 'number' ? item.createdAt : Date.now()),
+        lastOpenedAt: typeof item.lastOpenedAt === 'number' ? item.lastOpenedAt : null,
+        versions: Array.isArray(item.versions) ? item.versions.filter((value): value is number => typeof value === 'number') : [],
+        isStarred: item.isStarred !== false,
+        mcpTools: Array.isArray(item.mcpTools) ? item.mcpTools.filter((value): value is string => typeof value === 'string') : [],
+        mcpServerNames: Array.isArray(item.mcpServerNames) ? item.mcpServerNames.filter((value): value is string => typeof value === 'string') : [],
+        thumbnailPath: typeof item.thumbnailPath === 'string' ? item.thumbnailPath : null,
+      }))
+      .filter((item) => item.id && item.path);
+  } catch {
+    return [];
+  }
+}
+
+async function saveArtifactManifest(records: ArtifactRecord[]): Promise<void> {
+  await mkdir(artifactsRootPath(), { recursive: true });
+  await writeFile(artifactManifestPath(), JSON.stringify(records, null, 2) + '\n', 'utf8');
+}
+
+async function readArtifactRecordFromHtml(dir: string): Promise<ArtifactRecord | null> {
+  try {
+    const path = artifactIndexHtmlPath(dir);
+    const raw = await readFile(path, 'utf8');
+    const meta = extractArtifactMetaFromHtml(raw) || {};
+    const title = sanitizeTitle(typeof meta.name === 'string' ? meta.name : undefined, dir.split(/[/\\]/).pop() || 'Artifact');
+    const description = sanitizeDescription(typeof meta.description === 'string' ? meta.description : '');
+    const info = await stat(path);
+    return {
+      id: dir.split(/[/\\]/).pop() || slugify(title),
+      title,
+      description,
+      path,
+      createdAt: info.birthtimeMs || info.mtimeMs,
+      updatedAt: info.mtimeMs,
+      lastOpenedAt: null,
+      versions: [],
+      isStarred: true,
+      mcpTools: Array.isArray(meta.mcpTools) ? meta.mcpTools.filter((value): value is string => typeof value === 'string') : [],
+      mcpServerNames: Array.isArray(meta.mcpServerNames) ? meta.mcpServerNames.filter((value): value is string => typeof value === 'string') : [],
+      thumbnailPath: existsSync(artifactThumbnailPath(dir)) ? artifactThumbnailPath(dir) : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function refreshArtifactManifestFromDisk(): Promise<ArtifactRecord[]> {
+  const root = artifactsRootPath();
+  if (!existsSync(root)) return [];
+  const entries = await readdir(root, { withFileTypes: true });
+  const records = await Promise.all(
+    entries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => readArtifactRecordFromHtml(join(root, entry.name))),
+  );
+  const normalized = records
+    .filter((record): record is ArtifactRecord => Boolean(record))
+    .sort((a, b) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt);
+  await saveArtifactManifest(normalized);
+  return normalized;
+}
+
+async function findArtifactByPath(path: string): Promise<ArtifactRecord | null> {
+  const manifest = await loadArtifactManifest();
+  return manifest.find((record) => record.path === path) || null;
+}
+
+async function upsertArtifactRecord(record: ArtifactRecord): Promise<ArtifactRecord> {
+  const manifest = await loadArtifactManifest();
+  const next = [...manifest.filter((item) => item.id !== record.id), record]
+    .sort((a, b) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt);
+  await saveArtifactManifest(next);
+  sendToWindow('artifact:event', { kind: 'changed', artifacts: next });
+  return record;
 }
 
 async function listArtifacts(): Promise<ArtifactRecord[]> {
-  const root = userDataPath('artifacts');
-  if (!existsSync(root)) return [];
-  const entries = await readdir(root, { withFileTypes: true });
-  const records = await Promise.all(entries.filter((entry) => entry.isDirectory()).map((entry) => readArtifactMetadata(join(root, entry.name))));
-  return records
-    .filter((record): record is ArtifactRecord => Boolean(record))
-    .sort((a, b) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt);
+  const manifest = await loadArtifactManifest();
+  if (manifest.length) return manifest;
+  return refreshArtifactManifestFromDisk();
 }
 
 async function createArtifact(input: { title?: string; description?: string; html: string }): Promise<ArtifactRecord> {
-  const id = crypto.randomUUID();
-  const now = Date.now();
   const title = sanitizeTitle(input.title);
+  const id = slugify(title);
+  const now = Date.now();
   const description = sanitizeDescription(input.description);
   const dir = artifactDirForId(id, title);
-  const path = join(dir, 'index.html');
+  const path = artifactIndexHtmlPath(dir);
+  const versionsDir = artifactVersionsDir(dir);
+  const existing = (await listArtifacts()).find((record) => record.id === id) || (await readArtifactRecordFromHtml(dir));
   await mkdir(dir, { recursive: true });
+  if (existing && existsSync(existing.path)) {
+    await mkdir(versionsDir, { recursive: true });
+    await copyFile(existing.path, join(versionsDir, `${existing.updatedAt || existing.createdAt}.html`));
+  }
   await writeFile(path, artifactHtmlShell(title, input.html, description), 'utf8');
   const record: ArtifactRecord = {
     id,
     title,
     description,
     path,
-    createdAt: now,
+    createdAt: existing?.createdAt || now,
     updatedAt: now,
-    lastOpenedAt: null,
+    lastOpenedAt: existing?.lastOpenedAt || null,
+    versions: [...(existing?.versions || []), ...(existing ? [existing.updatedAt || existing.createdAt] : [])].slice(-100),
+    isStarred: true,
+    mcpTools: existing?.mcpTools || [],
+    mcpServerNames: existing?.mcpServerNames || [],
+    thumbnailPath: existsSync(artifactThumbnailPath(dir)) ? artifactThumbnailPath(dir) : null,
   };
-  await writeArtifactMetadata(record);
-  return record;
+  return upsertArtifactRecord(record);
+}
+
+async function listArtifactVersions(id: string): Promise<Array<{ timestamp: number; path: string }>> {
+  const record = (await listArtifacts()).find((artifact) => artifact.id === id);
+  if (!record) return [];
+  const dir = dirname(record.path);
+  const versionsDir = artifactVersionsDir(dir);
+  if (!existsSync(versionsDir)) return [];
+  const entries = await readdir(versionsDir, { withFileTypes: true });
+  return entries
+    .filter((entry) => entry.isFile() && /\.html$/i.test(entry.name))
+    .map((entry) => {
+      const timestamp = Number(entry.name.replace(/\.html$/i, '')) || 0;
+      return { timestamp, path: join(versionsDir, entry.name) };
+    })
+    .filter((entry) => entry.timestamp > 0)
+    .sort((a, b) => b.timestamp - a.timestamp);
+}
+
+async function exportArtifact(id: string): Promise<string> {
+  const record = (await listArtifacts()).find((artifact) => artifact.id === id);
+  if (!record) throw new Error(`Artifact not found: ${id}`);
+  const defaultPath = join(app.getPath('documents'), `${record.id}.zip`);
+  const target = await dialog.showSaveDialog(mainWindow!, {
+    title: 'Export artifact',
+    defaultPath,
+    filters: [{ name: 'Zip archive', extensions: ['zip'] }],
+  });
+  if (target.canceled || !target.filePath) throw new Error('Export cancelled');
+  const result = await runProcess('powershell', [
+    '-NoProfile',
+    '-Command',
+    `Compress-Archive -LiteralPath '${dirname(record.path).replace(/'/g, "''")}\\*' -DestinationPath '${target.filePath.replace(/'/g, "''")}' -Force`,
+  ]);
+  if (result.code !== 0) throw new Error(result.stderr || result.stdout || 'Export failed');
+  return target.filePath;
+}
+
+async function importArtifact(): Promise<ArtifactRecord> {
+  const picked = await dialog.showOpenDialog(mainWindow!, {
+    title: 'Import artifact',
+    properties: ['openFile'],
+    filters: [{ name: 'Zip archive', extensions: ['zip'] }],
+  });
+  if (picked.canceled || !picked.filePaths[0]) throw new Error('Import cancelled');
+  const tempDir = join(app.getPath('temp'), `autoagent-artifact-import-${Date.now()}`);
+  await mkdir(tempDir, { recursive: true });
+  const result = await runProcess('powershell', [
+    '-NoProfile',
+    '-Command',
+    `Expand-Archive -LiteralPath '${picked.filePaths[0].replace(/'/g, "''")}' -DestinationPath '${tempDir.replace(/'/g, "''")}' -Force`,
+  ]);
+  if (result.code !== 0) throw new Error(result.stderr || result.stdout || 'Import failed');
+  const files = await collectFiles(tempDir, 2000);
+  const htmlRelative = files.find((file) => /(^|\/)index\.html$/i.test(file));
+  if (!htmlRelative) throw new Error('Imported zip does not contain index.html');
+  const htmlPath = join(tempDir, htmlRelative.replace(/\//g, '\\'));
+  const html = await readFile(htmlPath, 'utf8');
+  const meta = extractArtifactMetaFromHtml(html) || {};
+  const title = sanitizeTitle(typeof meta.name === 'string' ? meta.name : undefined, htmlRelative.split(/[\\/]/).slice(-2, -1)[0] || 'Artifact');
+  const description = sanitizeDescription(typeof meta.description === 'string' ? meta.description : '');
+  return createArtifact({ title, description, html: stripArtifactMetaScript(html) });
 }
 
 async function touchArtifactOpen(path: string): Promise<ArtifactRecord | null> {
-  const record = await readArtifactMetadata(dirname(path));
+  const record = await findArtifactByPath(path);
   if (!record) return null;
   const next = { ...record, lastOpenedAt: Date.now() };
-  await writeArtifactMetadata(next);
+  await upsertArtifactRecord(next);
   return next;
 }
 
@@ -424,6 +757,7 @@ async function openArtifactWindow(path: string, title?: string): Promise<void> {
     backgroundColor: '#ffffff',
     autoHideMenuBar: true,
     webPreferences: {
+      preload: resolveArtifactPreloadPath(),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -444,39 +778,7 @@ function resolveDefaultWorkspaceCwd(): string {
 }
 
 function resolveDefaultOpenccCommand(): string {
-  if (process.env.AUTOAGENT_CLAUDE_COMMAND?.trim()) return process.env.AUTOAGENT_CLAUDE_COMMAND;
-  if (process.env.AUTOAGENT_OPENCC_COMMAND?.trim()) return process.env.AUTOAGENT_OPENCC_COMMAND;
-
-  if (app.isPackaged) {
-    return 'opencc';
-  }
-
-  const workspaceRoot = dirname(__dirname);
-  const openccBat = join(workspaceRoot, 'packages', 'opencc', 'opencc.bat');
-  const openccCli = join(workspaceRoot, 'packages', 'opencc', 'dist', 'cli.js');
-
-  if (process.platform === 'win32' && existsSync(openccBat)) {
-    return `"${openccBat}"`;
-  }
-
-  if (existsSync(openccCli)) {
-    return `bun run "${openccCli}" --dangerously-skip-permissions`;
-  }
-
-  return 'opencc';
-}
-
-function resolveRuntimeAssetPath(name: string): string {
-  const candidates = [
-    process.resourcesPath ? join(process.resourcesPath, name) : '',
-    join(__dirname, name),
-  ].filter(Boolean);
-
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) return candidate;
-  }
-
-  return candidates[0] || name;
+  return resolveDefaultOpenccCommandValue();
 }
 
 function windowsShortcutCandidates(): string[] {
@@ -599,8 +901,7 @@ function defaultSettings(): DesktopSettings {
     leftSidebarWidth: 260,
     rightPanelOpen: true,
     rightPanelWidth: 420,
-    appendSystemPrompt:
-      'You are AutoAgent, a desktop coding agent. Prefer concise answers, preserve user files, and ask before destructive or external actions.',
+    appendSystemPrompt: '',
   };
 }
 
@@ -762,6 +1063,116 @@ function extractEngineText(event: any): string {
   return '';
 }
 
+interface ParsedArtifactDocument {
+  title: string;
+  description: string;
+  html: string;
+}
+
+function parseArtifactDocument(source: string): ParsedArtifactDocument {
+  const raw = source.replace(/^\uFEFF/, '').trim();
+  const frontmatterMatch = raw.match(/^---\s*\r?\n([\s\S]*?)\r?\n---\s*\r?\n?([\s\S]*)$/);
+  if (!frontmatterMatch) {
+    return { title: 'Artifact', description: '', html: raw };
+  }
+  const metadata: Record<string, string> = {};
+  for (const line of frontmatterMatch[1].split(/\r?\n/)) {
+    const separator = line.indexOf(':');
+    if (separator <= 0) continue;
+    metadata[line.slice(0, separator).trim().toLowerCase()] = line.slice(separator + 1).trim();
+  }
+  return {
+    title: sanitizeTitle(metadata.title),
+    description: sanitizeDescription(metadata.description),
+    html: frontmatterMatch[2].trim(),
+  };
+}
+
+function extractArtifactsFromText(text: string): ParsedArtifactDocument[] {
+  const artifacts: ParsedArtifactDocument[] = [];
+  const pattern = /```(?:artifact-html|artifact)\r?\n([\s\S]*?)```/gi;
+  for (const match of text.matchAll(pattern)) {
+    const body = match[1]?.trim();
+    if (!body) continue;
+    artifacts.push(parseArtifactDocument(body));
+  }
+  return artifacts;
+}
+
+async function syncArtifactsFromAssistantText(text: string): Promise<ArtifactRecord[]> {
+  const artifacts = extractArtifactsFromText(text);
+  if (!artifacts.length) return [];
+  const output: ArtifactRecord[] = [];
+  for (const artifact of artifacts) {
+    output.push(await createArtifact(artifact));
+  }
+  return output;
+}
+
+function extractHtmlFileReferencesFromText(text: string): string[] {
+  const absoluteMatches = text.match(/[A-Za-z]:\\[^\r\n"'<>|?*]+?\.html\b/gi) || [];
+  const relativeMatches = text.match(/(?:^|[\s(【\[`'"])((?:\.{1,2}[\\/])?[A-Za-z0-9_\-./\\ ]+?\.html)\b/gi) || [];
+  const normalized = [...absoluteMatches, ...relativeMatches]
+    .map((item) => item.trim().replace(/^[\s(【\[`'"]+/, '').replace(/[),.;\]】`'"]+$/g, ''))
+    .filter((item) => item && !item.includes('://') && !item.startsWith('<'));
+  return [...new Set(normalized)];
+}
+
+function resolveHtmlFileReference(reference: string, cwd: string): string | null {
+  const trimmed = reference.trim();
+  if (!trimmed) return null;
+  if (isAbsolute(trimmed)) return trimmed;
+  const candidate = join(cwd, trimmed);
+  return candidate;
+}
+
+async function createArtifactFromHtmlFile(path: string): Promise<ArtifactRecord | null> {
+  try {
+    if (!existsSync(path)) return null;
+    const html = await readFile(path, 'utf8');
+    if (!html.trim()) return null;
+    const titleMatch = html.match(/<title>([\s\S]*?)<\/title>/i);
+    const fileName = path.split(/[\\/]/).pop()?.replace(/\.html$/i, '') || 'Artifact';
+    const title = sanitizeTitle(titleMatch?.[1]?.trim() || fileName);
+    const meta = extractArtifactMetaFromHtml(html) || {};
+    const description = sanitizeDescription(typeof meta.description === 'string' ? meta.description : '');
+    return createArtifact({
+      title,
+      description,
+      html: stripArtifactMetaScript(html),
+    });
+  } catch {
+    return null;
+  }
+}
+
+function appendArtifactRefsToMessage(text: string, artifacts: ArtifactRecord[]): string {
+  if (!artifacts.length) return text;
+  const refs = artifacts
+    .filter((artifact) => !text.includes(`"path": "${artifact.path.replace(/\\/g, '\\\\')}"`))
+    .map((artifact) => `\n\`\`\`artifact-ref\n${JSON.stringify({ path: artifact.path, title: artifact.title, description: artifact.description }, null, 2)}\n\`\`\`\n`)
+    .join('\n');
+  return refs ? `${text.trim()}\n\n${refs}` : text;
+}
+
+async function materializeArtifactsFromAssistantText(text: string, cwd: string): Promise<{ text: string; artifacts: ArtifactRecord[] }> {
+  const createdFromBlocks = await syncArtifactsFromAssistantText(text);
+  if (createdFromBlocks.length) return { text, artifacts: createdFromBlocks };
+
+  const paths = extractHtmlFileReferencesFromText(text)
+    .map((reference) => resolveHtmlFileReference(reference, cwd))
+    .filter((path): path is string => Boolean(path));
+  if (!paths.length) return { text, artifacts: [] };
+
+  const artifacts = (await Promise.all(paths.map((path) => createArtifactFromHtmlFile(path))))
+    .filter((artifact): artifact is ArtifactRecord => Boolean(artifact));
+  if (!artifacts.length) return { text, artifacts: [] };
+
+  return {
+    text: appendArtifactRefsToMessage(text, artifacts),
+    artifacts,
+  };
+}
 
 function sendToWindow(channel: string, payload: unknown): void {
   if (!mainWindow?.isDestroyed()) mainWindow?.webContents.send(channel, payload);
@@ -1152,6 +1563,7 @@ async function connectMCPServer(displayId: string, config: Record<string, unknow
   await client.connect(transport);
   const toolsResult = await client.listTools();
   return {
+    client,
     status: 'connected',
     tools: toolsResult.tools || [],
     close: async () => {
@@ -1279,6 +1691,142 @@ async function discoverMcpTools(input?: { id?: string; displayId?: string; enabl
   return results;
 }
 
+function parseAutoworkToolTarget(value: string): { serverHint?: string; toolName: string } {
+  const trimmed = value.trim();
+  if (trimmed.includes('/')) {
+    const [serverHint, ...rest] = trimmed.split('/');
+    return { serverHint, toolName: rest.join('/').trim() };
+  }
+  if (trimmed.includes('::')) {
+    const [serverHint, ...rest] = trimmed.split('::');
+    return { serverHint, toolName: rest.join('::').trim() };
+  }
+  if (trimmed.includes('.')) {
+    const [serverHint, ...rest] = trimmed.split('.');
+    if (rest.length) return { serverHint, toolName: rest.join('.').trim() };
+  }
+  return { toolName: trimmed };
+}
+
+async function autoworkCallMcpTool(name: string, args: unknown): Promise<unknown> {
+  const target = parseAutoworkToolTarget(name);
+  const internal = await maybeInvokeAutoworkInternalTool(target.serverHint, target.toolName, args, {
+    createArtifact,
+    openArtifact: openArtifactWindow,
+  });
+  if (typeof internal !== 'undefined') return internal;
+
+  const servers = (await listMcpServersFromDatabase()).filter((server) => server.enabled);
+  const ordered = target.serverHint
+    ? [...servers.filter((server) => server.displayId === target.serverHint || server.id === target.serverHint), ...servers.filter((server) => server.displayId !== target.serverHint && server.id !== target.serverHint)]
+    : servers;
+
+  let lastError: unknown = null;
+  for (const server of ordered) {
+    let connection: Awaited<ReturnType<typeof connectMCPServer>> | null = null;
+    try {
+      connection = await connectMCPServer(server.displayId, normalizeMcpConfig(server.config));
+      const match = connection.tools.find((tool: any) => tool.name === target.toolName);
+      if (!match) continue;
+      const client = (connection as any).client as Client | undefined;
+      if (!client) throw new Error('MCP client unavailable');
+      const result = await client.callTool({ name: target.toolName, arguments: (args && typeof args === 'object') ? args as Record<string, unknown> : {} });
+      return result;
+    } catch (error) {
+      lastError = error;
+    } finally {
+      await connection?.close().catch(() => undefined);
+    }
+  }
+  throw new Error(lastError instanceof Error ? lastError.message : `Autowork MCP tool not found: ${name}`);
+}
+
+async function autoworkAskClaude(prompt: string, data?: unknown): Promise<{ text: string }> {
+  const settings = await loadSettings();
+  const eng = await getEngine(settings);
+  let assistantText = '';
+  const content = typeof data === 'undefined' ? prompt : `${prompt}\n\nContext data:\n${JSON.stringify(data, null, 2)}`;
+  for await (const ev of eng.query({
+    claudeCommand: settings.claudeCommand,
+    claudeConfigDir: settings.claudeConfigDir,
+    model: settings.model,
+    fallbackModel: settings.fallbackModel,
+    agentName: settings.agentName,
+    thinkingMode: settings.thinkingMode,
+    maxThinkingTokens: settings.maxThinkingTokens,
+    thinkingDisplay: settings.thinkingDisplay,
+    effort: settings.effort,
+    maxBudgetUsd: settings.maxBudgetUsd,
+    taskBudget: settings.taskBudget,
+    maxTurns: Math.min(settings.maxTurns, 8),
+    cwd: settings.cwd,
+    appendSystemPrompt: composeAutoworkSystemPrompt({
+      currentDateTime: new Date().toLocaleString(),
+      currentTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      cwd: settings.cwd,
+      workspaceFolder: settings.cwd,
+      modelName: settings.model,
+      accountName: process.env.USERNAME || process.env.USER || '',
+      folderSelected: settings.cwd ? 'yes' : 'no',
+      hiddenAppend: settings.appendSystemPrompt,
+    }),
+    resumeSessionId: undefined,
+    resumeSessionAt: '',
+    sessionId: '',
+    continueSession: false,
+    forkSession: false,
+    noSessionPersistence: true,
+    apiKey: settings.apiKey,
+    baseURL: settings.baseURL,
+    providerId: settings.providerId,
+    apiType: settings.apiType,
+    permissionMode: settings.permissionMode,
+    permissionPromptTool: settings.permissionPromptTool,
+    allowDangerouslySkipPermissions: settings.allowDangerouslySkipPermissions,
+    allowedTools: settings.allowedTools,
+    disallowedTools: settings.disallowedTools,
+    tools: settings.tools,
+    betas: settings.betas,
+    jsonSchema: settings.jsonSchema,
+    mcpConfig: settings.mcpConfig,
+    strictMcpConfig: settings.strictMcpConfig,
+    settingSources: settings.settingSources,
+    addDirs: settings.addDirs,
+    pluginDir: settings.pluginDir,
+    managedSettings: settings.managedSettings,
+    channels: settings.channels,
+    includePartialMessages: false,
+    includeHookEvents: false,
+    assistant: settings.assistant,
+    debug: settings.debug,
+    debugFile: settings.debugFile,
+    verbose: false,
+    extraCliArgs: settings.extraCliArgs,
+    messages: [{ role: 'user', content }],
+  })) {
+    const text = ev.type === 'error' ? (ev.error || '') : extractEngineText(ev);
+    if (ev.type === 'text_delta' && text) assistantText += text;
+    if (ev.type === 'assistant' && text) assistantText = text;
+    if (ev.type === 'result' && text && !assistantText.trim()) assistantText = text;
+  }
+  return { text: assistantText.trim() };
+}
+
+async function autoworkNavigateHost(direction: 'back' | 'forward'): Promise<{ ok: boolean }> {
+  const window = BrowserWindow.getFocusedWindow() || mainWindow;
+  if (!window) return { ok: false };
+  const contents = window.webContents;
+  if (direction === 'back' && contents.navigationHistory.canGoBack()) {
+    contents.navigationHistory.goBack();
+    return { ok: true };
+  }
+  if (direction === 'forward' && contents.navigationHistory.canGoForward()) {
+    contents.navigationHistory.goForward();
+    return { ok: true };
+  }
+  return { ok: false };
+}
+
 async function collectFiles(root: string, limit = 500, prefix = ''): Promise<string[]> {
   const output: string[] = [];
   let entries: any[];
@@ -1343,7 +1891,16 @@ async function runAgent(request: SendRequest): Promise<{ runId: string }> {
         taskBudget: settings.taskBudget,
         maxTurns: settings.maxTurns,
         cwd: settings.cwd,
-        appendSystemPrompt: settings.appendSystemPrompt,
+        appendSystemPrompt: composeAutoworkSystemPrompt({
+          currentDateTime: new Date().toLocaleString(),
+          currentTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          cwd: settings.cwd,
+          workspaceFolder: settings.cwd,
+          modelName: settings.model,
+          accountName: process.env.USERNAME || process.env.USER || '',
+          folderSelected: settings.cwd ? 'yes' : 'no',
+          hiddenAppend: settings.appendSystemPrompt,
+        }),
         resumeSessionId,
         resumeSessionAt: settings.resumeSessionAt,
         sessionId: settings.sessionId,
@@ -1402,7 +1959,8 @@ async function runAgent(request: SendRequest): Promise<{ runId: string }> {
       }
 
       if (assistantText.trim()) {
-        await appendMessage(request.chatId, { role: 'assistant', text: assistantText });
+        const materialized = await materializeArtifactsFromAssistantText(assistantText, settings.cwd);
+        await appendMessage(request.chatId, { role: 'assistant', text: materialized.text });
       }
       sendToWindow('agent:event', { runId, chatId: request.chatId, kind: 'done' });
     } catch (error) {
@@ -1637,7 +2195,7 @@ ipcMain.handle('artifact:create', async (_event, input: { title?: string; descri
 });
 ipcMain.handle('artifact:list', async () => listArtifacts());
 ipcMain.handle('artifact:load', async (_event, input: { id?: string; path?: string }) => {
-  if (input.path) return readArtifactMetadata(dirname(input.path));
+  if (input.path) return findArtifactByPath(input.path);
   if (!input.id) return null;
   const artifacts = await listArtifacts();
   return artifacts.find((artifact) => artifact.id === input.id) || null;
@@ -1646,6 +2204,17 @@ ipcMain.handle('artifact:open', async (_event, input: { path: string; title?: st
   await openArtifactWindow(input.path, input.title);
   return { opened: true, artifact: await touchArtifactOpen(input.path) };
 });
+ipcMain.handle('artifact:source', async (_event, input: { path: string }) => {
+  return { html: await readFile(input.path, 'utf8') };
+});
+ipcMain.handle('artifact:versions', async (_event, input: { id: string }) => listArtifactVersions(input.id));
+ipcMain.handle('artifact:export', async (_event, input: { id: string }) => ({ path: await exportArtifact(input.id) }));
+ipcMain.handle('artifact:import', async () => importArtifact());
+ipcMain.handle('autowork:call-mcp-tool', async (_event, input: { name: string; args?: unknown }) => autoworkCallMcpTool(input.name, input.args || {}));
+ipcMain.handle('autowork:ask-claude', async (_event, input: { prompt: string; data?: unknown }) => autoworkAskClaude(input.prompt, input.data));
+ipcMain.handle('autowork:run-scheduled-task', async () => ({ ok: false, error: 'Scheduled tasks are not configured in AutoAgent yet.' }));
+ipcMain.handle('autowork:navigate-host', async (_event, input: { direction: 'back' | 'forward' }) => autoworkNavigateHost(input.direction));
+ipcMain.handle('autowork:open-external-url', async (_event, input: { url: string }) => shell.openExternal(input.url));
 
 ipcMain.handle('mcp:list', async () => listMcpServersFromDatabase());
 ipcMain.handle('mcp:save', async (_event, input: Partial<McpServerRecord>) => saveMcpServer(input));

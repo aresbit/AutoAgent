@@ -43,7 +43,21 @@ const api = {
   createArtifact: (input: unknown) => ipcRenderer.invoke('artifact:create', input),
   listArtifacts: () => ipcRenderer.invoke('artifact:list'),
   loadArtifact: (input: unknown) => ipcRenderer.invoke('artifact:load', input),
+  loadArtifactSource: (input: unknown) => ipcRenderer.invoke('artifact:source', input),
   openArtifact: (input: unknown) => ipcRenderer.invoke('artifact:open', input),
+  autoworkCallMcpTool: (input: unknown) => ipcRenderer.invoke('autowork:call-mcp-tool', input),
+  autoworkAskClaude: (input: unknown) => ipcRenderer.invoke('autowork:ask-claude', input),
+  autoworkRunScheduledTask: (input: unknown) => ipcRenderer.invoke('autowork:run-scheduled-task', input),
+  autoworkNavigateHost: (input: unknown) => ipcRenderer.invoke('autowork:navigate-host', input),
+  autoworkOpenExternalUrl: (input: unknown) => ipcRenderer.invoke('autowork:open-external-url', input),
+  listArtifactVersions: (input: unknown) => ipcRenderer.invoke('artifact:versions', input),
+  exportArtifact: (input: unknown) => ipcRenderer.invoke('artifact:export', input),
+  importArtifact: () => ipcRenderer.invoke('artifact:import'),
+  onArtifactEvent: (handler: (payload: unknown) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => handler(payload);
+    ipcRenderer.on('artifact:event', listener);
+    return () => ipcRenderer.off('artifact:event', listener);
+  },
   listMcpServers: () => ipcRenderer.invoke('mcp:list'),
   saveMcpServer: (server: unknown) => ipcRenderer.invoke('mcp:save', server),
   toggleMcpServer: (id: string, enabled: boolean) => ipcRenderer.invoke('mcp:toggle', { id, enabled }),

@@ -6,6 +6,10 @@ import { spawnSync } from 'node:child_process'
 const rootDir = process.cwd()
 const bunBin = process.execPath
 
+function bunRuntimeBinaryName() {
+  return process.platform === 'win32' ? 'bun_runtime.exe' : 'bun'
+}
+
 function runBun(args) {
   const result = spawnSync(bunBin, args, {
     cwd: rootDir,
@@ -44,10 +48,16 @@ async function stageRuntimeBinary(from, to) {
   await cp(from, to)
 }
 
+function ripgrepBinaryName() {
+  return process.platform === 'win32' ? 'rg.exe' : 'rg'
+}
+
 function findBundledRipgrep() {
-  if (process.platform !== 'win32') return null
+  const binaryName = ripgrepBinaryName()
 
   const envCandidates = [
+    path.join(rootDir, 'build-resources', binaryName),
+    path.join(rootDir, 'dist', binaryName),
     process.env.RG_BIN,
     process.env.RIPGREP_BIN,
   ].filter(Boolean)
@@ -56,19 +66,30 @@ function findBundledRipgrep() {
     if (existsSync(candidate)) return candidate
   }
 
-  const whereResult = spawnSync('where.exe', ['rg'], {
-    cwd: rootDir,
-    encoding: 'utf8',
-  })
+  if (process.platform === 'win32') {
+    const whereResult = spawnSync('where.exe', ['rg'], {
+      cwd: rootDir,
+      encoding: 'utf8',
+    })
 
-  if (whereResult.status === 0) {
-    const matches = `${whereResult.stdout || ''}`
-      .split(/\r?\n/)
-      .map(line => line.trim())
-      .filter(Boolean)
+    if (whereResult.status === 0) {
+      const matches = `${whereResult.stdout || ''}`
+        .split(/\r?\n/)
+        .map(line => line.trim())
+        .filter(Boolean)
 
-    const preferred = matches.find(match => match.toLowerCase().endsWith('rg.exe'))
-    if (preferred && existsSync(preferred)) return preferred
+      const preferred = matches.find(match => match.toLowerCase().endsWith(binaryName))
+      if (preferred && existsSync(preferred)) return preferred
+    }
+  } else {
+    const whichResult = spawnSync('which', ['rg'], {
+      cwd: rootDir,
+      encoding: 'utf8',
+    })
+    if (whichResult.status === 0) {
+      const preferred = `${whichResult.stdout || ''}`.trim()
+      if (preferred && existsSync(preferred)) return preferred
+    }
   }
 
   return null
@@ -93,6 +114,19 @@ async function main() {
     'src/preload.ts',
     '--outfile',
     'dist/preload.cjs',
+    '--target',
+    'node',
+    '--format',
+    'cjs',
+    '--external',
+    'electron',
+  ])
+
+  runBun([
+    'build',
+    'src/artifact-preload.ts',
+    '--outfile',
+    'dist/artifact-preload.cjs',
     '--target',
     'node',
     '--format',
@@ -126,6 +160,11 @@ async function main() {
     path.join(rootDir, 'src', 'renderer', 'style.css'),
     path.join(rootDir, 'dist', 'client', 'style.css'),
   )
+  await cp(
+    path.join(rootDir, 'src', 'autowork', 'assets'),
+    path.join(rootDir, 'dist', 'autowork', 'assets'),
+    { recursive: true },
+  )
   await safeCopy(
     path.join(rootDir, 'assets', 'icon.png'),
     path.join(rootDir, 'dist', 'icon.png'),
@@ -145,21 +184,30 @@ async function main() {
   ])
 
   await mkdir(path.join(rootDir, 'build-resources'), { recursive: true })
+  const bunRuntimeName = bunRuntimeBinaryName()
   await stageRuntimeBinary(
     bunBin,
-    path.join(rootDir, 'build-resources', 'bun_runtime.exe'),
+    path.join(rootDir, 'build-resources', bunRuntimeName),
+  )
+  await stageRuntimeBinary(
+    bunBin,
+    path.join(rootDir, 'dist', bunRuntimeName),
   )
 
-  if (process.platform === 'win32') {
-    const ripgrepPath = findBundledRipgrep()
-    if (!ripgrepPath) {
-      throw new Error(
-        'Windows packaging requires rg.exe. Install ripgrep or set RG_BIN/RIPGREP_BIN before building.',
-      )
-    }
+  const ripgrepPath = findBundledRipgrep()
+  if (ripgrepPath) {
+    const binaryName = ripgrepBinaryName()
     await stageRuntimeBinary(
       ripgrepPath,
-      path.join(rootDir, 'build-resources', 'rg.exe'),
+      path.join(rootDir, 'build-resources', binaryName),
+    )
+    await stageRuntimeBinary(
+      ripgrepPath,
+      path.join(rootDir, 'dist', binaryName),
+    )
+  } else if (process.platform === 'win32') {
+    throw new Error(
+      'Windows packaging requires rg.exe. Install ripgrep or set RG_BIN/RIPGREP_BIN before building.',
     )
   }
 }

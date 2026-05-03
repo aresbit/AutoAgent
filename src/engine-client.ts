@@ -11,6 +11,7 @@ import { appendFileSync, existsSync, mkdirSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
+import { resolveRipgrepBinaryPath } from './runtime-paths.js';
 
 const LOG_FILE = join(tmpdir(), 'autoagent-userdata', 'engine.log');
 
@@ -27,19 +28,6 @@ function logToFile(...args: unknown[]): void {
     const line = args.map((arg) => (typeof arg === 'string' ? arg : JSON.stringify(arg))).join(' ');
     appendFileSync(LOG_FILE, `[${ts}] ${line}\n`);
   } catch {}
-}
-
-function resolveBundledRipgrepPath(): string | null {
-  const candidates = [
-    process.env.AUTOAGENT_RG_PATH,
-    process.resourcesPath ? join(process.resourcesPath, 'rg.exe') : null,
-  ].filter((value): value is string => Boolean(value));
-
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) return candidate;
-  }
-
-  return null;
 }
 
 function resolveSpawnCwd(cwd?: string): string {
@@ -453,7 +441,6 @@ export class EngineClient {
     pushSupportedBoolean(args, supportedFlags, '--no-session-persistence', params.noSessionPersistence);
     pushSupportedBoolean(args, supportedFlags, '--strict-mcp-config', params.strictMcpConfig);
     pushSupportedBoolean(args, supportedFlags, '--assistant', params.assistant);
-    pushSupportedOption(args, supportedFlags, '--append-system-prompt', params.appendSystemPrompt?.trim() ? params.appendSystemPrompt : '');
     args.push(...tokenizeCliArgs(params.extraCliArgs));
 
     const env: Record<string, string> = {
@@ -462,7 +449,7 @@ export class EngineClient {
       CLAUDE_CODE_INCLUDE_PARTIAL_MESSAGES: '1',
       CLAUDE_CONFIG_DIR: params.claudeConfigDir?.trim() || join(homedir(), '.autoagent'),
     };
-    const bundledRipgrep = resolveBundledRipgrepPath();
+    const bundledRipgrep = resolveRipgrepBinaryPath();
     if (bundledRipgrep) env.AUTOAGENT_RG_PATH = bundledRipgrep;
     if (params.apiKey) env.ANTHROPIC_API_KEY = params.apiKey;
     if (params.baseURL) env.ANTHROPIC_BASE_URL = normalizeAnthropicBaseURL(params.baseURL);
@@ -516,6 +503,7 @@ export class EngineClient {
     void this.readLoop(rl);
     console.error(`[engine] claude stream-json process spawned (pid: ${this.proc.pid})`);
     logToFile('claude stream-json process spawned (pid:', this.proc.pid, ')');
+    this.writeInitializeRequest(params);
   }
 
   private writeUserMessage(prompt: string): void {
@@ -529,6 +517,22 @@ export class EngineClient {
       message: { role: 'user', content: prompt },
       parent_tool_use_id: null,
     }) + '\n');
+  }
+
+  private writeInitializeRequest(params: EngineQueryParams): void {
+    if (!this.proc?.stdin) throw new Error('Engine process not running');
+    const appendSystemPrompt = params.appendSystemPrompt?.trim();
+    if (!appendSystemPrompt) return;
+    const requestId = crypto.randomUUID();
+    this.proc.stdin.write(JSON.stringify({
+      type: 'control_request',
+      request_id: requestId,
+      request: {
+        subtype: 'initialize',
+        appendSystemPrompt,
+      },
+    }) + '\n');
+    logToFile('Initialize request written, appendSystemPrompt_len=', appendSystemPrompt.length);
   }
 
   private handleControlRequest(message: any): void {

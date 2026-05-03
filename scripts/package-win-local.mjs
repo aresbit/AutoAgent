@@ -1,12 +1,15 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
-import { rm } from 'node:fs/promises'
+import { rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 
 const rootDir = process.cwd()
-const pkg = JSON.parse(readFileSync(path.join(rootDir, 'package.json'), 'utf8'))
+const packageJsonPath = path.join(rootDir, 'package.json')
+const packageJsonRaw = readFileSync(packageJsonPath, 'utf8')
+const pkg = JSON.parse(packageJsonRaw)
 const outputDir = pkg.build?.directories?.output ?? 'release'
 const argv = process.argv.slice(2)
+const SEMVER_RE = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/
 
 function resolveBunBinary() {
   const candidates = [
@@ -76,6 +79,7 @@ function runNoThrow(command, args, options = {}) {
     shell: false,
     stdio: 'pipe',
     encoding: 'utf8',
+    timeout: 8000,
     ...options,
   })
 }
@@ -87,6 +91,7 @@ function sleep(ms) {
 function printUsage() {
   console.log(`Usage:
   node scripts/package-win-local.mjs
+  node scripts/package-win-local.mjs 0.8.0
   node scripts/package-win-local.mjs --dir
   node scripts/package-win-local.mjs -- portable
   node scripts/package-win-local.mjs -- nsis
@@ -98,6 +103,15 @@ Behavior:
 Defaults:
   --win --x64 --config.win.signAndEditExecutable=false --config.npmRebuild=false
 `)
+}
+
+function extractVersionOverride(args) {
+  const copy = [...args]
+  const first = copy[0]
+  if (first && !first.startsWith('-') && SEMVER_RE.test(first)) {
+    return { versionOverride: first, builderArgs: copy.slice(1) }
+  }
+  return { versionOverride: null, builderArgs: copy }
 }
 
 function normalizedBuilderArgs(extraArgs) {
@@ -139,8 +153,8 @@ async function stopLikelyLockingProcesses() {
   if (process.platform !== 'win32') return
 
   const releaseExe = path.join(rootDir, outputDir, 'win-unpacked', 'AutoAgent.exe')
-  const taskkillArgs = ['/F', '/T', '/IM', 'AutoAgent.exe', '/IM', 'electron.exe']
-  runNoThrow('taskkill.exe', taskkillArgs)
+  console.log('[package] Stopping likely locking AutoAgent processes...')
+  runNoThrow('taskkill.exe', ['/F', '/T', '/IM', 'AutoAgent.exe'])
 
   if (existsSync(releaseExe)) {
     runNoThrow('taskkill.exe', ['/F', '/T', '/FI', `IMAGENAME eq ${path.basename(releaseExe)}`])
@@ -150,13 +164,16 @@ async function stopLikelyLockingProcesses() {
 }
 
 async function cleanPackagingOutputs() {
-  const dirs = [
+  const targets = [
     path.join(rootDir, outputDir, 'win-unpacked'),
+    path.join(rootDir, outputDir, 'win-ia32-unpacked'),
+    path.join(rootDir, outputDir, 'win-arm64-unpacked'),
     path.join(rootDir, outputDir, 'builder-effective-config.yaml'),
   ]
 
-  for (const target of dirs) {
+  for (const target of targets) {
     if (!existsSync(target)) continue
+    console.log(`[package] Removing ${path.relative(rootDir, target) || target}...`)
     await rm(target, {
       recursive: true,
       force: true,
@@ -170,6 +187,22 @@ async function prepareForPackaging() {
   console.log('[package] Cleaning previous Windows packaging outputs...')
   await stopLikelyLockingProcesses()
   await cleanPackagingOutputs()
+}
+
+async function withTemporaryPackageVersion(versionOverride, fn) {
+  if (!versionOverride) {
+    return fn()
+  }
+
+  console.log(`[package] Using temporary package version ${versionOverride}...`)
+  const nextPkg = { ...pkg, version: versionOverride }
+  await writeFile(packageJsonPath, `${JSON.stringify(nextPkg, null, 2)}\n`, 'utf8')
+
+  try {
+    return await fn()
+  } finally {
+    await writeFile(packageJsonPath, packageJsonRaw, 'utf8')
+  }
 }
 
 async function runElectronBuilder(builderCli, builderArgs) {
@@ -188,6 +221,8 @@ try {
     process.exit(0)
   }
 
+  const { versionOverride, builderArgs } = extractVersionOverride(argv)
+
   const bunBin = resolveBunBinary()
   if (!bunBin) {
     console.error('Unable to find Bun. Set BUN_BIN or build build-resources/bun_runtime.exe first.')
@@ -200,12 +235,14 @@ try {
     process.exit(1)
   }
 
-  await prepareForPackaging()
-  console.log('[package] Building desktop app assets...')
-  run(bunBin, [path.join('scripts', 'build-desktop.mjs')])
+  await withTemporaryPackageVersion(versionOverride, async () => {
+    await prepareForPackaging()
+    console.log('[package] Building desktop app assets...')
+    run(bunBin, [path.join('scripts', 'build-desktop.mjs')])
 
-  await runElectronBuilder(builderCli, normalizedBuilderArgs(argv))
-  console.log('[package] Windows packaging completed.')
+    await runElectronBuilder(builderCli, normalizedBuilderArgs(builderArgs))
+    console.log('[package] Windows packaging completed.')
+  })
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error)
   if (message.includes('app-builder.exe') && message.includes('EPERM')) {
