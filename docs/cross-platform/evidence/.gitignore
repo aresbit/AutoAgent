@@ -1,0 +1,31 @@
+# The root .gitignore ignores *.log. Keep the small, high-signal evidence logs
+# that the analysis documents cite; keep multi-MB repeated Chromium errors out.
+*.log
+!gnome-nested.log
+!maxwire-launch.log
+!real-default.log
+!real-disable-gpu.log
+!real-ozone-x11.log
+!sandbox-fatal.log
+!wayland-explicit.log
+!wl-explicit-disable-gpu.log
+!wl-ipgpu-nocompositing.log
+!wl-noipgpu-timed.log
+!wl-probe-noipgpu.log
+!wl-x11.log
+!x11-baseline.log
+!x11-disable-gpu-swrast.log
+!x11-disable-gpu.log
+!x11-ipgpu-timed.log
+!x11-noipgpu-timed.log
+!x11-ozone-x11.log
+!x11-probe-ipgpu.log
+!x11-probe-noipgpu.log
+
+# Multi-MB GPU-storm logs; their counts and conclusions live in diagnosis.md,
+# root-cause.md and evaluation.md.
+wl-auto-verbose.log
+wl-auto.log
+wl-explicit.log
+wl-ipgpu-timed.log
+wl-probe-ipgpu.log

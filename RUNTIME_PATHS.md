@@ -170,28 +170,44 @@ Important note:
 
 Debian packaging uses a different filesystem contract from Electron Builder.
 
-Relevant script:
+Relevant scripts:
 
 - [scripts/build-deb.sh](D:/yyscode/AutoAgent/scripts/build-deb.sh)
+- [packaging/deb/usr/bin/autoagent](D:/yyscode/AutoAgent/packaging/deb/usr/bin/autoagent)
 
 Installed layout:
 
 - launcher: `/usr/bin/autoagent`
-- app home: `/usr/lib/autoagent`
-- desktop main: `/usr/lib/autoagent/main.js`
-- preload: `/usr/lib/autoagent/preload.cjs`
-- artifact preload: `/usr/lib/autoagent/artifact-preload.cjs` if copied in future builds
-- OpenCC CLI: `/usr/lib/autoagent/cli.js`
-- bun runtime: `/usr/lib/autoagent/bun`
-- ripgrep: `/usr/lib/autoagent/rg`
-- icons: `/usr/lib/autoagent/icon.png`
+- engine home: `/opt/autoagent/engine`
+- Bun runtime: `/opt/autoagent/engine/bun`
+- ripgrep: `/opt/autoagent/engine/rg`
+- OpenCC CLI: `/opt/autoagent/engine/cli.js`
+- desktop home: `/opt/autoagent/desktop`
+- Electron binary: `/opt/autoagent/desktop/electron`
+- Chromium helpers: `/opt/autoagent/desktop/chrome-sandbox` (root:root 4755),
+  `/opt/autoagent/desktop/chrome_crashpad_handler`
+- app bundle: `/opt/autoagent/desktop/resources/app/`
+- desktop main: `/opt/autoagent/desktop/resources/app/main.js`
+- preload: `/opt/autoagent/desktop/resources/app/preload.cjs`
+- artifact preload: `/opt/autoagent/desktop/resources/app/artifact-preload.cjs`
+- app package metadata: `/opt/autoagent/desktop/resources/app/package.json`
+- icons: `/opt/autoagent/desktop/resources/app/icon.png` (source assets also
+  installed under `/usr/share/icons/hicolor/*/apps/autoagent.png`)
 
-Current runtime-paths support includes explicit Debian lookups for:
+The launcher exports:
 
-- `/usr/lib/autoagent/cli.js`
-- `/usr/lib/autoagent/bun`
+```sh
+AUTOAGENT_ENGINE_DIR=/opt/autoagent/engine
+```
 
-Ripgrep resolution on Debian is also compatible because OpenCC has its own internal app-local lookup behavior for `/usr/lib/autoagent/rg`.
+`AUTOAGENT_ENGINE_DIR` is the single switch for engine binary resolution. The
+launcher sets it when not already set; `runtime-paths.ts` uses it to resolve
+`bun`, `rg`, and `cli.js` before any legacy `/usr/lib/autoagent` fallback. This
+keeps development and Windows paths working.
+
+Runtime resolution must not depend on system Node, npm, Bun, Electron, or
+Python. Logs are written to
+`${XDG_STATE_HOME:-$HOME/.local/state}/autoagent/logs/desktop.log`.
 
 ## Build Script Staging Rules
 
@@ -221,10 +237,12 @@ These names are intentionally aligned with `runtime-paths.ts`.
 1. `AUTOAGENT_RG_PATH`
 2. `RG_BIN`
 3. `RIPGREP_BIN`
-4. packaged `resources/`
-5. local module directory
-6. `dist/`
-7. `build-resources/`
+4. packaged Linux engine dir (`AUTOAGENT_ENGINE_DIR`, default
+   `/opt/autoagent/engine`)
+5. packaged `resources/`
+6. local module directory
+7. `dist/`
+8. `build-resources/`
 
 ### Prompt assets
 
@@ -242,7 +260,8 @@ These names are intentionally aligned with `runtime-paths.ts`.
 1. `AUTOAGENT_CLAUDE_COMMAND`
 2. `AUTOAGENT_OPENCC_COMMAND`
 3. Windows batch wrapper in dev
-4. bundled bun + resolved OpenCC CLI entry
+4. bundled bun + resolved OpenCC CLI entry (on Linux packaged installs this is
+   `AUTOAGENT_ENGINE_DIR/bun` + `AUTOAGENT_ENGINE_DIR/cli.js`)
 5. `bun run <cli.js>` on non-Windows dev fallback
 6. raw `opencc`
 

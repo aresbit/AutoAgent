@@ -1,27 +1,46 @@
 #!/bin/sh
-# AutoAgent - AI coding agent desktop application
-# Auto-detects Electron from common installation paths
+set -eu
+umask 077
 
-AGENT_HOME="/usr/lib/autoagent"
+APP_DIR="${AUTOAGENT_APP_DIR:-/opt/autoagent}"
+ELECTRON="$APP_DIR/desktop/electron"
+DESKTOP_APP="$APP_DIR/desktop/resources/app"
+STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}/autoagent"
+LOG_DIR="$STATE_HOME/logs"
+LOG_FILE="$LOG_DIR/desktop.log"
 
-find_electron() {
-    [ -x "${AGENT_HOME}/electron" ] && { echo "${AGENT_HOME}/electron"; return 0; }
-    command -v electron >/dev/null 2>&1 && { echo "electron"; return 0; }
-    command -v npx >/dev/null 2>&1 && { echo "npx electron"; return 0; }
-    for dir in /usr/lib/node_modules /usr/local/lib/node_modules; do
-        [ -x "${dir}/electron/dist/electron" ] && { echo "${dir}/electron/dist/electron"; return 0; }
-    done
-    return 1
-}
+export AUTOAGENT_ENGINE_DIR="${AUTOAGENT_ENGINE_DIR:-$APP_DIR/engine}"
 
-ELECTRON=$(find_electron)
-if [ -z "$ELECTRON" ]; then
-    echo "Error: Electron not found. Install with: npm install -g electron" >&2
+[ -x "$ELECTRON" ] || { echo "AutoAgent: missing $ELECTRON" >&2; exit 1; }
+[ -f "$DESKTOP_APP/main.js" ] || { echo "AutoAgent: missing $DESKTOP_APP/main.js" >&2; exit 1; }
+
+mkdir -p "$LOG_DIR"
+
+WAYLAND_OK=0
+if [ -n "${WAYLAND_DISPLAY:-}" ]; then
+  case "$WAYLAND_DISPLAY" in
+    /*) WAYLAND_SOCKET="$WAYLAND_DISPLAY" ;;
+    *)  WAYLAND_SOCKET="${XDG_RUNTIME_DIR:-}/$WAYLAND_DISPLAY" ;;
+  esac
+  if [ -S "$WAYLAND_SOCKET" ]; then
+    WAYLAND_OK=1
+  elif [ -n "${DISPLAY:-}" ]; then
+    echo "AutoAgent: Wayland socket $WAYLAND_SOCKET is missing; falling back to X11 ($DISPLAY)" >>"$LOG_FILE"
+  else
+    echo "AutoAgent: Wayland socket $WAYLAND_SOCKET is missing and DISPLAY is not set" >&2
     exit 1
+  fi
 fi
 
-# --no-sandbox needed when chrome-sandbox SUID bit can't be set (dev/testing)
-# Redirect output to avoid terminal flash when launched from .desktop
-LOG="${HOME}/.local/share/autoagent/autoagent.log"
-mkdir -p "$(dirname "$LOG")" 2>/dev/null
-exec $ELECTRON --no-sandbox "${AGENT_HOME}/main.js" "$@" >> "${LOG}" 2>&1
+if [ "$WAYLAND_OK" -eq 1 ]; then
+  echo "AutoAgent: launching on Wayland ($WAYLAND_DISPLAY)" >>"$LOG_FILE"
+  exec "$ELECTRON" --ozone-platform=wayland "$DESKTOP_APP" "$@" >>"$LOG_FILE" 2>&1
+fi
+
+if [ -z "${DISPLAY:-}" ]; then
+  echo "AutoAgent: no display available (set DISPLAY or WAYLAND_DISPLAY)" >&2
+  exit 1
+fi
+
+echo "AutoAgent: launching on X11 ($DISPLAY)" >>"$LOG_FILE"
+exec "$ELECTRON" "$DESKTOP_APP" "$@" >>"$LOG_FILE" 2>&1

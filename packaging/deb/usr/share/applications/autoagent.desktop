@@ -1,10 +1,16 @@
 [Desktop Entry]
+Type=Application
+Version=1.0
 Name=AutoAgent
+GenericName=AI Coding Agent
 Comment=AI-powered coding agent desktop
+Comment[zh_CN]=AI 编程助手桌面端
 Exec=/usr/bin/autoagent
+TryExec=/usr/bin/autoagent
 Icon=autoagent
 Terminal=false
-Type=Application
+DBusActivatable=false
+StartupNotify=true
 StartupWMClass=autoagent
 Categories=Development;IDE;
 Keywords=AI;agent;code;LLM;Claude;

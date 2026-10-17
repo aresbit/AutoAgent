@@ -308,9 +308,6 @@ const LINUX_DESKTOP_NAME = 'autoagent';
 const WINDOWS_APP_ID = 'com.autoagent.desktop';
 
 // Startup optimizations
-if (process.platform === 'linux') {
-  app.commandLine.appendSwitch('in-process-gpu');
-}
 // Windows: disable GPU to avoid ERR_FAILED (-2) caused by GPU cache access
 // denied errors (拒绝访问。0x5) in locked-down environments. Also redirect
 // the disk cache to %TEMP% to bypass AppData permission restrictions.
@@ -331,7 +328,7 @@ if (process.platform === 'win32') {
 app.setName(process.platform === 'linux' ? LINUX_DESKTOP_NAME : PRODUCT_NAME);
 // Set Wayland desktop name — required for compositor to match .desktop file
 if (process.platform === 'linux') {
-  (app as typeof app & { setDesktopName?: (name: string) => void }).setDesktopName?.(LINUX_DESKTOP_NAME);
+  (app as typeof app & { setDesktopName?: (name: string) => void }).setDesktopName?.('autoagent.desktop');
 }
 // Set AppUserModelId — required for Windows taskbar icon matching
 if (process.platform === 'win32') app.setAppUserModelId(WINDOWS_APP_ID);
@@ -342,6 +339,9 @@ const clientDir = join(__dirname, 'client');
 perfMark('module init done');
 
 let mainWindow: BrowserWindow | null = null;
+let isQuitting = false;
+let renderRecoveryCount = 0;
+let renderRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
 const activeRuns = new Map<string, AbortController>();
 let sqliteDatabase: any | null = null;
 let rendererServerPromise: Promise<string> | null = null;
@@ -2018,7 +2018,7 @@ async function createWindow(): Promise<void> {
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     ...(process.platform === 'darwin' ? { trafficLightPosition: { x: 14, y: 18 } } : {}),
     // Hide until fully rendered — avoids flash, feels faster
-    show: true,
+    show: false,
     backgroundColor: '#ffffff',
     webPreferences: {
       preload: join(__dirname, 'preload.cjs'),
@@ -2039,6 +2039,7 @@ async function createWindow(): Promise<void> {
 
   mainWindow.once('ready-to-show', () => {
     console.error(`[perf] +${(performance.now() - t0).toFixed(0)}ms ready-to-show`);
+    mainWindow?.show();
   });
 
   // Fine-grained load timing
@@ -2050,6 +2051,12 @@ async function createWindow(): Promise<void> {
   });
   mainWindow.webContents.on('did-finish-load', () => {
     console.error(`[perf] +${(performance.now() - t0).toFixed(0)}ms did-finish-load`);
+    // A successful load ends the current recovery window.
+    renderRecoveryCount = 0;
+    if (renderRecoveryTimer) {
+      clearTimeout(renderRecoveryTimer);
+      renderRecoveryTimer = null;
+    }
   });
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
     console.error(`[window] did-fail-load mainFrame=${isMainFrame} code=${errorCode} url=${validatedURL} error=${errorDescription}`);
@@ -2059,6 +2066,15 @@ async function createWindow(): Promise<void> {
   });
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     console.error(`[window] render-process-gone reason=${details.reason} exitCode=${details.exitCode}`);
+    const recoverable = details.reason === 'crashed' || details.reason === 'oom';
+    if (!recoverable || isQuitting || renderRecoveryCount >= 2) return;
+    renderRecoveryCount += 1;
+    console.error(`[window] scheduling renderer recovery ${renderRecoveryCount}/2 in 1000ms`);
+    renderRecoveryTimer = setTimeout(() => {
+      renderRecoveryTimer = null;
+      if (isQuitting || !mainWindow || mainWindow.isDestroyed()) return;
+      mainWindow.reload();
+    }, 1000);
   });
 
   // Serve the renderer over localhost to avoid Windows-specific navigation
@@ -2752,6 +2768,11 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 app.on('before-quit', () => {
+  isQuitting = true;
+  if (renderRecoveryTimer) {
+    clearTimeout(renderRecoveryTimer);
+    renderRecoveryTimer = null;
+  }
   for (const run of activeRuns.values()) run.abort();
   killElectronExecChildren();
   try { rendererServer?.close(); } catch {}

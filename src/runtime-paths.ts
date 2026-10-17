@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 const __filename = fileURLToPath(import.meta.url);
 const moduleDir = dirname(__filename);
 const appRootDir = dirname(moduleDir);
+const engineDir = process.env.AUTOAGENT_ENGINE_DIR || (process.platform === 'linux' ? '/opt/autoagent/engine' : '');
 
 function existingPath(candidates: Array<string | null | undefined>): string | null {
   for (const candidate of candidates) {
@@ -34,6 +35,7 @@ export function resolveRipgrepBinaryPath(): string | null {
     process.env.RG_BIN,
     process.env.RIPGREP_BIN,
     ...names.map((name) => process.resourcesPath ? join(process.resourcesPath, name) : null),
+    ...names.map((name) => engineDir ? join(engineDir, name) : null),
     ...names.map((name) => join(moduleDir, name)),
     ...names.map((name) => join(appRootDir, 'dist', name)),
     ...names.map((name) => join(appRootDir, 'build-resources', name)),
@@ -80,6 +82,7 @@ export function resolveBundledBunBinaryPath(): string | null {
     : ['bun', 'bun_runtime', 'bun_runtime.exe'];
   return existingPath([
     ...names.map((name) => process.resourcesPath ? join(process.resourcesPath, name) : null),
+    ...names.map((name) => engineDir ? join(engineDir, name) : null),
     ...names.map((name) => join(moduleDir, name)),
     ...names.map((name) => join(appRootDir, 'build-resources', name)),
     ...names.map((name) => join(appRootDir, 'dist', name)),
@@ -96,6 +99,7 @@ export function resolveOpenccCliEntryPath(): string | null {
     process.resourcesPath ? join(process.resourcesPath, 'cli.js') : null,
     join(moduleDir, 'cli.js'),
     join(appRootDir, 'packages', 'opencc', 'dist', 'cli.js'),
+    engineDir ? join(engineDir, 'cli.js') : null,
     '/usr/lib/autoagent/cli.js',
   ]);
 }

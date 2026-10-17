@@ -78,6 +78,7 @@
   "scripts": {
     "build": "bun run build:desktop",
     "build:desktop": "bun scripts/build-desktop.mjs",
+    "package:deb": "bash scripts/build-deb.sh",
     "package:win:local": "node scripts/package-win-local.mjs",
     "dev": "bun run build:desktop && electron --no-sandbox .",
     "start": "bun run build:desktop && electron --no-sandbox ."

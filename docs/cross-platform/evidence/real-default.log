@@ -1,0 +1,25 @@
+[perf] +0ms (Δ0ms) module init done
+[perf] +57ms (Δ57ms) app.ready fired
+[perf] +57ms (Δ0ms) ipc registered
+[perf] +64ms (Δ7ms) protocol registered
+[perf] +104ms (Δ40ms) BrowserWindow created
+[perf] +214ms did-start-loading
+(electron) 'console-message' arguments are deprecated and will be removed. Please use Event<WebContentsConsoleMessageEventParams> object instead.
+[renderer:1] http://127.0.0.1:44617/app.js:16890 %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[perf] +384ms dom-ready
+[perf] +385ms did-finish-load
+[perf] +385ms (Δ281ms) loadURL done
+[perf] +385ms (Δ281ms) window created
+[renderer:2] node:electron/js2c/renderer_init:2 %cElectron Security Warning (Insecure Content-Security-Policy) font-weight: bold; This renderer process has either no Content Security
+  Policy set or a policy with "unsafe-eval" enabled. This exposes users of
+  this app to unnecessary security risks.
+
+For more information and help, consult
+https://electronjs.org/docs/tutorial/security.
+This warning will not show up
+once the app is packaged.
+[perf] bootstrap IPC: loadSettings=2ms
+[perf] syncEngineConfig done in 2ms
+[408471:1017/105306.499067:ERROR:media/gpu/vaapi/vaapi_wrapper.cc:1640] vaInitialize failed: unknown libva error
+[perf] +1959ms ready-to-show
+[408471:1017/105310.947778:ERROR:content/browser/network_service_instance_impl.cc:608] Network service crashed or was terminated, restarting service.

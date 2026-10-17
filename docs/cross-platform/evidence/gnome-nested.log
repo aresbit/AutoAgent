@@ -1,0 +1,215 @@
+dbus-daemon[410785]: [session uid=1000 pid=410785] Activating service name='org.gtk.vfs.Daemon' requested by ':1.0' (uid=1000 pid=410786 comm="gnome-shell --nested --wayland --no-x11 --sm-disab" label="unconfined")
+dbus-daemon[410785]: [session uid=1000 pid=410785] Successfully activated service 'org.gtk.vfs.Daemon'
+libmutter-Message: 10:54:12.887: Running GNOME Shell (using mutter 46.2) as a Wayland display server
+** Message: 10:54:14.749: Obtained a high priority EGL context
+** Message: 10:54:14.751: Obtained a high priority EGL context
+libmutter-Message: 10:54:14.827: Using Wayland display name 'wayland-0'
+Window manager warning: Failed to set environment variable WAYLAND_DISPLAY for gnome-session: GDBus.Error:org.freedesktop.DBus.Error.NameHasNoOwner: Name "org.gnome.SessionManager" does not exist
+GNOME Shell-Message: 10:54:15.093: Unset XDG_SESSION_ID, getCurrentSessionProxy() called outside a user session. Asking logind directly.
+GNOME Shell-Message: 10:54:15.093: Will monitor session 65
+dbus-daemon[410785]: [session uid=1000 pid=410785] Activating service name='org.freedesktop.systemd1' requested by ':1.0' (uid=1000 pid=410786 comm="gnome-shell --nested --wayland --no-x11 --sm-disab" label="unconfined")
+dbus-daemon[410785]: [session uid=1000 pid=410785] Activating service name='org.gnome.Shell.Screencast' requested by ':1.0' (uid=1000 pid=410786 comm="gnome-shell --nested --wayland --no-x11 --sm-disab" label="unconfined")
+dbus-daemon[410785]: [session uid=1000 pid=410785] Activated service 'org.freedesktop.systemd1' failed: Process org.freedesktop.systemd1 exited with status 1
+dbus-daemon[410785]: [session uid=1000 pid=410785] Activating service name='org.freedesktop.impl.portal.PermissionStore' requested by ':1.0' (uid=1000 pid=410786 comm="gnome-shell --nested --wayland --no-x11 --sm-disab" label="unconfined")
+dbus-daemon[410785]: [session uid=1000 pid=410785] Activating service name='org.gnome.Shell.CalendarServer' requested by ':1.0' (uid=1000 pid=410786 comm="gnome-shell --nested --wayland --no-x11 --sm-disab" label="unconfined")
+dbus-daemon[410785]: [session uid=1000 pid=410785] Successfully activated service 'org.freedesktop.impl.portal.PermissionStore'
+dbus-daemon[410785]: [session uid=1000 pid=410785] Activating service name='org.gnome.evolution.dataserver.Sources5' requested by ':1.5' (uid=1000 pid=410946 comm="/usr/libexec/gnome-shell-calendar-server" label="unconfined")
+dbus-daemon[410785]: [session uid=1000 pid=410785] Activating service name='org.gnome.Shell.Notifications' requested by ':1.0' (uid=1000 pid=410786 comm="gnome-shell --nested --wayland --no-x11 --sm-disab" label="unconfined")
+
+** (gnome-shell:410786): WARNING **: 10:54:15.159: Could not issue 'GetUnit' systemd call
+
+(gnome-shell:410786): Gjs-WARNING **: 10:54:15.168: Gio.UnixInputStream has been moved to a separate platform-specific library. Please update your code to use GioUnix.InputStream instead.
+0 inhibit() ["resource:///org/gnome/shell/misc/loginManager.js":209:8]
+1 InterpretGeneratorResume() ["self-hosted":1461:33]
+2 AsyncFunctionNext() ["self-hosted":852:26]
+3 anonymous() ["resource:///org/gnome/shell/ui/init.js":21:19]
+
+dbus-daemon[410785]: [session uid=1000 pid=410785] Activating service name='org.gnome.OnlineAccounts' requested by ':1.6' (uid=1000 pid=410959 comm="/usr/libexec/evolution-source-registry" label="unconfined")
+dbus-daemon[410785]: [session uid=1000 pid=410785] Activating service name='org.gtk.vfs.UDisks2VolumeMonitor' requested by ':1.0' (uid=1000 pid=410786 comm="gnome-shell --nested --wayland --no-x11 --sm-disab" label="unconfined")
+dbus-daemon[410785]: [session uid=1000 pid=410785] Successfully activated service 'org.gnome.evolution.dataserver.Sources5'
+dbus-daemon[410785]: [session uid=1000 pid=410785] Successfully activated service 'org.gnome.Shell.CalendarServer'
+dbus-daemon[410785]: [session uid=1000 pid=410785] Activating service name='org.gnome.evolution.dataserver.Calendar8' requested by ':1.5' (uid=1000 pid=410946 comm="/usr/libexec/gnome-shell-calendar-server" label="unconfined")
+dbus-daemon[410785]: [session uid=1000 pid=410785] Successfully activated service 'org.gnome.Shell.Notifications'
+dbus-daemon[410785]: [session uid=1000 pid=410785] Activating service name='org.freedesktop.portal.IBus' requested by ':1.9' (uid=1000 pid=410972 comm="ibus-daemon --panel disable" label="unconfined")
+goa-daemon-Message: 10:54:15.188: goa-daemon version 3.50.4 starting
+dbus-daemon[410785]: [session uid=1000 pid=410785] Activating service name='org.gnome.Identity' requested by ':1.10' (uid=1000 pid=410990 comm="/usr/libexec/goa-daemon" label="unconfined")
+dbus-daemon[410785]: [session uid=1000 pid=410785] Successfully activated service 'org.freedesktop.portal.IBus'
+dbus-daemon[410785]: [session uid=1000 pid=410785] Successfully activated service 'org.gtk.vfs.UDisks2VolumeMonitor'
+dbus-daemon[410785]: [session uid=1000 pid=410785] Activating service name='org.gtk.vfs.MTPVolumeMonitor' requested by ':1.0' (uid=1000 pid=410786 comm="gnome-shell --nested --wayland --no-x11 --sm-disab" label="unconfined")
+dbus-daemon[410785]: [session uid=1000 pid=410785] Successfully activated service 'org.gnome.OnlineAccounts'
+dbus-daemon[410785]: [session uid=1000 pid=410785] Successfully activated service 'org.gnome.Identity'
+dbus-daemon[410785]: [session uid=1000 pid=410785] Successfully activated service 'org.gtk.vfs.MTPVolumeMonitor'
+dbus-daemon[410785]: [session uid=1000 pid=410785] Activating service name='org.gtk.vfs.GoaVolumeMonitor' requested by ':1.0' (uid=1000 pid=410786 comm="gnome-shell --nested --wayland --no-x11 --sm-disab" label="unconfined")
+dbus-daemon[410785]: [session uid=1000 pid=410785] Successfully activated service 'org.gnome.evolution.dataserver.Calendar8'
+dbus-daemon[410785]: [session uid=1000 pid=410785] Successfully activated service 'org.gtk.vfs.GoaVolumeMonitor'
+dbus-daemon[410785]: [session uid=1000 pid=410785] Activating service name='org.gtk.vfs.AfcVolumeMonitor' requested by ':1.0' (uid=1000 pid=410786 comm="gnome-shell --nested --wayland --no-x11 --sm-disab" label="unconfined")
+dbus-daemon[410785]: [session uid=1000 pid=410785] Activating service name='org.gnome.evolution.dataserver.AddressBook10' requested by ':1.13' (uid=1000 pid=411004 comm="/usr/libexec/evolution-calendar-factory" label="unconfined")
+dbus-daemon[410785]: [session uid=1000 pid=410785] Successfully activated service 'org.gtk.vfs.AfcVolumeMonitor'
+dbus-daemon[410785]: [session uid=1000 pid=410785] Activating service name='org.gtk.vfs.GPhoto2VolumeMonitor' requested by ':1.0' (uid=1000 pid=410786 comm="gnome-shell --nested --wayland --no-x11 --sm-disab" label="unconfined")
+dbus-daemon[410785]: [session uid=1000 pid=410785] Successfully activated service 'org.gtk.vfs.GPhoto2VolumeMonitor'
+GNOME Shell-Message: 10:54:15.217: Error looking up permission: GDBus.Error:org.freedesktop.portal.Error.NotFound: No entry for geolocation
+GNOME Shell-Message: 10:54:15.221: Failed to register AuthenticationAgent
+dbus-daemon[410785]: [session uid=1000 pid=410785] Successfully activated service 'org.gnome.evolution.dataserver.AddressBook10'
+dbus-daemon[410785]: [session uid=1000 pid=410785] Activating service name='ca.desrt.dconf' requested by ':1.0' (uid=1000 pid=410786 comm="gnome-shell --nested --wayland --no-x11 --sm-disab" label="unconfined")
+dbus-daemon[410785]: [session uid=1000 pid=410785] Successfully activated service 'ca.desrt.dconf'
+
+(gnome-shell:410786): libmutter-WARNING **: 10:54:15.459: (../src/backends/meta-barrier.c:258):init_barrier_impl: runtime check failed: (priv->impl)
+
+(gnome-shell:410786): libmutter-WARNING **: 10:54:15.459: (../src/backends/meta-barrier.c:258):init_barrier_impl: runtime check failed: (priv->impl)
+
+(gnome-shell:410786): libmutter-WARNING **: 10:54:15.459: (../src/backends/meta-barrier.c:258):init_barrier_impl: runtime check failed: (priv->impl)
+
+(gnome-shell:410786): libmutter-WARNING **: 10:54:15.459: (../src/backends/meta-barrier.c:258):init_barrier_impl: runtime check failed: (priv->impl)
+** Message: 10:54:15.471: Failed to start camera monitor
+dbus-daemon[410785]: [session uid=1000 pid=410785] Activating service name='org.a11y.Bus' requested by ':1.24' (uid=1000 pid=411015 comm="/usr/libexec/ibus-extension-gtk3" label="unconfined")
+dbus-daemon[410785]: [session uid=1000 pid=410785] Successfully activated service 'org.a11y.Bus'
+dbus-daemon[410785]: [session uid=1000 pid=410785] Activating service name='org.freedesktop.portal.Desktop' requested by ':1.15' (uid=1000 pid=411015 comm="/usr/libexec/ibus-extension-gtk3" label="unconfined")
+dbus-daemon[410785]: [session uid=1000 pid=410785] Successfully activated service 'org.gnome.Shell.Screencast'
+dbus-daemon[410785]: [session uid=1000 pid=410785] Activating service name='org.freedesktop.portal.Documents' requested by ':1.26' (uid=1000 pid=411181 comm="/usr/libexec/xdg-desktop-portal" label="unconfined")
+dbus-daemon[410785]: [session uid=1000 pid=410785] Successfully activated service 'org.freedesktop.portal.Documents'
+Ignoring invalid max threads value 4294967295 > max (100000).
+dbus-daemon[410785]: [session uid=1000 pid=410785] Activating service name='org.freedesktop.impl.portal.desktop.gnome' requested by ':1.26' (uid=1000 pid=411181 comm="/usr/libexec/xdg-desktop-portal" label="unconfined")
+
+(gnome-shell:410786): libmutter-WARNING **: 10:54:15.564: (../src/backends/meta-barrier.c:258):init_barrier_impl: runtime check failed: (priv->impl)
+
+(gnome-shell:410786): libmutter-WARNING **: 10:54:15.564: (../src/backends/meta-barrier.c:258):init_barrier_impl: runtime check failed: (priv->impl)
+
+(gnome-shell:410786): libmutter-WARNING **: 10:54:15.564: (../src/backends/meta-barrier.c:258):init_barrier_impl: runtime check failed: (priv->impl)
+
+(gnome-shell:410786): libmutter-WARNING **: 10:54:15.564: (../src/backends/meta-barrier.c:258):init_barrier_impl: runtime check failed: (priv->impl)
+
+(gnome-shell:410786): libmutter-WARNING **: 10:54:15.631: (../src/backends/meta-barrier.c:258):init_barrier_impl: runtime check failed: (priv->impl)
+
+(gnome-shell:410786): libmutter-WARNING **: 10:54:15.631: (../src/backends/meta-barrier.c:258):init_barrier_impl: runtime check failed: (priv->impl)
+
+(gnome-shell:410786): libmutter-WARNING **: 10:54:15.631: (../src/backends/meta-barrier.c:258):init_barrier_impl: runtime check failed: (priv->impl)
+
+(gnome-shell:410786): libmutter-WARNING **: 10:54:15.631: (../src/backends/meta-barrier.c:258):init_barrier_impl: runtime check failed: (priv->impl)
+dbus-daemon[411169]: Activating service name='org.a11y.atspi.Registry' requested by ':1.1' (uid=1000 pid=411182 comm="gjs /usr/share/gnome-shell/extensions/ding@rasters" label="desktop-icons-ng (unconfined)")
+dbus-daemon[411169]: Successfully activated service 'org.a11y.atspi.Registry'
+SpiRegistry daemon is running with well-known name - org.a11y.atspi.Registry
+GNOME Shell-Message: 10:54:15.703: GNOME Shell started at Sat Oct 17 2026 10:54:15 GMT+0800 (中国标准时间)
+GNOME Shell-Message: 10:54:15.704: Registering session with GDM
+
+(gnome-shell:410786): libmutter-WARNING **: 10:54:15.712: (../src/backends/meta-barrier.c:258):init_barrier_impl: runtime check failed: (priv->impl)
+
+(gnome-shell:410786): libmutter-WARNING **: 10:54:15.712: (../src/backends/meta-barrier.c:258):init_barrier_impl: runtime check failed: (priv->impl)
+
+(gnome-shell:410786): libmutter-WARNING **: 10:54:15.712: (../src/backends/meta-barrier.c:258):init_barrier_impl: runtime check failed: (priv->impl)
+
+(gnome-shell:410786): libmutter-WARNING **: 10:54:15.712: (../src/backends/meta-barrier.c:258):init_barrier_impl: runtime check failed: (priv->impl)
+GNOME Shell-Message: 10:54:15.744: Launching DING process
+dbus-daemon[410785]: [session uid=1000 pid=410785] Successfully activated service 'org.freedesktop.impl.portal.desktop.gnome'
+dbus-daemon[410785]: [session uid=1000 pid=410785] Activating service name='org.freedesktop.impl.portal.desktop.gtk' requested by ':1.26' (uid=1000 pid=411181 comm="/usr/libexec/xdg-desktop-portal" label="unconfined")
+dbus-daemon[410785]: [session uid=1000 pid=410785] Successfully activated service 'org.freedesktop.impl.portal.desktop.gtk'
+
+(/usr/libexec/xdg-desktop-portal:411181): xdg-desktop-portal-WARNING **: 10:54:15.942: Failed connect to PipeWire: Couldn't connect to PipeWire
+dbus-daemon[410785]: [session uid=1000 pid=410785] Activating service name='org.freedesktop.secrets' requested by ':1.26' (uid=1000 pid=411181 comm="/usr/libexec/xdg-desktop-portal" label="unconfined")
+** Message: 10:54:15.956: couldn't access control socket: /tmp/atlas-wl-runtime/keyring/control: 没有那个文件或目录
+discover_other_daemon: 0dbus-daemon[410785]: [session uid=1000 pid=410785] Successfully activated service 'org.freedesktop.secrets'
+dbus-daemon[410785]: [session uid=1000 pid=410785] Successfully activated service 'org.freedesktop.portal.Desktop'
+dbus-daemon[410785]: [session uid=1000 pid=410785] Activating service name='org.gnome.Nautilus' requested by ':1.30' (uid=1000 pid=411239 comm="gjs /usr/share/gnome-shell/extensions/ding@rasters" label="desktop-icons-ng (unconfined)")
+** Message: 10:54:16.029: Connecting to org.freedesktop.Tracker3.Miner.Files
+dbus-daemon[410785]: [session uid=1000 pid=410785] Successfully activated service 'org.gnome.Nautilus'
+dbus-daemon[410785]: [session uid=1000 pid=410785] Activating service name='org.gtk.vfs.Metadata' requested by ':1.30' (uid=1000 pid=411239 comm="gjs /usr/share/gnome-shell/extensions/ding@rasters" label="desktop-icons-ng (unconfined)")
+dbus-daemon[410785]: [session uid=1000 pid=410785] Successfully activated service 'org.gtk.vfs.Metadata'
+DING: Detected async api for thumbnails
+DING: (gjs:411239): Gjs-WARNING **: 10:54:16.069: GLib.unix_signal_add has been moved to a separate platform-specific library. Please update your code to use GLibUnix.signal_add instead.
+DING: 0 DesktopManager() ["/usr/share/gnome-shell/extensions/ding@rastersoft.com/app/desktopManager.js":264:12]
+DING: 1 anonymous() ["/usr/share/gnome-shell/extensions/ding@rastersoft.com/app/ding.js":180:25]
+DING: 2 anonymous() ["/usr/share/gnome-shell/extensions/ding@rastersoft.com/app/ding.js":197:20]
+DING: 3 <TOP LEVEL> ["/usr/share/gnome-shell/extensions/ding@rastersoft.com/app/ding.js":206:12]
+DING: (gjs:411239): GLib-GIO-CRITICAL **: 10:54:16.081: GFileInfo created without standard::is-hidden
+DING: (gjs:411239): GLib-GIO-CRITICAL **: 10:54:16.081: file ../../../gio/gfileinfo.c: line 1632 (g_file_info_get_is_hidden): should not be reached
+DING: (gjs:411239): GLib-GIO-CRITICAL **: 10:54:16.081: GFileInfo created without standard::is-backup
+DING: (gjs:411239): GLib-GIO-CRITICAL **: 10:54:16.081: file ../../../gio/gfileinfo.c: line 1654 (g_file_info_get_is_backup): should not be reached
+DING: (gjs:411239): GLib-GIO-CRITICAL **: 10:54:16.081: GFileInfo created without standard::is-symlink
+DING: (gjs:411239): GLib-GIO-CRITICAL **: 10:54:16.081: file ../../../gio/gfileinfo.c: line 1676 (g_file_info_get_is_symlink): should not be reached
+DING: ** Message: 10:54:16.086: Connecting to org.freedesktop.Tracker3.Miner.Files
+DING: DBus interface for Gvfs daemon (org.gtk.vfs.Metadata) is now available.
+DING: DBus interface for Switcheroo control (net.hadess.SwitcherooControl) is now available.
+GNOME Shell-Message: 10:54:16.115: Received notification for window. 0 notifications remaining.
+dbus-daemon[410785]: [session uid=1000 pid=410785] Activating service name='org.freedesktop.Tracker3.Miner.Files' requested by ':1.35' (uid=1000 pid=411283 comm="/usr/bin/nautilus --gapplication-service" label="unconfined")
+DING: DBus interface for Nautilus (org.gnome.Nautilus.FileOperations2) is now available.
+DING: DBus interface for Nautilus (org.freedesktop.FileManager1) is now available.
+DING: GNOME nautilus 46.4
+dbus-daemon[410785]: [session uid=1000 pid=410785] Successfully activated service 'org.freedesktop.Tracker3.Miner.Files'
+
+(gnome-shell:410786): libmutter-CRITICAL **: 10:54:27.460: surface_state_changed: assertion 'wl_window->has_last_sent_configuration' failed
+
+(tracker-extract-3:411924): GLib-GIO-WARNING **: 10:54:31.576: Error creating IO channel for /proc/self/mountinfo: 无效的参数 (g-io-error-quark, 13)
+
+(gnome-shell:410786): libmutter-CRITICAL **: 10:54:36.460: surface_state_changed: assertion 'wl_window->has_last_sent_configuration' failed
+
+(gnome-shell:410786): libmutter-CRITICAL **: 10:55:24.460: surface_state_changed: assertion 'wl_window->has_last_sent_configuration' failed
+dbus-daemon[410785]: [session uid=1000 pid=410785] Activating service name='org.gnome.Nautilus' requested by ':1.0' (uid=1000 pid=410786 comm="gnome-shell --nested --wayland --no-x11 --sm-disab" label="unconfined")
+dbus-daemon[410785]: [session uid=1000 pid=410785] Activating service name='org.gnome.Calculator.SearchProvider' requested by ':1.0' (uid=1000 pid=410786 comm="gnome-shell --nested --wayland --no-x11 --sm-disab" label="unconfined")
+GNOME Shell-Message: 10:56:08.728: Received error from D-Bus search provider org.gnome.Terminal.desktop: Gio.IOErrorEnum: 无法调用方法；代理名称为常见的无所有者的名称 org.gnome.Terminal，且代理使用 G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START 标记构建
+dbus-daemon[410785]: [session uid=1000 pid=410785] Activating service name='org.gnome.seahorse.Application' requested by ':1.0' (uid=1000 pid=410786 comm="gnome-shell --nested --wayland --no-x11 --sm-disab" label="unconfined")
+dbus-daemon[410785]: [session uid=1000 pid=410785] Activating service name='org.gnome.Settings.SearchProvider' requested by ':1.0' (uid=1000 pid=410786 comm="gnome-shell --nested --wayland --no-x11 --sm-disab" label="unconfined")
+dbus-daemon[410785]: [session uid=1000 pid=410785] Activating service name='org.gnome.clocks' requested by ':1.0' (uid=1000 pid=410786 comm="gnome-shell --nested --wayland --no-x11 --sm-disab" label="unconfined")
+dbus-daemon[410785]: [session uid=1000 pid=410785] Activating service name='org.gnome.Characters' requested by ':1.0' (uid=1000 pid=410786 comm="gnome-shell --nested --wayland --no-x11 --sm-disab" label="unconfined")
+dbus-daemon[410785]: [session uid=1000 pid=410785] Activating service name='com.anthropic.Claude.SearchProvider' requested by ':1.0' (uid=1000 pid=410786 comm="gnome-shell --nested --wayland --no-x11 --sm-disab" label="unconfined")
+dbus-daemon[410785]: [session uid=1000 pid=410785] Successfully activated service 'org.gnome.Settings.SearchProvider'
+dbus-daemon[410785]: [session uid=1000 pid=410785] Successfully activated service 'org.gnome.Calculator.SearchProvider'
+dbus-daemon[410785]: [session uid=1000 pid=410785] Successfully activated service 'org.gnome.clocks'
+dbus-daemon[410785]: [session uid=1000 pid=410785] Successfully activated service 'org.gnome.seahorse.Application'
+dbus-daemon[410785]: [session uid=1000 pid=410785] Successfully activated service 'com.anthropic.Claude.SearchProvider'
+** Message: 10:56:08.757: Connecting to org.freedesktop.Tracker3.Miner.Files
+dbus-daemon[410785]: [session uid=1000 pid=410785] Successfully activated service 'org.gnome.Nautilus'
+dbus-daemon[410785]: [session uid=1000 pid=410785] Successfully activated service 'org.gnome.Characters'
+Gjs-Message: 10:56:08.841: JS LOG: Characters Application started
+dbus-daemon[410785]: [session uid=1000 pid=410785] Activating service name='org.gnome.seahorse.Application' requested by ':1.0' (uid=1000 pid=410786 comm="gnome-shell --nested --wayland --no-x11 --sm-disab" label="unconfined")
+GNOME Shell-Message: 10:56:12.311: Received error from D-Bus search provider org.gnome.Terminal.desktop: Gio.IOErrorEnum: 无法调用方法；代理名称为常见的无所有者的名称 org.gnome.Terminal，且代理使用 G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START 标记构建
+dbus-daemon[410785]: [session uid=1000 pid=410785] Successfully activated service 'org.gnome.seahorse.Application'
+dbus-daemon[410785]: [session uid=1000 pid=410785] Activating service name='org.gnome.seahorse.Application' requested by ':1.0' (uid=1000 pid=410786 comm="gnome-shell --nested --wayland --no-x11 --sm-disab" label="unconfined")
+GNOME Shell-Message: 10:56:15.983: Received error from D-Bus search provider org.gnome.Terminal.desktop: Gio.IOErrorEnum: 无法调用方法；代理名称为常见的无所有者的名称 org.gnome.Terminal，且代理使用 G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START 标记构建
+dbus-daemon[410785]: [session uid=1000 pid=410785] Successfully activated service 'org.gnome.seahorse.Application'
+[419086:1017/105620.214769:ERROR:media/gpu/vaapi/vaapi_wrapper.cc:1801] vaInitialize failed: unknown libva error
+
+(gnome-shell:410786): libmutter-CRITICAL **: 10:56:23.461: surface_state_changed: assertion 'wl_window->has_last_sent_configuration' failed
+Gjs-Message: 10:56:26.039: JS LOG: Characters Application exiting
+
+** (gnome-keyring-daemon:411277): WARNING **: 10:56:26.727: asked to register item /org/freedesktop/secrets/collection/login/3, but it's already registered
+[419086:1017/105630.442666:ERROR:components/viz/service/display/display.cc:271] Frame latency is negative: -0.039 ms
+
+(gnome-shell:410786): libmutter-WARNING **: 10:56:33.101: Failed to inhibit: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name org.freedesktop.ScreenSaver was not provided by any .service files
+
+(tracker-extract-3:420066): GLib-GIO-WARNING **: 10:56:38.344: Error creating IO channel for /proc/self/mountinfo: 无效的参数 (g-io-error-quark, 13)
+
+(gnome-shell:410786): libmutter-CRITICAL **: 10:57:27.460: surface_state_changed: assertion 'wl_window->has_last_sent_configuration' failed
+** Message: 10:57:30.241: Shutting down GNOME Shell
+
+(/usr/libexec/xdg-document-portal:411188): GLib-GIO-WARNING **: 10:57:30.258: Error releasing name org.freedesktop.portal.Documents: 连接已关闭
+
+(gnome-shell:410786): Gjs-CRITICAL **: 10:57:30.323: Attempting to call back into JSAPI during the sweeping phase of GC. This is most likely caused by not destroying a Clutter actor or Gtk+ widget with ::destroy signals connected, but can also be caused by using the destroy(), dispose(), or remove() vfuncs. Because it would crash the application, it has been blocked and the JS callback not invoked.
+The offending signal was kill-window-effects on ShellWM 0x61ca4889bcd0.
+== Stack trace for context 0x61ca48333200 ==
+
+(gnome-shell:410786): Gjs-CRITICAL **: 10:57:30.323: Attempting to call back into JSAPI during the sweeping phase of GC. This is most likely caused by not destroying a Clutter actor or Gtk+ widget with ::destroy signals connected, but can also be caused by using the destroy(), dispose(), or remove() vfuncs. Because it would crash the application, it has been blocked and the JS callback not invoked.
+The offending signal was destroy on ShellWM 0x61ca4889bcd0.
+== Stack trace for context 0x61ca48333200 ==
+
+(gnome-shell:410786): Gjs-CRITICAL **: 10:57:30.323: Attempting to call back into JSAPI during the sweeping phase of GC. This is most likely caused by not destroying a Clutter actor or Gtk+ widget with ::destroy signals connected, but can also be caused by using the destroy(), dispose(), or remove() vfuncs. Because it would crash the application, it has been blocked and the JS callback not invoked.
+The offending signal was destroy on ShellWM 0x61ca4889bcd0.
+== Stack trace for context 0x61ca48333200 ==
+
+(gnome-shell:410786): Gjs-CRITICAL **: 10:57:30.323: Attempting to call back into JSAPI during the sweeping phase of GC. This is most likely caused by not destroying a Clutter actor or Gtk+ widget with ::destroy signals connected, but can also be caused by using the destroy(), dispose(), or remove() vfuncs. Because it would crash the application, it has been blocked and the JS callback not invoked.
+The offending signal was window-removed on MetaWorkspace 0x61ca4887ef30.
+== Stack trace for context 0x61ca48333200 ==
+
+(gnome-shell:410786): Gjs-CRITICAL **: 10:57:30.323: Attempting to call back into JSAPI during the sweeping phase of GC. This is most likely caused by not destroying a Clutter actor or Gtk+ widget with ::destroy signals connected, but can also be caused by using the destroy(), dispose(), or remove() vfuncs. Because it would crash the application, it has been blocked and the JS callback not invoked.
+The offending signal was window-left-monitor on MetaDisplay 0x61ca488515b0.
+== Stack trace for context 0x61ca48333200 ==
+
+(gnome-shell:410786): Gjs-CRITICAL **: 10:57:30.323: Attempting to call back into JSAPI during the sweeping phase of GC. This is most likely caused by not destroying a Clutter actor or Gtk+ widget with ::destroy signals connected, but can also be caused by using the destroy(), dispose(), or remove() vfuncs. Because it would crash the application, it has been blocked and the JS callback not invoked.
+The offending signal was window-left-monitor on MetaDisplay 0x61ca488515b0.
+== Stack trace for context 0x61ca48333200 ==
+
+(gnome-shell:410786): Gjs-CRITICAL **: 10:57:30.323: Attempting to call back into JSAPI during the sweeping phase of GC. This is most likely caused by not destroying a Clutter actor or Gtk+ widget with ::destroy signals connected, but can also be caused by using the destroy(), dispose(), or remove() vfuncs. Because it would crash the application, it has been blocked and the JS callback not invoked.
+The offending signal was unmanaged on MetaWindowWayland 0x61ca4d0d6600.
+== Stack trace for context 0x61ca48333200 ==
+
+(gnome-shell:410786): Gjs-CRITICAL **: 10:57:30.323: Attempting to call back into JSAPI during the sweeping phase of GC. This is most likely caused by not destroying a Clutter actor or Gtk+ widget with ::destroy signals connected, but can also be caused by using the destroy(), dispose(), or remove() vfuncs. Because it would crash the application, it has been blocked and the JS callback not invoked.
+The offending signal was unmanaged on MetaWindowWayland 0x61ca4d0d6600.
+== Stack trace for context 0x61ca48333200 ==

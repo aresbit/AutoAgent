@@ -1,0 +1,5 @@
+[perf] +0ms (Δ0ms) module init done
+[407650:1017/105243.424174:ERROR:ui/ozone/platform/wayland/host/wayland_connection.cc:202] Failed to connect to Wayland display: 没有那个文件或目录 (2)
+[407650:1017/105243.424206:ERROR:ui/ozone/platform/wayland/ozone_platform_wayland.cc:281] Failed to initialize Wayland platform
+[407650:1017/105243.424217:ERROR:ui/aura/env.cc:246] The platform failed to initialize.  Exiting.
+timeout: 被监视的命令已核心转储

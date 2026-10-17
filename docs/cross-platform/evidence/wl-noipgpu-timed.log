@@ -1,0 +1,8 @@
+[probe] +283ms ready
+[419515:1017/105626.548492:ERROR:media/gpu/vaapi/vaapi_wrapper.cc:1640] vaInitialize failed: unknown libva error
+[probe] +405ms did-finish-load
+[probe] +414ms ready-to-show
+[419434:1017/105632.892971:ERROR:content/common/zygote/zygote_communication_linux.cc:291] Failed to send GetTerminationStatus message to zygote
+[419434:1017/105632.893713:ERROR:content/browser/network_service_instance_impl.cc:608] Network service crashed or was terminated, restarting service.
+[419434:1017/105632.897438:ERROR:content/common/zygote/zygote_communication_linux.cc:291] Failed to send GetTerminationStatus message to zygote
+[419434:1017/105632.899895:ERROR:content/browser/gpu/gpu_process_host.cc:990] GPU process launch failed: error_code=1002

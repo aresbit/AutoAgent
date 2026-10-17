@@ -1,0 +1,20 @@
+#!/bin/sh
+set -e
+
+process_is_ours() {
+  [ -r "/proc/$1/exe" ] || return 1
+  exe="$(readlink -f "/proc/$1/exe" 2>/dev/null)" || return 1
+  case "$exe" in
+    /usr/lib/autoagent/*|/opt/autoagent/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+for proc_dir in /proc/[0-9]*; do
+  pid="${proc_dir#/proc/}"
+  [ "$pid" = "$$" ] && continue
+  process_is_ours "$pid" || continue
+  kill -TERM "$pid" 2>/dev/null || true
+done
+
+exit 0

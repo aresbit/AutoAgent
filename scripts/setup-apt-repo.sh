@@ -30,12 +30,11 @@ done
 
 # Create repo structure
 mkdir -p "${REPO_DIR}/pool/main"
-mkdir -p "${REPO_DIR}/dists/${DIST}/${COMPONENT}/binary-all"
 mkdir -p "${REPO_DIR}/dists/${DIST}/${COMPONENT}/binary-amd64"
 
 # Copy existing .deb files to pool
 echo "[1/4] Copying packages to pool..."
-DEB_DIR="${PROJECT_DIR}/dist/deb"
+DEB_DIR="${PROJECT_DIR}/release"
 if [[ -d "$DEB_DIR" ]]; then
   cp "${DEB_DIR}"/*.deb "${REPO_DIR}/pool/main/" 2>/dev/null || true
   echo "  Copied $(ls "${DEB_DIR}"/*.deb 2>/dev/null | wc -l) package(s)."
@@ -46,8 +45,8 @@ fi
 # Generate Packages file
 echo "[2/4] Generating Packages index..."
 cd "$REPO_DIR"
-dpkg-scanpackages --multiversion pool > "${REPO_DIR}/dists/${DIST}/${COMPONENT}/binary-all/Packages"
-gzip -kf "${REPO_DIR}/dists/${DIST}/${COMPONENT}/binary-all/Packages"
+dpkg-scanpackages --multiversion pool > "${REPO_DIR}/dists/${DIST}/${COMPONENT}/binary-amd64/Packages"
+gzip -kf "${REPO_DIR}/dists/${DIST}/${COMPONENT}/binary-amd64/Packages"
 
 echo "[3/4] Creating Release file..."
 cat > "dists/${DIST}/Release" <<RELEASE
@@ -55,7 +54,7 @@ Origin: AutoAgent
 Label: AutoAgent
 Suite: ${DIST}
 Codename: ${DIST}
-Architectures: all amd64
+Architectures: amd64
 Components: ${COMPONENT}
 Description: AutoAgent - AI-powered coding agent CLI
 Date: $(date -u +"%a, %d %b %Y %H:%M:%S UTC")

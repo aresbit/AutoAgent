@@ -1,0 +1,14 @@
+[413946:1017/105527.553886:ERROR:media/gpu/vaapi/vaapi_wrapper.cc:1640] vaInitialize failed: unknown libva error
+[probe] did-finish-load
+[probe] ready-to-show
+[413896:1017/105534.016604:ERROR:content/common/zygote/zygote_communication_linux.cc:291] Failed to send GetTerminationStatus message to zygote
+[413896:1017/105534.017756:ERROR:content/browser/network_service_instance_impl.cc:608] Network service crashed or was terminated, restarting service.
+[413896:1017/105534.022618:ERROR:content/common/zygote/zygote_communication_linux.cc:291] Failed to send GetTerminationStatus message to zygote
+[413896:1017/105534.024029:ERROR:content/browser/gpu/gpu_process_host.cc:990] GPU process launch failed: error_code=1002
+[413896:1017/105534.025149:ERROR:content/browser/gpu/gpu_process_host.cc:990] GPU process launch failed: error_code=1002
+[413896:1017/105534.025457:ERROR:content/browser/gpu/gpu_process_host.cc:990] GPU process launch failed: error_code=1002
+[413896:1017/105534.025761:ERROR:content/browser/gpu/gpu_process_host.cc:990] GPU process launch failed: error_code=1002
+[413896:1017/105534.025935:ERROR:content/browser/gpu/gpu_process_host.cc:990] GPU process launch failed: error_code=1002
+[413896:1017/105534.026073:ERROR:content/browser/gpu/gpu_process_host.cc:990] GPU process launch failed: error_code=1002
+[413896:1017/105534.026078:FATAL:content/browser/gpu/gpu_data_manager_impl_private.cc:417] GPU process isn't usable. Goodbye.
+timeout: 被监视的命令已核心转储

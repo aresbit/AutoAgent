@@ -1,136 +1,359 @@
 #!/usr/bin/env bash
+# Build the AutoAgent .deb from a fresh staging directory.
+#
+# Version authority: package.json. This script never mutates packaging/deb.
 set -euo pipefail
-
-# Build AutoAgent .deb package
-# Bundles bun runtime + bundled JS → zero external dependencies
-# Prerequisites: bun, dpkg-deb
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+
+ELECTRON_VERSION="41.3.0"
+ELECTRON_ZIP="${PROJECT_DIR}/build-resources/electron-v${ELECTRON_VERSION}-linux-x64.zip"
+ELECTRON_URL="https://github.com/electron/electron/releases/download/v${ELECTRON_VERSION}/electron-v${ELECTRON_VERSION}-linux-x64.zip"
+ELECTRON_SHA256="b20e03cf174f8e56e235127d784dff8161ef4bb9c6bbc3d9383130225eb1e2a2"
+
 PACKAGING_DIR="${PROJECT_DIR}/packaging/deb"
-OPENCC_DIST_DIR="${PROJECT_DIR}/packages/opencc/dist"
-DESKTOP_DIST_DIR="${PROJECT_DIR}/dist"
+CONTROL_TEMPLATE="${PACKAGING_DIR}/DEBIAN/control"
+LAUNCHER_TEMPLATE="${PACKAGING_DIR}/usr/bin/autoagent"
+DESKTOP_TEMPLATE="${PACKAGING_DIR}/usr/share/applications/autoagent.desktop"
+OUTPUT_DIR="${PROJECT_DIR}/release"
+BUILD_LOCK="/tmp/autoagent-build.lock"
 
-VERSION="${1:-0.2.0}"
+export TZ=UTC
+export LC_ALL=C
+
+die() {
+  echo "[deb] ERROR: $*" >&2
+  exit 1
+}
+
+log() {
+  echo "[deb] $*"
+}
+
+# ---------------------------------------------------------------- arguments
+EXPECTED_VERSION=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --version)
+      [ "$#" -ge 2 ] || die "--version requires a value"
+      EXPECTED_VERSION="$2"
+      shift 2
+      ;;
+    --version=*)
+      EXPECTED_VERSION="${1#*=}"
+      shift
+      ;;
+    *)
+      die "unexpected argument: $1 (version comes from package.json)"
+      ;;
+  esac
+done
+
+# ---------------------------------------------------------------- preflight
+[ "$(uname -s)" = "Linux" ] || die "the .deb must be built on Linux"
+case "$(uname -m)" in
+  x86_64|amd64) ;;
+  *) die "the .deb must be built on x86_64 (found $(uname -m))" ;;
+esac
+
+for tool in bun dpkg-deb unzip sha256sum zipinfo; do
+  command -v "$tool" >/dev/null 2>&1 || die "missing required tool: $tool"
+done
+[ -x /usr/bin/desktop-file-validate ] || command -v desktop-file-validate >/dev/null 2>&1 \
+  || die "missing required tool: desktop-file-validate (desktop-file-utils)"
+
+# ---------------------------------------------------------------- version
+cd "$PROJECT_DIR"
+
+VERSION="$(bun -e 'console.log(require("./package.json").version)' | tr -d '\r\n')"
+case "$VERSION" in
+  ''|*[!0-9.+~-]*) die "invalid version in package.json: '$VERSION'" ;;
+esac
+if [ -n "$EXPECTED_VERSION" ] && [ "$EXPECTED_VERSION" != "$VERSION" ]; then
+  die "requested version '$EXPECTED_VERSION' does not match package.json version '$VERSION'"
+fi
+
+log "version: $VERSION"
+
+# ---------------------------------------------------------------- build
+# Kiln may build concurrently; serialize install + build.
+log "installing dependencies and building desktop bundles (flock: $BUILD_LOCK)"
+run_build() {
+  bun install --frozen-lockfile
+  bun run build:desktop
+}
+if command -v flock >/dev/null 2>&1; then
+  ( flock -x 9; run_build ) 9>"$BUILD_LOCK"
+else
+  run_build
+fi
+
+for required in \
+  "dist/main.js" \
+  "dist/preload.cjs" \
+  "dist/artifact-preload.cjs" \
+  "dist/client/index.html" \
+  "dist/autowork/assets" \
+  "dist/icon.png" \
+  "packages/opencc/dist/cli.js"; do
+  [ -e "$PROJECT_DIR/$required" ] || die "build output missing: $required"
+done
+
+# ---------------------------------------------------------------- electron
+if [ ! -f "$ELECTRON_ZIP" ]; then
+  if [ -f "${ELECTRON_ZIP}.part" ]; then
+    log "waiting for concurrent Electron download to finish"
+    for _ in $(seq 1 900); do
+      [ -f "$ELECTRON_ZIP" ] && break
+      sleep 1
+    done
+  fi
+  if [ ! -f "$ELECTRON_ZIP" ]; then
+    command -v curl >/dev/null 2>&1 || die "missing $ELECTRON_ZIP and curl is unavailable"
+    log "downloading Electron ${ELECTRON_VERSION}"
+    curl -fL --retry 3 --connect-timeout 20 -o "${ELECTRON_ZIP}.part" "$ELECTRON_URL"
+    mv "${ELECTRON_ZIP}.part" "$ELECTRON_ZIP"
+  fi
+fi
+[ -f "$ELECTRON_ZIP" ] || die "missing Electron runtime: $ELECTRON_ZIP"
+
+ACTUAL_ELECTRON_SHA256="$(sha256sum "$ELECTRON_ZIP" | awk '{print $1}')"
+[ "$ACTUAL_ELECTRON_SHA256" = "$ELECTRON_SHA256" ] \
+  || die "Electron SHA256 mismatch: expected $ELECTRON_SHA256, got $ACTUAL_ELECTRON_SHA256"
+if [ -f "${ELECTRON_ZIP}.sha256" ]; then
+  RECORDED_ELECTRON_SHA256="$(awk 'NR==1 {print $1}' "${ELECTRON_ZIP}.sha256")"
+  [ "$RECORDED_ELECTRON_SHA256" = "$ACTUAL_ELECTRON_SHA256" ] \
+    || die "Electron .sha256 sidecar disagrees with the archive"
+fi
+
+# ---------------------------------------------------------------- staging
+STAGE="$(mktemp -d)"
+trap 'rm -rf "$STAGE"' EXIT
+
+ENGINE_DIR="$STAGE/opt/autoagent/engine"
+DESKTOP_DIR="$STAGE/opt/autoagent/desktop"
+APP_DIR="$DESKTOP_DIR/resources/app"
+
+mkdir -p \
+  "$ENGINE_DIR" \
+  "$APP_DIR" \
+  "$STAGE/usr/bin" \
+  "$STAGE/usr/share/applications" \
+  "$STAGE/usr/share/icons/hicolor" \
+  "$STAGE/usr/share/pixmaps" \
+  "$STAGE/DEBIAN"
+
+# ---------------------------------------------------------------- runtime
+BUN_BIN="${PROJECT_DIR}/build-resources/bun"
+if [ ! -x "$BUN_BIN" ]; then
+  BUN_BIN="$(command -v bun || true)"
+fi
+[ -n "$BUN_BIN" ] && [ -x "$BUN_BIN" ] || die "bundled bun runtime not found"
+
+RG_BIN="${RG_BIN:-${PROJECT_DIR}/build-resources/rg}"
+if [ ! -x "$RG_BIN" ]; then
+  RG_BIN="$(command -v rg || true)"
+fi
+[ -n "$RG_BIN" ] && [ -x "$RG_BIN" ] || die "bundled rg runtime not found (set RG_BIN)"
+
+install -m 0755 "$BUN_BIN" "$ENGINE_DIR/bun"
+install -m 0755 "$RG_BIN" "$ENGINE_DIR/rg"
+install -m 0644 "$PROJECT_DIR/packages/opencc/dist/cli.js" "$ENGINE_DIR/cli.js"
+
+if command -v strip >/dev/null 2>&1; then
+  strip --strip-unneeded "$ENGINE_DIR/bun" 2>/dev/null || true
+  strip --strip-unneeded "$ENGINE_DIR/rg" 2>/dev/null || true
+fi
+
+"$ENGINE_DIR/bun" --version >/dev/null 2>&1 || die "bundled bun runtime failed to execute"
+"$ENGINE_DIR/rg" --version >/dev/null 2>&1 || die "bundled rg runtime failed to execute"
+
+# ---------------------------------------------------------------- app payload
+install -m 0644 "$PROJECT_DIR/dist/main.js" "$APP_DIR/main.js"
+install -m 0644 "$PROJECT_DIR/dist/preload.cjs" "$APP_DIR/preload.cjs"
+install -m 0644 "$PROJECT_DIR/dist/artifact-preload.cjs" "$APP_DIR/artifact-preload.cjs"
+install -m 0644 "$PROJECT_DIR/dist/icon.png" "$APP_DIR/icon.png"
+cp -a "$PROJECT_DIR/dist/client" "$APP_DIR/client"
+cp -a "$PROJECT_DIR/dist/autowork" "$APP_DIR/autowork"
+
+cat > "$APP_DIR/package.json" <<APP_PACKAGE_JSON
+{"name":"autoagent","version":"${VERSION}","private":true,"type":"module","main":"main.js"}
+APP_PACKAGE_JSON
+
+# ---------------------------------------------------------------- electron
+log "extracting Electron ${ELECTRON_VERSION}"
+while IFS= read -r entry; do
+  case "$entry" in
+    /*|..|../*|*/../*|*/..) die "unsafe path in Electron archive: $entry" ;;
+  esac
+done < <(zipinfo -1 "$ELECTRON_ZIP")
+
+unzip -q "$ELECTRON_ZIP" -d "$DESKTOP_DIR"
+
+[ -x "$DESKTOP_DIR/electron" ] || die "Electron archive did not contain electron"
+[ -f "$DESKTOP_DIR/chrome-sandbox" ] || die "Electron archive did not contain chrome-sandbox"
+
+rm -rf "$DESKTOP_DIR/resources/default_app.asar"
+
+# Keep only en-US and zh-CN locales.
+if [ -d "$DESKTOP_DIR/locales" ]; then
+  find "$DESKTOP_DIR/locales" -maxdepth 1 -type f -name '*.pak' \
+    ! -name 'en-US.pak' ! -name 'zh-CN.pak' -delete
+fi
+
+# ---------------------------------------------------------------- integration
+install -m 0755 "$LAUNCHER_TEMPLATE" "$STAGE/usr/bin/autoagent"
+install -m 0644 "$DESKTOP_TEMPLATE" "$STAGE/usr/share/applications/autoagent.desktop"
+
+for size in 16 32 48 64 128 256 512; do
+  icon_source="$PROJECT_DIR/assets/icon_${size}x${size}.png"
+  [ -f "$icon_source" ] || die "missing icon: $icon_source"
+  install -D -m 0644 "$icon_source" \
+    "$STAGE/usr/share/icons/hicolor/${size}x${size}/apps/autoagent.png"
+done
+install -m 0644 "$PROJECT_DIR/assets/icon_512x512.png" "$STAGE/usr/share/pixmaps/autoagent.png"
+
+# Ship a copyright file only when the repository actually carries a license.
+for license in \
+  "$PROJECT_DIR/LICENSE" \
+  "$PROJECT_DIR/LICENSE.md" \
+  "$PROJECT_DIR/LICENSE.txt" \
+  "$PROJECT_DIR/COPYING"; do
+  if [ -f "$license" ]; then
+    install -D -m 0644 "$license" "$STAGE/usr/share/doc/autoagent/copyright"
+    break
+  fi
+done
+
+# ---------------------------------------------------------------- control
+INSTALLED_KIB="$(find "$STAGE" -path "$STAGE/DEBIAN" -prune -o -type f -printf '%s\n' \
+  | awk '{ total += $1 } END { print int((total + 1023) / 1024) }')"
+
+awk -v version="$VERSION" -v size="$INSTALLED_KIB" '
+  /^Version:/        { print "Version: " version; next }
+  /^Installed-Size:/ { print "Installed-Size: " size; next }
+  { print }
+' "$CONTROL_TEMPLATE" > "$STAGE/DEBIAN/control"
+
+for script in preinst postinst prerm postrm; do
+  [ -f "$PACKAGING_DIR/DEBIAN/$script" ] || die "missing maintainer script: $script"
+  install -m 0755 "$PACKAGING_DIR/DEBIAN/$script" "$STAGE/DEBIAN/$script"
+done
+
+# ---------------------------------------------------------------- permissions
+# Directories 755, regular files 644, then explicit executables.
+find "$STAGE" -type d -exec chmod 0755 {} +
+find "$STAGE" -type f -exec chmod 0644 {} +
+
+chmod 0755 \
+  "$STAGE/usr/bin/autoagent" \
+  "$STAGE/DEBIAN/preinst" \
+  "$STAGE/DEBIAN/postinst" \
+  "$STAGE/DEBIAN/prerm" \
+  "$STAGE/DEBIAN/postrm" \
+  "$ENGINE_DIR/bun" \
+  "$ENGINE_DIR/rg" \
+  "$DESKTOP_DIR/electron" \
+  "$DESKTOP_DIR/chrome_crashpad_handler"
+
+# Chromium's SUID sandbox: the only setuid file in the package.
+chmod 4755 "$DESKTOP_DIR/chrome-sandbox"
+
+# ---------------------------------------------------------------- leak checks
+check_stage_leaks() {
+  local found
+  found="$(find "$STAGE" \
+    \( -name node_modules -o -name '*.map' -o -name '.git*' -o -name '*.ts' -o -name '*.tsx' \) \
+    -print -quit)"
+  [ -z "$found" ] || die "forbidden build artifact in package: $found"
+
+  if grep -q -- '--no-sandbox' "$STAGE/usr/bin/autoagent"; then
+    die "launcher must not pass --no-sandbox"
+  fi
+  if grep -R -q -- '--no-sandbox' "$STAGE/usr/share/applications" 2>/dev/null; then
+    die "desktop entry must not pass --no-sandbox"
+  fi
+}
+check_stage_leaks
+
+# ---------------------------------------------------------------- build
+# Deterministic archive metadata.
+SOURCE_DATE_EPOCH="$(git -C "$PROJECT_DIR" log -1 --format=%ct 2>/dev/null || true)"
+SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-0}"
+export SOURCE_DATE_EPOCH
+
+find "$STAGE" -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
+
+mkdir -p "$OUTPUT_DIR"
 DEB_NAME="autoagent_${VERSION}_amd64.deb"
-OUTPUT_DIR="${PROJECT_DIR}/dist"
+DEB_PATH="$OUTPUT_DIR/$DEB_NAME"
+rm -f "$DEB_PATH" "${DEB_PATH}.sha256"
 
-echo "=== AutoAgent .deb Builder ==="
-echo "Version: ${VERSION}"
+log "building $DEB_PATH"
+dpkg-deb --root-owner-group --uniform-compression -Zxz --build "$STAGE" "$DEB_PATH"
 
-# Step 1: Bundle JS — CLI engine + Desktop app
-echo ""
-echo "[1/7] Bundling CLI engine..."
-cd "${PROJECT_DIR}/packages/opencc"
-bun build src/entrypoints/cli.tsx --outdir dist --target bun 2>&1
-echo "  CLI bundle: $(du -h "${OPENCC_DIST_DIR}/cli.js" | cut -f1)"
+# ---------------------------------------------------------------- verification
+check_stage_leaks
 
-echo "[2/7] Bundling Desktop app..."
-cd "${PROJECT_DIR}"
-bun run build:desktop 2>&1
-echo "  main.js:    $(du -h "${DESKTOP_DIST_DIR}/main.js" | cut -f1)"
-echo "  preload.cjs: $(du -h "${DESKTOP_DIST_DIR}/preload.cjs" | cut -f1)"
-echo "  client/:    $(du -sh "${DESKTOP_DIST_DIR}/client" | cut -f1)"
+[ "$(dpkg-deb -f "$DEB_PATH" Package)" = "autoagent" ] \
+  || die "unexpected Package field"
+[ "$(dpkg-deb -f "$DEB_PATH" Architecture)" = "amd64" ] \
+  || die "unexpected Architecture field"
+[ "$(dpkg-deb -f "$DEB_PATH" Version)" = "$VERSION" ] \
+  || die "unexpected Version field"
 
-# Step 3: Copy runtime binaries (bun + rg + electron) into the package
-echo "[3/7] Staging runtime binaries..."
-BUN_BIN="$(command -v bun)"
-RG_BIN="${RG_BIN:-$(command -v rg)}"
-ELECTRON_DIST="${PROJECT_DIR}/node_modules/electron/dist"
-mkdir -p "${PACKAGING_DIR}/usr/lib/autoagent"
-mkdir -p "${PACKAGING_DIR}/usr/bin"
-
-cp "${BUN_BIN}" "${PACKAGING_DIR}/usr/lib/autoagent/bun"
-strip "${PACKAGING_DIR}/usr/lib/autoagent/bun" 2>/dev/null || true
-echo "  bun:     $(du -h "${PACKAGING_DIR}/usr/lib/autoagent/bun" | cut -f1)"
-
-# Keep rg private to the app at /usr/lib/autoagent/rg (not /usr/bin/rg, which
-# would conflict with the system ripgrep package). The JS ripgrep resolver finds
-# it next to __dirname before falling back to /usr/bin/rg.
-if [ -n "${RG_BIN}" ] && [ -x "${RG_BIN}" ]; then
-  cp "${RG_BIN}" "${PACKAGING_DIR}/usr/lib/autoagent/rg"
-else
-  echo "Error: rg binary not found. Install ripgrep or set RG_BIN." >&2
-  exit 1
-fi
-strip "${PACKAGING_DIR}/usr/lib/autoagent/rg" 2>/dev/null || true
-echo "  rg:      $(du -h "${PACKAGING_DIR}/usr/lib/autoagent/rg" | cut -f1)"
-
-# Bundle Electron so the desktop app is self-contained.
-if [ -x "${ELECTRON_DIST}/electron" ]; then
-  rsync -a "${ELECTRON_DIST}/" "${PACKAGING_DIR}/usr/lib/autoagent/electron-dist/"
-  # symlink so find_electron() picks it up
-  ln -sf "electron-dist/electron" "${PACKAGING_DIR}/usr/lib/autoagent/electron"
-  echo "  electron: $(du -h "${ELECTRON_DIST}/electron" | cut -f1)"
-else
-  echo "Error: electron not found at ${ELECTRON_DIST}/electron. Run 'bun install' first." >&2
-  exit 1
+DEPENDS="$(dpkg-deb -f "$DEB_PATH" Depends)"
+if printf '%s\n' "$DEPENDS" | grep -Eq 'nodejs|npm|python3|build-essential|unzip'; then
+  die "runtime Depends contains a build tool: $DEPENDS"
 fi
 
-# Step 4: Update version in control file
-echo "[4/7] Updating package metadata..."
-sed -i "s/^Version:.*/Version: ${VERSION}/" "${PACKAGING_DIR}/DEBIAN/control"
+SUID_LINES="$(dpkg-deb -c "$DEB_PATH" | awk '$1 ~ /^-..s/ {print}')"
+SUID_COUNT="$(printf '%s\n' "$SUID_LINES" | grep -c . || true)"
+[ "$SUID_COUNT" = "1" ] || die "expected exactly one setuid file, found $SUID_COUNT"
+case "$SUID_LINES" in
+  *'/opt/autoagent/desktop/chrome-sandbox'*) ;;
+  *) die "the setuid file is not chrome-sandbox" ;;
+esac
 
-# Step 5: Copy bundled JS to packaging
-echo "[5/7] Staging JS bundles..."
-cp "${OPENCC_DIST_DIR}/cli.js" "${PACKAGING_DIR}/usr/lib/autoagent/cli.js"
-cp "${DESKTOP_DIST_DIR}/main.js" "${PACKAGING_DIR}/usr/lib/autoagent/main.js"
-cp "${DESKTOP_DIST_DIR}/preload.cjs" "${PACKAGING_DIR}/usr/lib/autoagent/preload.cjs"
-rm -rf "${PACKAGING_DIR}/usr/lib/autoagent/client"
-cp -r "${DESKTOP_DIST_DIR}/client" "${PACKAGING_DIR}/usr/lib/autoagent/client"
-# Copy autowork prompt assets for desktop replica / imagine features
-rm -rf "${PACKAGING_DIR}/usr/lib/autoagent/autowork"
-cp -r "${DESKTOP_DIST_DIR}/autowork" "${PACKAGING_DIR}/usr/lib/autoagent/autowork"
-# Copy artifact preload for standalone artifact windows
-cp "${DESKTOP_DIST_DIR}/artifact-preload.cjs" "${PACKAGING_DIR}/usr/lib/autoagent/artifact-preload.cjs"
-# Copy app icon for BrowserWindow (dock/taskbar icon)
-cp "${PROJECT_DIR}/assets/icon.png" "${PACKAGING_DIR}/usr/lib/autoagent/icon.png"
-# Sync hicolor theme icons from assets
-cp "${PROJECT_DIR}/assets/icon_16x16.png" "${PACKAGING_DIR}/usr/share/icons/hicolor/16x16/apps/autoagent.png"
-cp "${PROJECT_DIR}/assets/icon_32x32.png" "${PACKAGING_DIR}/usr/share/icons/hicolor/32x32/apps/autoagent.png"
-cp "${PROJECT_DIR}/assets/icon_48x48.png" "${PACKAGING_DIR}/usr/share/icons/hicolor/48x48/apps/autoagent.png"
-cp "${PROJECT_DIR}/assets/icon_64x64.png" "${PACKAGING_DIR}/usr/share/icons/hicolor/64x64/apps/autoagent.png"
-cp "${PROJECT_DIR}/assets/icon_128x128.png" "${PACKAGING_DIR}/usr/share/icons/hicolor/128x128/apps/autoagent.png"
-cp "${PROJECT_DIR}/assets/icon_256x256.png" "${PACKAGING_DIR}/usr/share/icons/hicolor/256x256/apps/autoagent.png"
-cp "${PROJECT_DIR}/assets/icon_512x512.png" "${PACKAGING_DIR}/usr/share/icons/hicolor/512x512/apps/autoagent.png"
+if dpkg-deb -c "$DEB_PATH" | grep -Eq 'node_modules|\.map$|/\.git'; then
+  die "forbidden path found in built archive"
+fi
 
-# Step 6: Set permissions
-echo "[6/7] Setting permissions..."
-chmod 755 "${PACKAGING_DIR}/DEBIAN/postinst"
-chmod 755 "${PACKAGING_DIR}/usr/bin/autoagent"
-chmod 755 "${PACKAGING_DIR}/usr/lib/autoagent/bun"
-chmod 755 "${PACKAGING_DIR}/usr/lib/autoagent/rg"
-chmod 755 "${PACKAGING_DIR}/usr/lib/autoagent/electron-dist/electron"
-chmod 755 "${PACKAGING_DIR}/usr/lib/autoagent/electron-dist/chrome-sandbox" 2>/dev/null || true
-chmod 755 "${PACKAGING_DIR}/usr/lib/autoagent/electron-dist/chrome_crashpad_handler" 2>/dev/null || true
-chmod 644 "${PACKAGING_DIR}/usr/lib/autoagent/cli.js"
-chmod 644 "${PACKAGING_DIR}/usr/lib/autoagent/main.js"
-chmod 644 "${PACKAGING_DIR}/usr/lib/autoagent/preload.cjs"
-chmod 644 "${PACKAGING_DIR}/usr/lib/autoagent/artifact-preload.cjs"
-chmod 644 "${PACKAGING_DIR}/usr/lib/autoagent/icon.png"
-chmod 644 "${PACKAGING_DIR}/usr/lib/autoagent/package.json"
-find "${PACKAGING_DIR}/usr/lib/autoagent/client" -type f -exec chmod 644 {} \;
-find "${PACKAGING_DIR}/usr/lib/autoagent/autowork" -type f -exec chmod 644 {} \;
-find "${PACKAGING_DIR}/usr/share/icons" -type f -exec chmod 644 {} \;
-find "${PACKAGING_DIR}/usr/share/applications" -type f -exec chmod 644 {} \;
+if dpkg-deb -c "$DEB_PATH" | grep -q 'resources/default_app.asar'; then
+  die "archive still contains resources/default_app.asar"
+fi
 
-# Ensure all files are owned by root:root for .deb correctness
-chown -R root:root "${PACKAGING_DIR}" 2>/dev/null || true
+# Verify the launcher in the built payload, not just the stage.
+TMP_EXTRACT="$(mktemp -d)"
+trap 'rm -rf "$STAGE" "$TMP_EXTRACT"' EXIT
+dpkg-deb -x "$DEB_PATH" "$TMP_EXTRACT"
+if grep -q -- '--no-sandbox' "$TMP_EXTRACT/usr/bin/autoagent"; then
+  die "installed launcher passes --no-sandbox"
+fi
+[ -x "$TMP_EXTRACT/opt/autoagent/desktop/electron" ] || die "electron not executable after extraction"
+[ -x "$TMP_EXTRACT/opt/autoagent/engine/bun" ] || die "bun not executable after extraction"
+[ -x "$TMP_EXTRACT/opt/autoagent/engine/rg" ] || die "rg not executable after extraction"
+[ -f "$TMP_EXTRACT/opt/autoagent/engine/cli.js" ] || die "cli.js missing after extraction"
+[ -f "$TMP_EXTRACT/opt/autoagent/desktop/resources/app/main.js" ] \
+  || die "main.js missing after extraction"
 
-# Step 7: Build the .deb
-echo "[7/7] Building .deb package..."
-mkdir -p "${OUTPUT_DIR}"
-dpkg-deb --root-owner-group --build "${PACKAGING_DIR}" "${OUTPUT_DIR}/${DEB_NAME}"
+LDD_MISSING="$(ldd "$TMP_EXTRACT/opt/autoagent/desktop/electron" 2>/dev/null | grep 'not found' || true)"
+[ -z "$LDD_MISSING" ] || die "unresolved Electron dependencies: $LDD_MISSING"
 
-echo ""
-echo "============================================"
-echo "  Package built: ${OUTPUT_DIR}/${DEB_NAME}"
-echo "  Size: $(du -h "${OUTPUT_DIR}/${DEB_NAME}" | cut -f1)"
-echo "============================================"
-echo ""
-echo "Install with:"
-echo "  sudo dpkg -i ${OUTPUT_DIR}/${DEB_NAME}"
-echo ""
-echo "Inspect with:"
-echo "  dpkg-deb --info ${OUTPUT_DIR}/${DEB_NAME}"
-echo "  dpkg-deb --contents ${OUTPUT_DIR}/${DEB_NAME}"
+desktop-file-validate "$TMP_EXTRACT/usr/share/applications/autoagent.desktop" \
+  || die "desktop entry failed validation"
+
+(
+  cd "$OUTPUT_DIR"
+  sha256sum "$DEB_NAME" > "${DEB_NAME}.sha256"
+)
+
+dpkg-deb --info "$DEB_PATH" >&2
+printf '\n' >&2
+dpkg-deb -c "$DEB_PATH" | awk '$1 ~ /^-..s/ {print "setuid: " $0}' >&2
+
+log "artifact: $DEB_PATH"
+log "size: $(du -h "$DEB_PATH" | cut -f1)"
+log "sha256: $(awk '{print $1}' "${DEB_PATH}.sha256")"
+log "done"

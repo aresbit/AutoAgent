@@ -1,0 +1,7 @@
+[probe] +0ms in-process-gpu set
+[probe] +275ms ready
+[probe] +437ms did-finish-load
+[419866:1017/105636.292834:ERROR:media/gpu/vaapi/vaapi_wrapper.cc:1640] vaInitialize failed: unknown libva error
+[probe] +2166ms ready-to-show
+[419866:1017/105641.040394:ERROR:content/common/zygote/zygote_communication_linux.cc:291] Failed to send GetTerminationStatus message to zygote
+[419866:1017/105641.042051:ERROR:content/browser/network_service_instance_impl.cc:608] Network service crashed or was terminated, restarting service.

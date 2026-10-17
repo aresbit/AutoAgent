@@ -27,7 +27,7 @@ Desktop (Electron)          Inference Engine (Bun)
 - **Engine**: Long-running `cli.js -p --input-format stream-json --output-format stream-json --verbose` subprocess. This reuses the mature Agent SDK/print pathway (ask(), tool pool, MCP, permissions, partial stream) instead of a custom desktop-only agent loop. The process is restarted when config (model, cwd, etc.) changes.
 - **Protocol**: Newline-delimited JSON (JSONL) on stdio — user messages in, `stream_event` / `assistant` / `user` / `result` messages out. Control requests (tool permissions) auto-responded.
 - **Persistence**: SQLite for structured state (chats, messages, MCP servers), JSON for settings; automatic WAL-mode migration
-- **Distribution**: Single `.deb` package with bundled Bun runtime — zero external dependencies beyond `libc`
+- **Distribution**: Single `.deb` package that bundles its own Electron, Bun, and ripgrep runtimes; its only dependencies are the standard desktop libraries listed in `packaging/deb/DEBIAN/control`
 
 ## Features
 
@@ -63,7 +63,7 @@ Desktop (Electron)          Inference Engine (Bun)
 
 ### Desktop Experience
 - **Single-instance lock** — dock icon click focuses existing window instead of spawning duplicates
-- **Startup-optimized** — in-process GPU on Linux, lazy SQLite init, deferred config sync
+- **Startup-optimized** — out-of-process GPU (Chromium default), lazy SQLite init, deferred config sync
 - **Dark theme** — `#0d0f12` background with system theme detection
 - **Linux-first packaging** — `.deb` with hicolor icon theme integration, `desktopFileName` WM_CLASS matching
 - **System notifications** — native OS notifications for long-running agent completions
@@ -72,15 +72,21 @@ Desktop (Electron)          Inference Engine (Bun)
 
 ### Installation
 
-Download the latest `.deb` from [GitHub Releases](https://github.com/aresbit/AutoAgent/releases):
+Linux (Ubuntu 24.04 x86_64). Download the latest `.deb` from
+[GitHub Releases](https://github.com/aresbit/AutoAgent/releases), or build it from
+a checkout with `bash scripts/build-deb.sh`. The package is named
+`autoagent_<version>_amd64.deb`.
 
 ```bash
-sudo dpkg -i autoagent_0.3.0_amd64.deb
+sudo apt install ./release/autoagent_<version>_amd64.deb
 ```
 
+Use `apt install`, not `dpkg -i`: apt resolves the runtime library dependencies.
+
 This installs:
+- `/opt/autoagent/engine/` — Bun runtime, ripgrep, OpenCC CLI
+- `/opt/autoagent/desktop/` — Electron runtime and the app bundle
 - `/usr/bin/autoagent` — launcher script
-- `/usr/lib/autoagent/` — application bundle (bun runtime + JS bundles)
 - `/usr/share/applications/autoagent.desktop` — DE integration
 - `/usr/share/icons/hicolor/*/apps/autoagent.png` — app icons
 

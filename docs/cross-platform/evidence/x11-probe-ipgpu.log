@@ -1,0 +1,3 @@
+[probe] did-finish-load
+[414228:1017/105537.285515:ERROR:media/gpu/vaapi/vaapi_wrapper.cc:1640] vaInitialize failed: unknown libva error
+[probe] ready-to-show

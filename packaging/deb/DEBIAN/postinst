@@ -1,17 +1,38 @@
 #!/bin/sh
 set -e
 
-# Update icon cache if gtk-update-icon-cache is available
-if command -v gtk-update-icon-cache >/dev/null 2>&1; then
-    gtk-update-icon-cache /usr/share/icons/hicolor/ || true
+SANDBOX=/opt/autoagent/desktop/chrome-sandbox
+
+if [ ! -f "$SANDBOX" ]; then
+  echo "AutoAgent: missing $SANDBOX" >&2
+  exit 1
+fi
+if [ -L "$SANDBOX" ]; then
+  echo "AutoAgent: refusing symlinked chrome-sandbox: $SANDBOX" >&2
+  exit 1
 fi
 
-# Update desktop database
+chown root:root "$SANDBOX"
+chmod 4755 "$SANDBOX"
+
+if [ ! -u "$SANDBOX" ]; then
+  echo "AutoAgent: chrome-sandbox is not setuid after chmod 4755." >&2
+  echo "  Cause is usually a nosuid filesystem or a stripped archive." >&2
+  echo "  Fix the mount/permissions, then run: sudo dpkg --configure -a" >&2
+  exit 1
+fi
+
 if command -v update-desktop-database >/dev/null 2>&1; then
-    update-desktop-database /usr/share/applications/ || true
+  update-desktop-database -q /usr/share/applications || true
+fi
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+  gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
 fi
 
-echo ""
-echo "  AutoAgent installed successfully!"
-echo "  Run: autoagent --help"
-echo ""
+# Legacy layout from <=0.8.x. dpkg removes files it owned; report leftovers
+# instead of deleting a directory that may contain operator-created content.
+if [ -d /usr/lib/autoagent ]; then
+  echo "AutoAgent: legacy /usr/lib/autoagent remains; review and remove it manually." >&2
+fi
+
+exit 0

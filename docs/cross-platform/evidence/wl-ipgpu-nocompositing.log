@@ -1,0 +1,5 @@
+[probe] +0ms in-process-gpu set
+[probe] +290ms ready
+[probe] +416ms did-finish-load
+[420482:1017/105650.974084:ERROR:media/gpu/vaapi/vaapi_wrapper.cc:1640] vaInitialize failed: unknown libva error
+[probe] +444ms ready-to-show
