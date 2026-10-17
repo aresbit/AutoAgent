@@ -43,6 +43,9 @@ import {
   isPromptTooLongMessage,
 } from './services/api/errors.js'
 import { logAntError, logForDebugging } from './utils/debug.js'
+import { applyTodoRecitation } from './utils/todoRecitation.js'
+import { isTodoV2Enabled } from './utils/tasks.js'
+import { applyRepeatedFailureNotice } from './utils/repeatedFailure.js'
 import {
   createUserMessage,
   createUserInterruptionMessage,
@@ -424,6 +427,26 @@ async function* queryLoop(
       ? microcompactResult.compactionInfo?.pendingCacheEdits
       : undefined
     queryCheckpoint('query_microcompact_end')
+
+    // Recitation: restate the open plan at the tail so it stays in recent
+    // attention on long tool-use chains. Appended after compaction (so it is
+    // never a candidate for clearing) and only at the tail, which leaves the
+    // cached prefix intact. Self-replacing — a prior recitation is stripped
+    // before the current one goes on, so this cannot accumulate.
+    {
+      const recitation = applyTodoRecitation(messagesForQuery, {
+        disabled: isTodoV2Enabled(),
+      })
+      messagesForQuery = recitation.messages
+    }
+
+    // Rut break: a call that has failed identically several times will fail
+    // again, and a context full of that pattern invites repeating it. Same
+    // discipline as the recitation — tail-only and self-replacing.
+    {
+      const rut = applyRepeatedFailureNotice(messagesForQuery)
+      messagesForQuery = rut.messages
+    }
 
     // Project the collapsed context view and maybe commit more collapses.
     // Runs BEFORE autocompact so that if collapse gets us under the

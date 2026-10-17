@@ -5,10 +5,16 @@ import { isEnvTruthy } from '../../utils/envUtils.js'
 import { CLAUDE_CODE_GUIDE_AGENT } from './built-in/claudeCodeGuideAgent.js'
 import { EXPLORE_AGENT } from './built-in/exploreAgent.js'
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js'
+import { NOVA_AGENT } from './built-in/novaAgent.js'
+import { PAPER_AGENT } from './built-in/paperAgent.js'
+import { AWR_TEST_AGENT } from './built-in/awrTestAgent.js'
 import { PLAN_AGENT } from './built-in/planAgent.js'
+import { QUANT_AGENT } from './built-in/quantAgent.js'
 import { STATUSLINE_SETUP_AGENT } from './built-in/statuslineSetup.js'
 import { VERIFICATION_AGENT } from './built-in/verificationAgent.js'
+import { VIRAL_WRITER_AGENT } from './built-in/viralWriterAgent.js'
 import type { AgentDefinition } from './loadAgentsDir.js'
+import { isMateBotModeEnabled } from '../../utils/matebotMode.js'
 
 export function areExplorePlanAgentsEnabled(): boolean {
   if (feature('BUILTIN_EXPLORE_PLAN_AGENTS')) {
@@ -32,19 +38,25 @@ export function getBuiltInAgents(): AgentDefinition[] {
   // Use lazy require inside the function body to avoid circular dependency
   // issues at module init time. The coordinatorMode module depends on tools
   // which depend on AgentTool which imports this file.
-  if (feature('COORDINATOR_MODE')) {
-    if (isEnvTruthy(process.env.CLAUDE_CODE_COORDINATOR_MODE)) {
-      /* eslint-disable @typescript-eslint/no-require-imports */
-      const { getCoordinatorAgents } =
-        require('../../coordinator/workerAgent.js') as typeof import('../../coordinator/workerAgent.js')
-      /* eslint-enable @typescript-eslint/no-require-imports */
-      return getCoordinatorAgents()
-    }
+  if (
+    isMateBotModeEnabled() ||
+    isEnvTruthy(process.env.CLAUDE_CODE_COORDINATOR_MODE)
+  ) {
+    /* eslint-disable @typescript-eslint/no-require-imports */
+    const { getCoordinatorAgents } =
+      require('../../coordinator/workerAgent.js') as typeof import('../../coordinator/workerAgent.js')
+    /* eslint-enable @typescript-eslint/no-require-imports */
+    return getCoordinatorAgents()
   }
 
   const agents: AgentDefinition[] = [
     GENERAL_PURPOSE_AGENT,
     STATUSLINE_SETUP_AGENT,
+    NOVA_AGENT,
+    PAPER_AGENT,
+    AWR_TEST_AGENT,
+    QUANT_AGENT,
+    VIRAL_WRITER_AGENT,
   ]
 
   if (areExplorePlanAgentsEnabled()) {

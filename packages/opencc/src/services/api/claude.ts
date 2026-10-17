@@ -25,6 +25,10 @@ import {
   isFirstPartyAnthropicBaseUrl,
 } from 'src/utils/model/providers.js'
 import {
+  getDeepSeekOptimizer,
+  isDeepSeekOptimizerActive,
+} from './deepseekOptimizer.js'
+import {
   getAttributionHeader,
   getCLISyspromptPrefix,
 } from '../../constants/system.js'
@@ -318,6 +322,9 @@ export function getExtraBodyParams(betaHeaders?: string[]): JsonObject {
 }
 
 export function getPromptCachingEnabled(model: string): boolean {
+  // DeepSeek uses automatic byte-prefix caching — Anthropic-style cache_control
+  // blocks are unrecognized and add unnecessary bytes to the request.
+  if (isDeepSeekOptimizerActive()) return false
   // Global disable takes precedence
   if (isEnvTruthy(process.env.DISABLE_PROMPT_CACHING)) return false
 
@@ -1388,6 +1395,20 @@ async function* queryModel(
   }
   const allTools = [...toolSchemas, ...extraToolSchemas]
 
+  // DeepSeek: sync tool schemas into optimizer for byte-level prefix tracking.
+  // Synchronous — must complete before paramsFromContext runs analyze() below.
+  if (isDeepSeekOptimizerActive()) {
+    const optimizer = getDeepSeekOptimizer()
+    if (optimizer) {
+      const currentMasked = new Set(optimizer.prefix.maskedTools)
+      optimizer.prefix.setToolSchemas(allTools)
+      // Re-apply any previously masked tools (setToolSchemas clears the mask set).
+      for (const name of currentMasked) {
+        optimizer.prefix.maskTool(name)
+      }
+    }
+  }
+
   const isFastMode =
     isFastModeEnabled() &&
     isFastModeAvailable() &&
@@ -1730,6 +1751,18 @@ async function* queryModel(
       model: options.model,
       thinkingConfig,
     })
+    // DeepSeek: run byte-level prefix analysis before the API call
+    // to predict cache hit/miss (Manus-inspired prefix tracking)
+    if (isDeepSeekOptimizerActive()) {
+      const optimizer = getDeepSeekOptimizer()
+      if (optimizer) {
+        optimizer.tracker.analyze(
+          queryParams.system ?? [],
+          queryParams.messages as MessageParam[],
+          (queryParams.tools as BetaToolUnion[]) ?? [],
+        )
+      }
+    }
     const logMessagesLength = queryParams.messages.length
     const logBetas = useBetas ? (queryParams.betas ?? []) : []
     const logThinkingType = queryParams.thinking?.type ?? 'disabled'
@@ -2382,6 +2415,14 @@ async function* queryModel(
           options.agentId,
           streamRequestId,
         )
+      }
+
+      // DeepSeek: record per-turn cache hit metrics
+      if (isDeepSeekOptimizerActive()) {
+        const optimizer = getDeepSeekOptimizer()
+        if (optimizer) {
+          optimizer.recordUsage(usage)
+        }
       }
 
       // Process fallback percentage header and quota status if available
@@ -3062,6 +3103,24 @@ export function addCacheBreakpoints(
   pinnedEdits?: CachedMCPinnedEdits[],
   skipCacheWrite = false,
 ): MessageParam[] {
+  // DeepSeek: automatic byte-prefix caching — no explicit cache_control markers,
+  // no cache_edits, no cache_reference. Just convert messages to API params.
+  if (isDeepSeekOptimizerActive()) {
+    const result = messages.map(msg => {
+      if (msg.type === 'user') {
+        return userMessageToMessageParam(msg, false, false, querySource)
+      }
+      return assistantMessageToMessageParam(msg, false, false, querySource)
+    })
+    // Auto-sync optimizer's AppendOnlyLog: detects compaction (/compact),
+    // /clear, and normal message growth. Synchronous — must complete before
+    // the subsequent byte-prefix analyze() call so log state is consistent.
+    const optimizer = getDeepSeekOptimizer()
+    if (optimizer) {
+      optimizer.syncFromMessages(result)
+    }
+    return result
+  }
   logEvent('tengu_api_cache_breakpoints', {
     totalMessageCount: messages.length,
     cachingEnabled: enablePromptCaching,
@@ -3211,6 +3270,31 @@ export function buildSystemPromptBlocks(
     querySource?: QuerySource
   },
 ): TextBlockParam[] {
+  // DeepSeek: emit system prompt as a single flat block — no cache_control
+  // markers (DeepSeek uses automatic byte-prefix caching, not explicit markers).
+  if (isDeepSeekOptimizerActive()) {
+    // Sync system prompt into the optimizer's ImmutablePrefix for fingerprint tracking.
+    // Synchronous — fingerprint must reflect this prompt before the next analyze().
+    const optimizer = getDeepSeekOptimizer()
+    if (optimizer) {
+      const wasBuilt = optimizer.prefix.isBuilt
+      const prev = wasBuilt ? optimizer.prefix.fingerprint() : null
+      optimizer.prefix.setSystemPrompt(systemPrompt)
+      if (wasBuilt) {
+        const next = optimizer.prefix.fingerprint()
+        if (prev !== next) {
+          logForDebugging(
+            `[DeepSeekOpt] system prompt changed, fingerprint: ${prev} → ${next}`,
+            { level: 'info' },
+          )
+        }
+      }
+    }
+    return systemPrompt.map(block => ({
+      type: 'text' as const,
+      text: block,
+    }))
+  }
   // IMPORTANT: Do not add any more blocks for caching or you will get a 400
   return splitSysPromptPrefix(systemPrompt, {
     skipGlobalCacheForSystemPrompt: options?.skipGlobalCacheForSystemPrompt,

@@ -27,6 +27,7 @@ import {
 } from '../../skills/loadSkillsDir.js'
 import type { ToolUseContext } from '../../Tool.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
+import { isOfficeExtension, readOfficeDocument } from '../../utils/anydoc.js'
 import { getCwd } from '../../utils/cwd.js'
 import { getClaudeConfigHomeDir, isEnvTruthy } from '../../utils/envUtils.js'
 import { getErrnoCode, isENOENT } from '../../utils/errors.js'
@@ -58,7 +59,7 @@ import {
   readNotebook,
 } from '../../utils/notebook.js'
 import { expandPath } from '../../utils/path.js'
-import { extractPDFPages, getPDFPageCount, readPDF } from '../../utils/pdf.js'
+import { extractPDFPages, getPDFPageCount, isLiteParseAvailable, readPDF } from '../../utils/pdf.js'
 import {
   isPDFExtension,
   isPDFSupported,
@@ -74,6 +75,7 @@ import { readFileInRange } from '../../utils/readFileInRange.js'
 import { semanticNumber } from '../../utils/semanticNumber.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import { BASH_TOOL_NAME } from '../BashTool/toolName.js'
+import { FILE_EDIT_TOOL_NAME } from '../FileEditTool/constants.js'
 import { getDefaultFileReadingLimits } from './limits.js'
 import {
   DESCRIPTION,
@@ -307,7 +309,8 @@ const outputSchema = lazySchema(() => {
       type: z.literal('pdf'),
       file: z.object({
         filePath: z.string().describe('The path to the PDF file'),
-        base64: z.string().describe('Base64-encoded PDF data'),
+        text: z.string().describe('Extracted text content from the PDF'),
+        pageCount: z.number().describe('Number of pages in the PDF'),
         originalSize: z.number().describe('Original file size in bytes'),
       }),
     }),
@@ -468,11 +471,15 @@ export const FileReadTool = buildTool({
 
     // Binary extension check (string check on extension only, no I/O).
     // PDF, images, and SVG are excluded - this tool renders them natively.
+    // Office documents are excluded too - anydoc converts them to Markdown.
+    // Whether anydoc actually has a binary on this platform is resolved at
+    // call time, so the failure carries a useful message instead of this one.
     const ext = path.extname(fullFilePath).toLowerCase()
     if (
       hasBinaryExtension(fullFilePath) &&
       !isPDFExtension(ext) &&
-      !IMAGE_EXTENSIONS.has(ext.slice(1))
+      !IMAGE_EXTENSIONS.has(ext.slice(1)) &&
+      !isOfficeExtension(ext)
     ) {
       return {
         result: false,
@@ -670,11 +677,11 @@ export const FileReadTool = buildTool({
       case 'notebook':
         return mapNotebookCellsToToolResult(data.file.cells, toolUseID)
       case 'pdf':
-        // Return PDF metadata only - the actual content is sent as a supplemental DocumentBlockParam
+        // Return extracted PDF text content directly
         return {
           tool_use_id: toolUseID,
           type: 'tool_result',
-          content: `PDF file read: ${data.file.filePath} (${formatFileSize(data.file.originalSize)})`,
+          content: data.file.text || `PDF file read: ${data.file.filePath} (${formatFileSize(data.file.originalSize)})`,
         }
       case 'parts':
         // Extracted page images are read and sent as image blocks in mapToolResultToAPIMessage
@@ -891,7 +898,12 @@ async function callInner(
   }
 
   // --- PDF ---
+  // Uses liteparse for native text/screenshot extraction when available.
+  // Gracefully degrades to old code path (base64 document blocks + poppler-utils)
+  // on platforms where liteparse has no native binary (e.g. darwin-x64).
   if (isPDFExtension(ext)) {
+    const lpAvailable = await isLiteParseAvailable()
+
     if (pages) {
       const parsedRange = parsePDFPageRange(pages)
       const extractResult = await extractPDFPages(
@@ -903,7 +915,7 @@ async function callInner(
       }
       logEvent('tengu_pdf_page_extraction', {
         success: true,
-        pageCount: (extractResult as any).data.file.count,
+        pageCount: extractResult.data.file.count,
         fileSize: extractResult.data.file.originalSize,
         hasPageRange: true,
       })
@@ -914,7 +926,11 @@ async function callInner(
         content: `PDF pages ${pages}`,
       })
       const entries = await readdir(extractResult.data.file.outputDir)
-      const imageFiles = entries.filter(f => f.endsWith('.jpg')).sort()
+      // Handle both .png (liteparse) and .jpg (pdftoppm fallback)
+      const imageFiles = entries
+        .filter(f => f.endsWith('.png') || f.endsWith('.jpg'))
+        .sort()
+      const imageFormat = extractResult.data.file.imageFormat ?? 'png'
       const imageBlocks = await Promise.all(
         imageFiles.map(async f => {
           const imgPath = path.join(extractResult.data.file.outputDir, f)
@@ -922,7 +938,7 @@ async function callInner(
           const resized = await maybeResizeAndDownsampleImageBuffer(
             imgBuffer,
             imgBuffer.length,
-            'jpeg',
+            imageFormat === 'jpg' ? 'jpeg' : 'png',
           )
           return {
             type: 'image' as const,
@@ -945,71 +961,174 @@ async function callInner(
       }
     }
 
-    const pageCount = await getPDFPageCount(resolvedFilePath)
-    if (pageCount !== null && pageCount > PDF_AT_MENTION_INLINE_THRESHOLD) {
-      throw new Error(
-        `This PDF has ${pageCount} pages, which is too many to read at once. ` +
-          `Use the pages parameter to read specific page ranges (e.g., pages: "1-5"). ` +
-          `Maximum ${PDF_MAX_PAGES_PER_READ} pages per request.`,
-      )
-    }
+    // Without liteparse, check whether the model supports PDF document blocks
+    // and whether the file is small enough to send inline.
+    if (!lpAvailable) {
+      const fs = getFsImplementation()
+      const fileStats = await fs.stat(resolvedFilePath)
+      const shouldExtractPages =
+        !isPDFSupported() || fileStats.size > PDF_EXTRACT_SIZE_THRESHOLD
 
-    const fs = getFsImplementation()
-    const stats = await fs.stat(resolvedFilePath)
-    const shouldExtractPages =
-      !isPDFSupported() || stats.size > PDF_EXTRACT_SIZE_THRESHOLD
+      if (shouldExtractPages) {
+        const extractResult = await extractPDFPages(resolvedFilePath)
+        if (extractResult.success) {
+          logEvent('tengu_pdf_page_extraction', {
+            success: true,
+            pageCount: extractResult.data.file.count,
+            fileSize: extractResult.data.file.originalSize,
+          })
+          const entries = await readdir(extractResult.data.file.outputDir)
+          const imageFiles = entries
+            .filter(f => f.endsWith('.png') || f.endsWith('.jpg'))
+            .sort()
+          const imgFormat = extractResult.data.file.imageFormat ?? 'jpg'
+          const imageBlocks = await Promise.all(
+            imageFiles.map(async f => {
+              const imgPath = path.join(
+                extractResult.data.file.outputDir,
+                f,
+              )
+              const imgBuffer = await readFileAsync(imgPath)
+              const resized = await maybeResizeAndDownsampleImageBuffer(
+                imgBuffer,
+                imgBuffer.length,
+                imgFormat === 'jpg' ? 'jpeg' : 'png',
+              )
+              return {
+                type: 'image' as const,
+                source: {
+                  type: 'base64' as const,
+                  media_type:
+                    `image/${resized.mediaType}` as Base64ImageSource['media_type'],
+                  data: resized.buffer.toString('base64'),
+                },
+              }
+            }),
+          )
+          return {
+            data: extractResult.data,
+            ...(imageBlocks.length > 0 && {
+              newMessages: [
+                createUserMessage({ content: imageBlocks, isMeta: true }),
+              ],
+            }),
+          }
+        } else {
+          logEvent('tengu_pdf_page_extraction', {
+            success: false,
+            available:
+              (extractResult as any).error.reason !== 'unavailable',
+            fileSize: fileStats.size,
+          })
+        }
+      }
 
-    if (shouldExtractPages) {
-      const extractResult = await extractPDFPages(resolvedFilePath)
-      if (extractResult.success) {
-        logEvent('tengu_pdf_page_extraction', {
-          success: true,
-          pageCount: extractResult.data.file.count,
-          fileSize: extractResult.data.file.originalSize,
-        })
-      } else {
-        logEvent('tengu_pdf_page_extraction', {
-          success: false,
-          available: (extractResult as any).error.reason !== 'unavailable',
-          fileSize: stats.size,
-        })
+      if (!isPDFSupported()) {
+        throw new Error(
+          'Reading full PDFs is not supported with this model. Use a newer model (Sonnet 3.5 v2 or later), ' +
+            `or use the pages parameter to read specific page ranges (e.g., pages: "1-5", maximum ${PDF_MAX_PAGES_PER_READ} pages per request). ` +
+            'Page extraction requires poppler-utils: install with `brew install poppler` on macOS or `apt-get install poppler-utils` on Debian/Ubuntu.',
+        )
       }
     }
 
-    if (!isPDFSupported()) {
-      throw new Error(
-        'Reading full PDFs is not supported with this model. Use a newer model (Sonnet 3.5 v2 or later), ' +
-          `or use the pages parameter to read specific page ranges (e.g., pages: "1-5", maximum ${PDF_MAX_PAGES_PER_READ} pages per request). ` +
-          'Page extraction requires poppler-utils: install with `brew install poppler` on macOS or `apt-get install poppler-utils` on Debian/Ubuntu.',
-      )
-    }
-
+    // Full PDF read — liteparse text extraction with base64 document block fallback
     const readResult = await readPDF(resolvedFilePath)
     if (!readResult.success) {
       throw new Error((readResult as any).error.message)
     }
     const pdfData = readResult.data
+
+    // Page count check — only when liteparse provided a meaningful count
+    if (pdfData.file.pageCount > PDF_AT_MENTION_INLINE_THRESHOLD) {
+      throw new Error(
+        `This PDF has ${pdfData.file.pageCount} pages, which is too many to read at once. ` +
+          `Use the pages parameter to read specific page ranges (e.g., pages: "1-5"). ` +
+          `Maximum ${PDF_MAX_PAGES_PER_READ} pages per request.`,
+      )
+    }
+
     logFileOperation({
       operation: 'read',
       tool: 'FileReadTool',
       filePath: fullFilePath,
-      content: pdfData.file.base64,
+      content: pdfData.file.text || pdfData.file.base64 || '',
+    })
+
+    // When liteparse is unavailable, the PDF was read as base64 — send it as
+    // a document block (the old code path) rather than as inline text.
+    if (pdfData.file.base64) {
+      return {
+        data: pdfData,
+        newMessages: [
+          createUserMessage({
+            content: [
+              {
+                type: 'document',
+                source: {
+                  type: 'base64',
+                  media_type: 'application/pdf',
+                  data: pdfData.file.base64,
+                },
+              },
+            ],
+            isMeta: true,
+          }),
+        ],
+      }
+    }
+
+    return { data: pdfData }
+  }
+
+  // --- Office document (Word / PowerPoint / Excel / ODF / RTF / EPUB) ---
+  // anydoc converts the container to Markdown. Unlike a text read this does
+  // NOT populate readFileState: the model must not be able to follow the read
+  // with an Edit, which would replace the binary container with Markdown.
+  if (isOfficeExtension(ext)) {
+    const officeResult = await readOfficeDocument(resolvedFilePath, maxSizeBytes)
+    if (!officeResult.success) {
+      throw new Error(officeResult.error.message)
+    }
+    const { markdown, originalSize } = officeResult.data
+
+    await validateContentTokens(markdown, ext, maxTokens)
+
+    // Apply offset/limit over the converted Markdown so large documents stay
+    // paginatable the same way text files are.
+    const allLines = markdown.split('\n')
+    const totalLines = allLines.length
+    const startIndex = offset === 0 ? 0 : offset - 1
+    const selected = allLines.slice(
+      startIndex,
+      limit === undefined ? undefined : startIndex + limit,
+    )
+    const content = selected.join('\n')
+
+    logFileOperation({
+      operation: 'read',
+      tool: 'FileReadTool',
+      filePath: fullFilePath,
+      content,
     })
 
     return {
-      data: pdfData,
+      data: {
+        type: 'text' as const,
+        file: {
+          filePath: file_path,
+          content,
+          numLines: selected.length,
+          startLine: offset === 0 ? 1 : offset,
+          totalLines,
+        },
+      },
       newMessages: [
         createUserMessage({
-          content: [
-            {
-              type: 'document',
-              source: {
-                type: 'base64',
-                media_type: 'application/pdf',
-                data: pdfData.file.base64,
-              },
-            },
-          ],
+          content:
+            `Note: ${file_path} (${formatFileSize(originalSize)}) is a binary ${ext} document ` +
+            'converted to Markdown for reading. The line numbers belong to the conversion, not the ' +
+            `file itself, and ${FILE_EDIT_TOOL_NAME} cannot modify it.`,
           isMeta: true,
         }),
       ],

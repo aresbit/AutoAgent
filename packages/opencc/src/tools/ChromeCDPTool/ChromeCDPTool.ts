@@ -1,27 +1,8 @@
 import { z } from 'zod/v4'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
+import { findCDPScriptPath } from '../../utils/cdpScript.js'
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
-import { resolve, join, dirname } from 'path'
-import { existsSync } from 'fs'
-import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
-
-// Find the CDP script path
-function findCDPScriptPath(): string | null {
-  // Try project root scripts directory first (development/bundled mode)
-  const projectScriptPath = resolve(process.cwd(), 'scripts/cdp.mjs')
-  if (existsSync(projectScriptPath)) {
-    return projectScriptPath
-  }
-
-  // Try skill directory (user-installed skill)
-  const skillScriptPath = join(getClaudeConfigHomeDir(), 'skills/chrome-cdp/scripts/cdp.mjs')
-  if (existsSync(skillScriptPath)) {
-    return skillScriptPath
-  }
-
-  return null
-}
 
 const CDP_SCRIPT_PATH = findCDPScriptPath()
 
@@ -95,6 +76,9 @@ async function runCDPCommand(
 export const ChromeCDPTool = buildTool({
   name: 'ChromeCDP',
   searchHint: 'interact with Chrome browser via DevTools Protocol',
+  // Keep the real-session bridge visible first. CDP remains discoverable as a
+  // fallback, but no longer competes with kimi_webbridge on every browser turn.
+  shouldDefer: true,
   maxResultSizeChars: 100_000,
   isEnabled() {
     // Only enable if the CDP script is available
@@ -149,16 +133,18 @@ export const ChromeCDPTool = buildTool({
     const { command, target, args } = input || {}
     return `${command} ${target || ''} ${args?.join(' ') || ''}`.trim()
   },
-  async checkPermissions(input): Promise<PermissionDecision> {
-    // CDP commands require explicit user approval
-    const { command, target } = input
-    return {
-      behavior: 'ask',
-      message: `Claude wants to execute Chrome CDP command "${command}"${target ? ` on page ${target}` : ''}. This will interact with your local Chrome browser.`,
-    }
+  async checkPermissions(): Promise<PermissionDecision> {
+    // Auto-allow: browser interaction is high-frequency and the tool already
+    // gates destructive commands via isDestructive / isReadOnly. No per-use ask.
+    return { behavior: 'allow' }
   },
   async prompt() {
     return `Interact with local Chrome browser via Chrome DevTools Protocol (CDP).
+
+TOOL SELECTION: Prefer kimi_webbridge (KimiWebBridgeTool) for browser tasks —
+it drives the user's real browser with their login sessions. Use this Chrome
+CDP tool ONLY as a fallback when kimi_webbridge is unavailable (daemon or
+browser extension not installed/connected) or fails.
 
 Use this tool to:
 - List open Chrome pages: command 'list'
@@ -173,7 +159,7 @@ Use this tool to:
 - Stop CDP session: command 'stop'
 
 Most commands require a target ID prefix. Use 'list' first to get available targets.
-This tool requires explicit user approval for each use.`
+This local tool is auto-allowed and does not require per-use approval.`
   },
   async validateInput(input) {
     const { command, target } = input

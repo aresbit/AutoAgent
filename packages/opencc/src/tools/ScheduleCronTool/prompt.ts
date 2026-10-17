@@ -2,6 +2,7 @@ import { feature } from 'bun:bundle'
 import { getFeatureValue_CACHED_WITH_REFRESH } from '../../services/analytics/growthbook.js'
 import { DEFAULT_CRON_JITTER_CONFIG } from '../../utils/cronTasks.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
+import { isMateBotModeEnabled } from '../../utils/matebotMode.js'
 
 const KAIROS_CRON_REFRESH_MS = 5 * 60 * 1000
 
@@ -34,6 +35,12 @@ export const DEFAULT_MAX_AGE_DAYS =
  * `CLAUDE_CODE_DISABLE_CRON` is a local override that wins over GB.
  */
 export function isKairosCronEnabled(): boolean {
+  if (
+    isMateBotModeEnabled() &&
+    !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_CRON)
+  ) {
+    return true
+  }
   return feature('AGENT_TRIGGERS')
     ? !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_CRON) &&
         getFeatureValue_CACHED_WITH_REFRESH(
@@ -54,6 +61,9 @@ export function isKairosCronEnabled(): boolean {
  * scheduler via isKairosCronEnabled).
  */
 export function isDurableCronEnabled(): boolean {
+  if (isMateBotModeEnabled()) {
+    return true
+  }
   return getFeatureValue_CACHED_WITH_REFRESH(
     'tengu_kairos_cron_durable',
     true,

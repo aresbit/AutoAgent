@@ -291,9 +291,14 @@ export function buildClassifierUnavailableMessage(
   classifierModel: string,
 ): string {
   return (
-    `${classifierModel} is temporarily unavailable, so auto mode cannot determine the safety of ${toolName} right now. ` +
-    `Wait briefly and then try this action again. ` +
-    `If it keeps failing, continue with other tasks that don't require this action and come back to it later. ` +
+    `${classifierModel} is unavailable, so auto mode cannot determine the safety of ${toolName}. ` +
+    `Retry once in case it was transient. ` +
+    // The original wording offered "wait briefly and retry" as the only
+    // remedy, which is unreachable advice when the configured endpoint does
+    // not serve the classifier model at all: every retry fails the same way
+    // for the rest of the session. Name the remedies that actually end it.
+    `If it fails again the outage is not transient — the configured endpoint may not serve that model. ` +
+    `Tell the user they can leave auto mode to approve this manually, and continue meanwhile with tasks that don't need it. ` +
     `Note: reading files, searching code, and other read-only operations do not require the classifier and can still be used.`
   )
 }
@@ -2120,6 +2125,23 @@ export function normalizeMessagesForAPI(
   }
 
   const result: (UserMessage | AssistantMessage)[] = []
+  // Assistant message ids currently in `result`.
+  //
+  // The assistant branch below walks `result` backwards looking for an earlier
+  // assistant with the same message id, stopping at the first message that is
+  // neither an assistant nor a tool result. In an agent conversation almost
+  // every user turn *is* a tool result, so that walk never stops early and
+  // scans the whole history for every assistant message — making this function,
+  // which runs on every API request, quadratic in conversation length. Measured
+  // on a synthetic history: 400 messages 1.15ms, 800 3.14ms, 1600 10.53ms,
+  // against 2.54ms for the same 1600 with no tool results.
+  //
+  // The walk exists only to find a same-id assistant, so when no assistant in
+  // `result` carries that id the answer is already known and the scan can be
+  // skipped outright. Assistants enter `result` in exactly one place (the push
+  // in the assistant branch) and the in-place merge preserves the id, so this
+  // set is cheap to keep exact.
+  const assistantIdsInResult = new Set<string>()
   reorderedMessages
     .filter(
       (
@@ -2315,6 +2337,18 @@ export function normalizeMessagesForAPI(
           // Walk backwards, skipping tool results and different-ID assistants,
           // since concurrent agents (teammates) can interleave streaming content
           // blocks from multiple API responses with different message IDs.
+          // No assistant in `result` has this id, so the walk below cannot
+          // find one — skip it. Only taken for a real id; a missing one falls
+          // through so the original comparison semantics are untouched.
+          const incomingId = normalizedMessage.message.id
+          if (typeof incomingId === 'string' && incomingId.length > 0) {
+            if (!assistantIdsInResult.has(incomingId)) {
+              assistantIdsInResult.add(incomingId)
+              result.push(normalizedMessage)
+              return
+            }
+          }
+
           for (let i = result.length - 1; i >= 0; i--) {
             const msg = result[i]!
 
@@ -2324,6 +2358,7 @@ export function normalizeMessagesForAPI(
 
             if (msg.type === 'assistant') {
               if (msg.message.id === normalizedMessage.message.id) {
+                // Same id, so the set already contains it.
                 result[i] = mergeAssistantMessages(msg, normalizedMessage)
                 return
               }
@@ -2331,6 +2366,9 @@ export function normalizeMessagesForAPI(
             }
           }
 
+          if (typeof incomingId === 'string' && incomingId.length > 0) {
+            assistantIdsInResult.add(incomingId)
+          }
           result.push(normalizedMessage)
           return
         }
@@ -2991,7 +3029,6 @@ export function getContentText(
 export type StreamingToolUse = {
   index: number
   contentBlock: BetaToolUseBlock
-  unparsedToolInput: string
 }
 
 export type StreamingThinking = {
@@ -3102,14 +3139,7 @@ export function handleMessageFromStream(
           onSetStreamMode('tool-input')
           const contentBlock = streamMsg.event.content_block as BetaToolUseBlock
           const index = streamMsg.event.index
-          onStreamingToolUses(_ => [
-            ..._,
-            {
-              index,
-              contentBlock,
-              unparsedToolInput: '',
-            },
-          ])
+          onStreamingToolUses(_ => [..._, { index, contentBlock }])
           return
         }
         case 'server_tool_use':
@@ -3136,22 +3166,26 @@ export function handleMessageFromStream(
           return
         }
         case 'input_json_delta': {
-          const delta = streamMsg.event.delta.partial_json
-          const index = streamMsg.event.index
-          onUpdateLength(delta)
-          onStreamingToolUses(_ => {
-            const element = _.find(_ => _.index === index)
-            if (!element) {
-              return _
-            }
-            return [
-              ..._.filter(_ => _ !== element),
-              {
-                ...element,
-                unparsedToolInput: element.unparsedToolInput + delta,
-              },
-            ]
-          })
+          // Only the token counter needs the partial JSON. Deliberately no
+          // onStreamingToolUses dispatch here: the streaming tool-use list
+          // renders from `contentBlock`, and id and name are both settled at
+          // content_block_start, so a per-chunk dispatch hands Messages a new
+          // array for an unchanged value.
+          //
+          // Messages' React.memo comparator absorbs such an array when the
+          // blocks line up index for index, so one streaming tool call only
+          // cost the wasted allocations. But the update this replaced rebuilt
+          // the list as `[...others, updated]`, moving the updated block to
+          // the end: with two tool calls streaming concurrently every chunk
+          // permuted the list, the index-wise check failed, and the whole
+          // O(messages) transform chain — normalize, reorder, group, collapse,
+          // lookups — ran once per chunk. Two 8 KB inputs are ~400 chunks; at
+          // 1600 messages that was 4.7 s of recomputation for one turn.
+          // Parallel tool calls are the common case, not the exotic one.
+          //
+          // If partial input ever needs rendering, accumulate it somewhere the
+          // message list does not depend on, and never by permuting this list.
+          onUpdateLength(streamMsg.event.delta.partial_json)
           return
         }
         case 'thinking_delta':

@@ -58,6 +58,7 @@ import { SLEEP_TOOL_NAME } from '../tools/SleepTool/prompt.js'
 import { TICK_TAG } from './xml.js'
 import { logForDebugging } from '../utils/debug.js'
 import { loadMemoryPrompt } from '../memdir/memdir.js'
+import { getAutoTriggerContent } from '../utils/memoryTrigger.js'
 import { isUndercover } from '../utils/undercover.js'
 import { isMcpInstructionsDeltaEnabled } from '../utils/mcpInstructionsDelta.js'
 
@@ -319,6 +320,30 @@ function getAgentToolSection(): string {
     : `Use the ${AGENT_TOOL_NAME} tool with specialized agents when the task at hand matches the agent's description. Subagents are valuable for parallelizing independent queries or for protecting the main context window from excessive results, but they should not be used excessively when not needed. Importantly, avoid duplicating work that subagents are already doing - if you delegate research to a subagent, do not also perform the same searches yourself.`
 }
 
+function getCodeActGuidanceSection(enabledTools: Set<string>): string | null {
+  if (!enabledTools.has('CodeAct')) return null
+
+  const items = [
+    'For multi-step logic, data processing, or complex workflows, use the CodeAct tool to write code (TypeScript, Python, Bash, C, C++) instead of chaining many individual tool calls. CodeAct provides built-in fs, shell, fetch, path, and os utilities in each language. Only stdout output reaches the model — intermediate results stay in the sandbox, saving tokens and reducing round-trips.',
+    'The CodeAct iterative loop: write code → execute → analyze errors → fix → re-execute. Favor this over manually retrying individual tool calls when the task involves branching logic or sequential data processing.',
+    'Skills (loaded via the Skill tool) that describe procedural workflows may be more efficiently executed as CodeAct scripts. Consider whether a skill\'s instructions can be internalized into a single script rather than followed step-by-step through individual tool calls.',
+    'For deterministic reusable tasks, prefer creating an Action (~/.claude/action/ script) over writing a Skill. Actions execute directly and return results in one call. Skills teach HOW to think; Actions DO the work.',
+  ]
+
+  return ['# CodeAct', ...prependBullets(items)].join('\n')
+}
+
+function getActionGuidanceSection(enabledTools: Set<string>): string | null {
+  if (!enabledTools.has('Action')) return null
+
+  const items = [
+    'Actions are persistent executable scripts in ~/.claude/action/. They encapsulate deterministic workflows (e.g., downloading with yt-dlp, running a backtest) in code that executes in a single call. Unlike Skills (prompt templates the model must read and follow step-by-step), Actions execute directly and return only the result.',
+    'Use the Action tool to invoke an Action by name. Available Actions are listed in the Action tool\'s prompt. Write new Actions by creating scripts with YAML frontmatter in ~/.claude/action/.',
+  ]
+
+  return ['# Actions', ...prependBullets(items)].join('\n')
+}
+
 /**
  * Guidance for the skill_discovery attachment ("Skills relevant to your
  * task:") and the DiscoverSkills tool. Shared between the main-session
@@ -393,10 +418,53 @@ function getSessionSpecificGuidanceSection(
     getFeatureValue_CACHED_MAY_BE_STALE('tengu_hive_evidence', false)
       ? `The contract: when non-trivial implementation happens on your turn, independent adversarial verification must happen before you report completion \u2014 regardless of who did the implementing (you directly, a fork you spawned, or a subagent). You are the one reporting to the user; you own the gate. Non-trivial means: 3+ file edits, backend/API changes, or infrastructure changes. Spawn the ${AGENT_TOOL_NAME} tool with subagent_type="${VERIFICATION_AGENT_TYPE}". Your own checks, caveats, and a fork's self-checks do NOT substitute \u2014 only the verifier assigns a verdict; you cannot self-assign PARTIAL. Pass the original user request, all files changed (by anyone), the approach, and the plan file path if applicable. Flag concerns if you have them but do NOT share test results or claim things work. On FAIL: fix, resume the verifier with its findings plus your fix, repeat until PASS. On PASS: spot-check it \u2014 re-run 2-3 commands from its report, confirm every PASS has a Command run block with output that matches your re-run. If any PASS lacks a command block or diverges, resume the verifier with the specifics. On PARTIAL (from the verifier): report what passed and what could not be verified.`
       : null,
+    ...getSpecializedToolGuidance(enabledTools),
   ].filter(item => item !== null)
 
   if (items.length === 0) return null
   return ['# Session-specific guidance', ...prependBullets(items)].join('\n')
+}
+
+/**
+ * Trigger contracts for OpenCC's built-in specialist tools.
+ *
+ * A tool's API description explains its parameters only after the model has
+ * already considered it. These short routing rules live in the system prompt
+ * so ordinary user intent reliably reaches the specialist instead of being
+ * absorbed by a generic Bash/WebFetch/SendMessage fallback.
+ */
+export function getSpecializedToolGuidance(
+  enabledTools: ReadonlySet<string>,
+): string[] {
+  const guidance: string[] = []
+
+  if (enabledTools.has('rsi')) {
+    guidance.push(
+      'When a verifier is flaky, stochastic, intermittent, seed-dependent, timing-sensitive, or only "seems fixed", use rsi measure/compare. One Bash success is not evidence for those tasks. Recall rsi lessons before repeating a previously attempted approach.',
+    )
+  }
+  if (enabledTools.has('manuscript_check')) {
+    guidance.push(
+      'After writing or revising a Chinese fiction/manuscript chapter, run manuscript_check action="chapter" before reporting it complete; for a multi-chapter delivery also run action="manuscript" to check character voices and foreshadowing.',
+    )
+  }
+  if (enabledTools.has('kimi_webbridge')) {
+    guidance.push(
+      'When the user asks to open, read, click, fill, screenshot, scrape, or otherwise interact with a real website/browser session, use kimi_webbridge. It is the primary real-browser tool; use WebFetch only for non-interactive HTTP reading and ChromeCDP only when kimi_webbridge reports it is unavailable.',
+    )
+  }
+  if (enabledTools.has('eval_apply')) {
+    guidance.push(
+      'Use eval_apply as a SICP-style persistent meta-interpreter when recursion, higher-order procedures, reusable stateful definitions, or explicit eval/apply composition can express control logic that ordinary prose/tool-call chains cannot.',
+    )
+  }
+  if (enabledTools.has('ActorTool')) {
+    guidance.push(
+      'Use ActorTool for visible cross-directory/cross-IP agent conversations and shared compute coordination. Call peers when the destination is unknown; use resource_offer/list/acquire/release for atomic capacity leases. tx/rx payloads and resource events must remain visible in the transcript.',
+    )
+  }
+
+  return guidance
 }
 
 // @[MODEL LAUNCH]: Remove this section when we launch numbat.
@@ -552,6 +620,13 @@ ${CYBER_RISK_INSTRUCTION}`,
     ...(feature('KAIROS') || feature('KAIROS_BRIEF')
       ? [systemPromptSection('brief', () => getBriefSection())]
       : []),
+    // Auto-triggered memory context (REHEARSAL.md / SCRATCHPAD.md / MEMORY.md)
+    // Must be uncached — content changes when the model calls rehearse/auto_rehearse.
+    DANGEROUS_uncachedSystemPromptSection(
+      'auto_memory_trigger',
+      () => getAutoTriggerContent().then(r => r.content || null),
+      'REHEARSAL.md can be updated between turns',
+    ),
   ]
 
   const resolvedDynamicSections =
@@ -567,6 +642,8 @@ ${CYBER_RISK_INSTRUCTION}`,
       : null,
     getActionsSection(),
     getUsingYourToolsSection(enabledTools),
+    getCodeActGuidanceSection(enabledTools),
+    getActionGuidanceSection(enabledTools),
     getSimpleToneAndStyleSection(),
     getOutputEfficiencySection(),
     // === BOUNDARY MARKER - DO NOT MOVE OR REMOVE ===

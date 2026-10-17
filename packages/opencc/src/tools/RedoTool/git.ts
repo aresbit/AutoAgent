@@ -1,0 +1,439 @@
+/**
+ * Deterministic collection layer for the chronicle.
+ *
+ * Everything a chronicle asserts as fact — commit counts, author tables, the
+ * yearly histogram, PR numbers — is computed here from `git log`, never from a
+ * model. That split is what makes the self-check in ./verify.ts possible: the
+ * prose can be checked against these numbers because these numbers came from
+ * the repository.
+ *
+ * The parsing functions are pure and exported separately from the subprocess
+ * calls so they can be tested without a repository — see ./git.eval.ts.
+ */
+
+export type Commit = {
+  hash: string
+  shortHash: string
+  author: string
+  email: string
+  /** ISO date, `YYYY-MM-DD`. Merge date, which is the chronicle's year basis. */
+  date: string
+  subject: string
+  /** PR number extracted from the subject, when the message carries one. */
+  pr: number | null
+  /** Every `#N` in the subject and body — used to trace influence. */
+  refs: number[]
+  isMerge: boolean
+}
+
+export type YearStat = {
+  year: string
+  commits: number
+  authors: number
+}
+
+export type AuthorStat = {
+  name: string
+  email: string
+  commits: number
+  firstDate: string
+  lastDate: string
+  /** `2019 到 2026`, or a single year. */
+  activePeriod: string
+  /** Deterministic bucket; the narrative role is the model's to refine. */
+  role: '核心开发者' | '常驻维护者' | '过路贡献者'
+  /**
+   * Authored the repository's first commit.
+   *
+   * Kept separate from `role` because share of commits does not capture it: in
+   * `tj/n` the founder holds 19% of the history, one point under the 核心开发者
+   * threshold, so the person who started the project would otherwise be
+   * introduced as a regular contributor — in a chronicle about going from zero
+   * to one, that is the wrong sentence.
+   */
+  isFounder: boolean
+}
+
+// ── parsing ───────────────────────────────────────────────────────────
+
+/**
+ * A record separator that cannot occur inside a commit subject. Newlines and
+ * tabs both do occur, so `git log --format` fields are delimited with control
+ * characters instead and split on those.
+ */
+export const FIELD_SEP = '\u001f'
+export const RECORD_SEP = '\u001e'
+
+export const LOG_FORMAT = [
+  '%H',
+  '%h',
+  '%an',
+  '%ae',
+  '%ad',
+  '%P',
+  '%s',
+  // The body matters: GitHub's "Closes #N" convention usually lives there,
+  // not in the subject, and those references are what tie a commit back to
+  // the issue that asked for it.
+  '%b',
+].join(FIELD_SEP) + RECORD_SEP
+
+/**
+ * Pull a PR number out of a commit subject.
+ *
+ * Three shapes, in order of confidence:
+ *   `Merge pull request #123 from foo/bar`  — a real merge commit
+ *   `Add retries to the poller (#123)`      — GitHub's squash-merge default
+ *   `Fix the poller, closes #123`           — a reference, weakest
+ *
+ * The trailing-parenthesis form is checked before the loose form so that
+ * "Fix #99 regression (#123)" attributes the commit to the PR that carried it
+ * (123) rather than to the issue it mentions (99).
+ *
+ * `C#`, `#fff` and other non-numeric hashes cannot match: a digit is required.
+ * Numbers beyond five digits are rejected as more likely to be an id or a
+ * timestamp fragment than a PR.
+ */
+export function extractPrNumber(subject: string): number | null {
+  const inRange = (raw: string | undefined): number | null => {
+    if (!raw) return null
+    const n = Number.parseInt(raw, 10)
+    return Number.isFinite(n) && n > 0 && n <= 99_999 ? n : null
+  }
+
+  const merge = subject.match(/merge pull request #(\d+)/i)
+  if (merge) return inRange(merge[1])
+
+  const squash = subject.match(/\(#(\d+)\)\s*$/)
+  if (squash) return inRange(squash[1])
+
+  const loose = subject.match(/#(\d+)\b/)
+  if (loose) return inRange(loose[1])
+
+  return null
+}
+
+/**
+ * Every `#N` referenced anywhere in the message.
+ *
+ * `extractPrNumber` deliberately returns one number and prefers the PR that
+ * carried the commit, which is right for the PR timeline but wrong for tracing
+ * influence: a merge commit reading "Merge pull request #123 … Closes #99"
+ * reported only 123, so the issue that prompted the work was invisible. Live
+ * data made the cost obvious — matching on the single PR number found one
+ * intertextual moment across 197 issues.
+ */
+export function extractAllRefs(subject: string, body = ''): number[] {
+  const out = new Set<number>()
+  for (const m of `${subject}\n${body}`.matchAll(/#(\d+)\b/g)) {
+    const n = Number.parseInt(m[1] as string, 10)
+    if (Number.isFinite(n) && n > 0 && n <= 99_999) out.add(n)
+  }
+  return [...out]
+}
+
+/** Parse the output of `git log --format=LOG_FORMAT`. */
+export function parseCommitLog(stdout: string): Commit[] {
+  const out: Commit[] = []
+  for (const record of stdout.split(RECORD_SEP)) {
+    const line = record.replace(/^\r?\n/, '')
+    if (!line.trim()) continue
+    const [hash, shortHash, author, email, date, parents, subjectRaw, ...rest] =
+      line.split(FIELD_SEP)
+    if (!hash || !shortHash) continue
+    const subject = subjectRaw ?? ''
+    // Anything past the subject field is the body; it may itself contain the
+    // separator, so it is rejoined rather than taken as a single element.
+    const body = rest.join(FIELD_SEP)
+    out.push({
+      hash,
+      shortHash,
+      author: author ?? '',
+      email: email ?? '',
+      date: (date ?? '').slice(0, 10),
+      subject,
+      pr: extractPrNumber(subject),
+      refs: extractAllRefs(subject, body),
+      // More than one parent is the definition of a merge.
+      isMerge: (parents ?? '').trim().split(/\s+/).filter(Boolean).length > 1,
+    })
+  }
+  return out
+}
+
+// ── aggregation ───────────────────────────────────────────────────────
+
+export function perYear(commits: readonly Commit[]): YearStat[] {
+  // Collapse identities first, or a year in which someone changed the
+  // capitalisation of their name reports two contributors where there was one.
+  const { canonicalOf } = resolveIdentities(commits)
+  const byYear = new Map<string, { commits: number; authors: Set<string> }>()
+  for (const c of commits) {
+    const year = c.date.slice(0, 4)
+    if (!year) continue
+    const entry = byYear.get(year) ?? { commits: 0, authors: new Set<string>() }
+    entry.commits += 1
+    entry.authors.add(canonicalOf.get(identityKey(c.author, c.email)) ?? c.author)
+    byYear.set(year, entry)
+  }
+  return [...byYear.entries()]
+    .map(([year, v]) => ({ year, commits: v.commits, authors: v.authors.size }))
+    .sort((a, b) => a.year.localeCompare(b.year))
+}
+
+export type IdentityMerge = {
+  canonical: string
+  aliases: { name: string; email: string; commits: number }[]
+  basis: '邮箱相同' | '姓名相同' | '邮箱与姓名'
+}
+
+const IDENTITY_KEY_SEP = '\u0000'
+
+function identityKey(name: string, email: string): string {
+  return `${name}${IDENTITY_KEY_SEP}${email}`
+}
+
+/**
+ * Collapse the same person's several git identities into one.
+ *
+ * This is not hypothetical tidying. In `tj/n`, the founder appears as both
+ * `Tj Holowaychuk` and `TJ Holowaychuk` under one address, and `Troy Connor`
+ * commits from both a personal address and a GitHub noreply alias. Left
+ * unmerged, the founder's 159 commits read as 85 and 74 — enough to change his
+ * role in the character table — and the author count is inflated.
+ *
+ * Two identities are joined when they share an address or a case-insensitive
+ * name, transitively. Joining on name can in principle merge two different
+ * people who share a display name; that is a judgement, so every merge is
+ * returned and belongs in the chronicle's methodology note rather than being
+ * applied silently.
+ */
+export function resolveIdentities(commits: readonly Commit[]): {
+  canonicalOf: Map<string, string>
+  merges: IdentityMerge[]
+} {
+  const counts = new Map<string, { name: string; email: string; commits: number }>()
+  for (const c of commits) {
+    const key = identityKey(c.author, c.email)
+    const entry = counts.get(key) ?? { name: c.author, email: c.email, commits: 0 }
+    entry.commits += 1
+    counts.set(key, entry)
+  }
+
+  const parent = new Map<string, string>()
+  const find = (k: string): string => {
+    let root = k
+    while ((parent.get(root) ?? root) !== root) root = parent.get(root) as string
+    return root
+  }
+  const union = (a: string, b: string) => {
+    const ra = find(a)
+    const rb = find(b)
+    if (ra !== rb) parent.set(ra, rb)
+  }
+  for (const key of counts.keys()) parent.set(key, key)
+
+  const byEmail = new Map<string, string[]>()
+  const byName = new Map<string, string[]>()
+  for (const [key, v] of counts) {
+    const email = v.email.trim().toLowerCase()
+    const name = v.name.trim().toLowerCase()
+    if (email) byEmail.set(email, [...(byEmail.get(email) ?? []), key])
+    if (name) byName.set(name, [...(byName.get(name) ?? []), key])
+  }
+  const emailJoined = new Set<string>()
+  const nameJoined = new Set<string>()
+  for (const keys of byEmail.values()) {
+    for (let i = 1; i < keys.length; i++) {
+      union(keys[0] as string, keys[i] as string)
+      emailJoined.add(find(keys[0] as string))
+    }
+  }
+  for (const keys of byName.values()) {
+    for (let i = 1; i < keys.length; i++) {
+      const before = find(keys[0] as string) === find(keys[i] as string)
+      union(keys[0] as string, keys[i] as string)
+      if (!before) nameJoined.add(find(keys[0] as string))
+    }
+  }
+
+  const groups = new Map<string, string[]>()
+  for (const key of counts.keys()) {
+    const root = find(key)
+    groups.set(root, [...(groups.get(root) ?? []), key])
+  }
+
+  const canonicalOf = new Map<string, string>()
+  const merges: IdentityMerge[] = []
+  for (const [root, keys] of groups) {
+    const members = keys
+      .map(k => counts.get(k) as { name: string; email: string; commits: number })
+      .sort((a, b) => b.commits - a.commits || a.name.localeCompare(b.name))
+    // The spelling that signed the most commits becomes the display name.
+    const canonical = (members[0] as { name: string }).name
+    for (const k of keys) canonicalOf.set(k, canonical)
+    if (keys.length > 1) {
+      const byE = emailJoined.has(root)
+      const byN = nameJoined.has(root)
+      merges.push({
+        canonical,
+        aliases: members,
+        basis: byE && byN ? '邮箱与姓名' : byN ? '姓名相同' : '邮箱相同',
+      })
+    }
+  }
+
+  return { canonicalOf, merges }
+}
+
+/**
+ * Author table.
+ *
+ * The role is assigned from share of total commits and span of activity, not
+ * from a model: it is a fact about the log. A contributor holding 20% or more
+ * of the history carries the project; one active across more than a year is a
+ * regular; everyone else passed through. The model may characterise them in
+ * prose, but the label here stays checkable.
+ *
+ * Identities are collapsed first — see resolveIdentities — so a contributor
+ * who changed the capitalisation of their name is not counted twice.
+ */
+export function perAuthor(commits: readonly Commit[]): AuthorStat[] {
+  const { canonicalOf } = resolveIdentities(commits)
+
+  // The earliest commit by date, not commits[0]: callers may pass the log in
+  // either direction, and `git log` without --reverse is newest-first.
+  const earliest = [...commits]
+    .filter(c => c.date)
+    .sort((a, b) => a.date.localeCompare(b.date))[0]
+  const founder = earliest
+    ? canonicalOf.get(identityKey(earliest.author, earliest.email)) ?? earliest.author
+    : undefined
+
+  const byName = new Map<
+    string,
+    { email: string; commits: number; dates: string[] }
+  >()
+  for (const c of commits) {
+    const name = canonicalOf.get(identityKey(c.author, c.email)) ?? c.author
+    const entry = byName.get(name) ?? { email: c.email, commits: 0, dates: [] }
+    entry.commits += 1
+    if (c.date) entry.dates.push(c.date)
+    byName.set(name, entry)
+  }
+
+  const total = commits.length || 1
+  return [...byName.entries()]
+    .map(([name, v]) => {
+      const dates = v.dates.sort()
+      const firstDate = dates[0] ?? ''
+      const lastDate = dates[dates.length - 1] ?? ''
+      const firstYear = firstDate.slice(0, 4)
+      const lastYear = lastDate.slice(0, 4)
+      const share = v.commits / total
+      const spansYears = firstYear !== lastYear
+      const role: AuthorStat['role'] =
+        share >= 0.2 ? '核心开发者' : spansYears ? '常驻维护者' : '过路贡献者'
+      return {
+        name,
+        email: v.email,
+        commits: v.commits,
+        firstDate,
+        lastDate,
+        activePeriod: firstYear === lastYear ? firstYear : `${firstYear} 到 ${lastYear}`,
+        role,
+        isFounder: name === founder,
+      }
+    })
+    .sort((a, b) => b.commits - a.commits || a.name.localeCompare(b.name))
+}
+
+/**
+ * The yearly commit histogram, as the chronicle prints it.
+ *
+ * The bar is scaled to the busiest year so the shape of the project's life is
+ * visible at a glance. A year with commits always gets at least one block:
+ * rounding a real year down to an empty bar would show a gap where there was
+ * work.
+ */
+export function asciiBarChart(stats: readonly YearStat[], width = 40): string {
+  if (stats.length === 0) return ''
+  const max = Math.max(...stats.map(s => s.commits))
+  if (max === 0) return stats.map(s => `${s.year} 0`).join('\n')
+  return stats
+    .map(s => {
+      const blocks = Math.max(1, Math.round((s.commits / max) * width))
+      return `${s.year} ${'█'.repeat(blocks)} ${s.commits}`
+    })
+    .join('\n')
+}
+
+/** Years with no commits at all — the hiatuses a chronicle must not skip. */
+export function silentYears(stats: readonly YearStat[]): string[] {
+  if (stats.length < 2) return []
+  const first = Number.parseInt(stats[0]!.year, 10)
+  const last = Number.parseInt(stats[stats.length - 1]!.year, 10)
+  const present = new Set(stats.map(s => s.year))
+  const out: string[] = []
+  for (let y = first; y <= last; y++) {
+    if (!present.has(String(y))) out.push(String(y))
+  }
+  return out
+}
+
+export type Panorama = {
+  lifespan: string
+  totalCommits: number
+  totalAuthors: number
+  prCount: number
+  prRange: string
+  firstDate: string
+  lastDate: string
+  mergeCommits: number
+}
+
+export function panorama(commits: readonly Commit[]): Panorama {
+  const dates = commits.map(c => c.date).filter(Boolean).sort()
+  const firstDate = dates[0] ?? ''
+  const lastDate = dates[dates.length - 1] ?? ''
+  const prs = commits.map(c => c.pr).filter((n): n is number => n !== null)
+  const uniquePrs = [...new Set(prs)].sort((a, b) => a - b)
+
+  const years =
+    firstDate && lastDate
+      ? Math.max(
+          1,
+          Number.parseInt(lastDate.slice(0, 4), 10) -
+            Number.parseInt(firstDate.slice(0, 4), 10) +
+            1,
+        )
+      : 0
+
+  return {
+    lifespan:
+      firstDate && lastDate
+        ? `${firstDate.slice(0, 7)} 到 ${lastDate.slice(0, 7)}（${years} 年）`
+        : '',
+    totalCommits: commits.length,
+    totalAuthors: new Set(perAuthor(commits).map(a => a.name)).size,
+    prCount: uniquePrs.length,
+    prRange:
+      uniquePrs.length > 0
+        ? `#${uniquePrs[0]} → #${uniquePrs[uniquePrs.length - 1]}`
+        : '',
+    firstDate,
+    lastDate,
+    mergeCommits: commits.filter(c => c.isMerge).length,
+  }
+}
+
+/** Group commits by calendar year — the chronicle's chapter unit. */
+export function groupByYear(commits: readonly Commit[]): Map<string, Commit[]> {
+  const out = new Map<string, Commit[]>()
+  for (const c of commits) {
+    const year = c.date.slice(0, 4)
+    if (!year) continue
+    out.set(year, [...(out.get(year) ?? []), c])
+  }
+  return new Map([...out.entries()].sort((a, b) => a[0].localeCompare(b[0])))
+}

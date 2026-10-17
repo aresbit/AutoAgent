@@ -227,8 +227,20 @@ export async function shouldAutoCompact(
   const threshold = getAutoCompactThreshold(model)
   const effectiveWindow = getEffectiveContextWindowSize(model)
 
+  // Byte-size guard: token estimation can severely underestimate memory usage
+  // for tool results containing large JSON, base64-encoded data, or images
+  // (images are counted as 2000 tokens regardless of actual byte size).
+  // In long sessions with large tool results, the messages array can grow to
+  // hundreds of MB before token-based compaction triggers. This guard
+  // triggers compaction when the estimated byte size exceeds a memory budget,
+  // preventing the 2GB+ RSS peaks that cause aggressive GC and segfaults.
+  const byteSizeEstimate = estimateMessagesByteSize(
+    messages,
+    MAX_MESSAGES_BYTES,
+  )
+
   logForDebugging(
-    `autocompact: tokens=${tokenCount} threshold=${threshold} effectiveWindow=${effectiveWindow}${snipTokensFreed > 0 ? ` snipFreed=${snipTokensFreed}` : ''}`,
+    `autocompact: tokens=${tokenCount} threshold=${threshold} effectiveWindow=${effectiveWindow}${snipTokensFreed > 0 ? ` snipFreed=${snipTokensFreed}` : ''} bytes=${byteSizeEstimate}`,
   )
 
   const { isAboveAutoCompactThreshold } = calculateTokenWarningState(
@@ -236,7 +248,173 @@ export async function shouldAutoCompact(
     model,
   )
 
-  return isAboveAutoCompactThreshold
+  return isAboveAutoCompactThreshold || byteSizeEstimate >= MAX_MESSAGES_BYTES
+}
+
+/**
+ * Rough byte-size estimate for the messages array in memory.
+ * Used as a safety net alongside token-based compaction to prevent
+ * memory exhaustion when token estimation underestimates actual size.
+ */
+const MAX_MESSAGES_BYTES = 200 * 1024 * 1024
+
+export function estimateMessagesByteSize(
+  messages: readonly Message[],
+  maxBytes = Number.POSITIVE_INFINITY,
+): number {
+  let total = 0
+  const seen = new WeakSet<object>()
+  for (const msg of messages) {
+    if (!msg) continue
+    // Each message object has structural overhead
+    total += 200
+    if (msg.type === 'assistant' || msg.type === 'user') {
+      const content = (msg as { message?: { content?: unknown } }).message
+        ?.content
+      if (typeof content === 'string') {
+        total += content.length * 2 // UTF-16 chars are 2 bytes
+      } else if (Array.isArray(content)) {
+        for (const block of content) {
+          if (typeof block === 'string') {
+            total += block.length * 2
+          } else if (block && typeof block === 'object') {
+            const b = block as Record<string, unknown>
+            // text blocks: content is the main consumer
+            if (b.type === 'text' && typeof b.text === 'string') {
+              total += b.text.length * 2
+            }
+            // tool_result: content can be large (file reads, command output)
+            if (b.type === 'tool_result') {
+              const tc = b.content
+              if (typeof tc === 'string') {
+                total += tc.length * 2
+              } else if (Array.isArray(tc)) {
+                for (const part of tc) {
+                  if (typeof part === 'string') {
+                    total += part.length * 2
+                  } else if (
+                    part &&
+                    typeof part === 'object' &&
+                    typeof (part as { text?: unknown }).text === 'string'
+                  ) {
+                    total += (part as { text: string }).text.length * 2
+                  } else if (part && typeof part === 'object') {
+                    total += estimateStructuredValueByteSize(
+                      part,
+                      maxBytes - total,
+                      seen,
+                    )
+                  }
+                }
+              }
+            }
+            // tool_use: input JSON can be large (file edits, bash commands)
+            if (b.type === 'tool_use' && b.input != null) {
+              total += estimateStructuredValueByteSize(
+                b.input,
+                maxBytes - total,
+                seen,
+              )
+            }
+            // image/document: base64 data can be MBs
+            if (
+              (b.type === 'image' || b.type === 'document') &&
+              typeof b.data === 'string'
+            ) {
+              total += b.data.length * 2
+            }
+            if (b.type === 'image' || b.type === 'document') {
+              const source = b.source
+              if (
+                source &&
+                typeof source === 'object' &&
+                typeof (source as { data?: unknown }).data === 'string'
+              ) {
+                total += (source as { data: string }).data.length * 2
+              }
+            }
+            if (total >= maxBytes) return total
+          }
+        }
+      }
+    }
+    // Attachment messages can also carry large payloads
+    if (msg.type === 'attachment' && msg.attachment) {
+      total += estimateStructuredValueByteSize(
+        msg.attachment,
+        maxBytes - total,
+        seen,
+      )
+    }
+    if (total >= maxBytes) return total
+  }
+  return total
+}
+
+/**
+ * Estimate retained bytes without serializing the value. JSON.stringify used
+ * to allocate a second copy of large tool inputs just to learn their size.
+ * The traversal is iterative (safe for deep inputs), cycle-aware, and stops
+ * as soon as the caller's compaction budget has been reached.
+ */
+function estimateStructuredValueByteSize(
+  value: unknown,
+  maxBytes: number,
+  seen: WeakSet<object>,
+): number {
+  if (maxBytes <= 0) return 0
+
+  const stack: unknown[] = [value]
+  let total = 0
+  while (stack.length > 0 && total < maxBytes) {
+    const current = stack.pop()
+    if (current == null) {
+      total += 4
+      continue
+    }
+
+    switch (typeof current) {
+      case 'string':
+        total += current.length * 2
+        continue
+      case 'number':
+      case 'bigint':
+        total += 8
+        continue
+      case 'boolean':
+        total += 4
+        continue
+      case 'symbol':
+      case 'function':
+        total += 64
+        continue
+      case 'undefined':
+        total += 8
+        continue
+    }
+
+    if (seen.has(current)) continue
+    seen.add(current)
+
+    if (current instanceof ArrayBuffer) {
+      total += current.byteLength + 32
+      continue
+    }
+    if (ArrayBuffer.isView(current)) {
+      total += current.byteLength + 48
+      continue
+    }
+
+    total += Array.isArray(current) ? 32 + current.length * 8 : 64
+    for (const key in current) {
+      if (!Object.hasOwn(current, key)) continue
+      total += key.length * 2 + 16
+      stack.push((current as Record<string, unknown>)[key])
+      if (total >= maxBytes) break
+    }
+  }
+
+  return total
 }
 
 export async function autoCompactIfNeeded(

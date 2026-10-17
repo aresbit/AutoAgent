@@ -15,14 +15,28 @@ import { BriefTool } from './tools/BriefTool/BriefTool.js'
 import { AutoresearchTool } from './tools/AutoresearchTool/AutoresearchTool.js'
 import { MemoryTool } from './tools/MemoryTool/MemoryTool.js'
 import { Paper2CodeTool } from './tools/Paper2CodeTool/Paper2CodeTool.js'
+import { QuantVerifyTool } from './tools/QuantVerifyTool/QuantVerifyTool.js'
+import { SoftwareAnalysisTool } from './tools/SoftwareAnalysisTool/SoftwareAnalysisTool.js'
+import { QuantOrientTool } from './tools/QuantOrientTool/QuantOrientTool.js'
+import { ManuscriptCheckTool } from './tools/ManuscriptCheckTool/ManuscriptCheckTool.js'
+import { WideResearchTool } from './tools/WideResearchTool/WideResearchTool.js'
+import { SelfImproveTool } from './tools/SelfImproveTool/SelfImproveTool.js'
 import { WikiTool } from './tools/WikiTool/WikiTool.js'
 import { KimiTool } from './tools/KimiTool/KimiTool.js'
+import { KimiWebBridgeTool } from './tools/KimiWebBridgeTool/KimiWebBridgeTool.js'
 import { GeminiSubtitleTool } from './tools/GeminiSubtitleTool/GeminiSubtitleTool.js'
 import { MythosTool } from './tools/MythosTool/MythosTool.js'
+import { ContentAnalystTool } from './tools/ContentAnalystTool/ContentAnalystTool.js'
+import { StrategyDBTool } from './tools/StrategyDBTool/StrategyDBTool.js'
 import { RedoTool } from './tools/RedoTool/RedoTool.js'
 import { SETool } from './tools/SETool/SETool.js'
 import { PMTool } from './tools/PMTool/PMTool.js'
-import { SelfImprovingTool } from './tools/SelfImprovingTool/SelfImprovingTool.js'
+import { LearnTool } from './tools/LearnTool/LearnTool.js'
+import { AwrOpsTool } from './tools/AwrOpsTool/AwrOpsTool.js'
+import { AwrStRunTool } from './tools/AwrStRunTool/AwrStRunTool.js'
+import { EvalApplyTool } from './tools/EvalApplyTool/EvalApplyTool.js'
+import { ActorTool } from './tools/ActorTool/ActorTool.js'
+import { SSHRemoteTool } from './tools/SSHRemoteTool/SSHRemoteTool.js'
 // Dead code elimination: conditional import for ant-only tools
 /* eslint-disable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 const REPLTool =
@@ -38,13 +52,11 @@ const SleepTool =
   feature('PROACTIVE') || feature('KAIROS')
     ? require('./tools/SleepTool/SleepTool.js').SleepTool
     : null
-const cronTools = feature('AGENT_TRIGGERS')
-  ? [
-      require('./tools/ScheduleCronTool/CronCreateTool.js').CronCreateTool,
-      require('./tools/ScheduleCronTool/CronDeleteTool.js').CronDeleteTool,
-      require('./tools/ScheduleCronTool/CronListTool.js').CronListTool,
-    ]
-  : []
+const cronTools = [
+  require('./tools/ScheduleCronTool/CronCreateTool.js').CronCreateTool,
+  require('./tools/ScheduleCronTool/CronDeleteTool.js').CronDeleteTool,
+  require('./tools/ScheduleCronTool/CronListTool.js').CronListTool,
+]
 const RemoteTriggerTool = feature('AGENT_TRIGGERS_REMOTE')
   ? require('./tools/RemoteTriggerTool/RemoteTriggerTool.js').RemoteTriggerTool
   : null
@@ -96,6 +108,16 @@ import { TaskCreateTool } from './tools/TaskCreateTool/TaskCreateTool.js'
 import { TaskGetTool } from './tools/TaskGetTool/TaskGetTool.js'
 import { TaskUpdateTool } from './tools/TaskUpdateTool/TaskUpdateTool.js'
 import { TaskListTool } from './tools/TaskListTool/TaskListTool.js'
+import { GoalCreateTool } from './tools/GoalTool/GoalCreateTool.js'
+import { GoalGetTool } from './tools/GoalTool/GoalGetTool.js'
+import { GoalUpdateTool } from './tools/GoalTool/GoalUpdateTool.js'
+import { GoalClearTool } from './tools/GoalTool/GoalClearTool.js'
+import { McpFsTool } from './tools/McpFsTool/McpFsTool.js'
+import { McpFsDiscoverTool } from './tools/McpFsTool/McpFsDiscoverTool.js'
+import { McpFsReadTool } from './tools/McpFsTool/McpFsReadTool.js'
+import { McpFsExecTool } from './tools/McpFsTool/McpFsExecTool.js'
+import { CodeActTool } from './tools/CodeActTool/CodeActTool.js'
+import { ActionTool } from './tools/ActionTool/ActionTool.js'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { isToolSearchEnabledOptimistic } from './utils/toolSearch.js'
 import { isTodoV2Enabled } from './utils/tasks.js'
@@ -112,7 +134,6 @@ export {
   ALL_AGENT_DISALLOWED_TOOLS,
   CUSTOM_AGENT_DISALLOWED_TOOLS,
   ASYNC_AGENT_ALLOWED_TOOLS,
-  COORDINATOR_MODE_ALLOWED_TOOLS,
 } from './constants/tools.js'
 import { feature } from 'bun:bundle'
 // Dead code elimination: conditional import for OVERFLOW_TEST_TOOL
@@ -130,9 +151,8 @@ const TerminalCaptureTool = feature('TERMINAL_PANEL')
 const WebBrowserTool = feature('WEB_BROWSER_TOOL')
   ? require('./tools/WebBrowserTool/WebBrowserTool.js').WebBrowserTool
   : null
-const coordinatorModeModule = feature('COORDINATOR_MODE')
-  ? (require('./coordinator/coordinatorMode.js') as typeof import('./coordinator/coordinatorMode.js'))
-  : null
+const coordinatorModeModule =
+  require('./coordinator/coordinatorMode.js') as typeof import('./coordinator/coordinatorMode.js')
 const SnipTool = feature('HISTORY_SNIP')
   ? require('./tools/SnipTool/SnipTool.js').SnipTool
   : null
@@ -227,14 +247,28 @@ export function getAllBaseTools(): Tools {
     AutoresearchTool,
     MemoryTool,
     Paper2CodeTool,
+    QuantVerifyTool,
+    SoftwareAnalysisTool,
+    QuantOrientTool,
+    ManuscriptCheckTool,
+    WideResearchTool,
+    SelfImproveTool,
     WikiTool,
     KimiTool,
+    KimiWebBridgeTool,
     GeminiSubtitleTool,
     MythosTool,
+    ContentAnalystTool,
+    StrategyDBTool,
     RedoTool,
     SETool,
     PMTool,
-    SelfImprovingTool,
+    LearnTool,
+    AwrOpsTool,
+    AwrStRunTool,
+    EvalApplyTool,
+    ActorTool,
+    SSHRemoteTool,
     EnterPlanModeTool,
     ...(process.env.USER_TYPE === 'ant' ? [ConfigTool] : []),
     ...(process.env.USER_TYPE === 'ant' ? [TungstenTool] : []),
@@ -243,6 +277,16 @@ export function getAllBaseTools(): Tools {
     ...(isTodoV2Enabled()
       ? [TaskCreateTool, TaskGetTool, TaskUpdateTool, TaskListTool]
       : []),
+    GoalCreateTool,
+    GoalGetTool,
+    GoalUpdateTool,
+    GoalClearTool,
+    McpFsTool,
+    McpFsDiscoverTool,
+    McpFsReadTool,
+    McpFsExecTool,
+    CodeActTool,
+    ActionTool,
     ...(OverflowTestTool ? [OverflowTestTool] : []),
     ...(CtxInspectTool ? [CtxInspectTool] : []),
     ...(TerminalCaptureTool ? [TerminalCaptureTool] : []),
@@ -303,22 +347,16 @@ export const getTools = (permissionContext: ToolPermissionContext): Tools => {
     // below which also hides REPL_ONLY_TOOLS when REPL is enabled.
     if (isReplModeEnabled() && REPLTool) {
       const replSimple: Tool[] = [REPLTool]
-      if (
-        feature('COORDINATOR_MODE') &&
-        coordinatorModeModule?.isCoordinatorMode()
-      ) {
+      if (coordinatorModeModule?.isCoordinatorMode()) {
         replSimple.push(TaskStopTool, getSendMessageTool())
       }
       return filterToolsByDenyRules(replSimple, permissionContext)
     }
     const simpleTools: Tool[] = [BashTool, FileReadTool, FileEditTool]
-    // When coordinator mode is also active, include AgentTool and TaskStopTool
-    // so the coordinator gets Task+TaskStop (via useMergedTools filtering) and
-    // workers get Bash/Read/Edit (via filterToolsForAgent filtering).
-    if (
-      feature('COORDINATOR_MODE') &&
-      coordinatorModeModule?.isCoordinatorMode()
-    ) {
+    // Explicit simple mode still limits ordinary tools, but a coordinator also
+    // needs its orchestration controls. This is the user's simple-mode choice,
+    // not a coordinator-specific capability restriction.
+    if (coordinatorModeModule?.isCoordinatorMode()) {
       simpleTools.push(AgentTool, TaskStopTool, getSendMessageTool())
     }
     return filterToolsByDenyRules(simpleTools, permissionContext)

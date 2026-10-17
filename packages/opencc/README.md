@@ -1,43 +1,58 @@
 # opencc
-## 编译运行
 
- 1. 构建项目：make build - 运行 bun run build 生成 dist/cli.js
-  2. 系统安装：make install - 安装到 /usr/local（需要 sudo）
-  3. 用户安装：make install-local - 安装到 ~/.local/（无需 sudo）
-  4. 卸载功能：make uninstall / make uninstall-local
-  5. 其他功能：make clean、make dev、make test、make lint 等
+`opencc` 是 Anthropic Claude Code CLI 的逆向工程重建版：恢复核心功能，裁剪次要能力。构建与安装由仓库根目录的 `Makefile` 驱动。
 
-  满足的特定需求
+## MateBot 群体智能模式
 
-  - 编译产物叫 opencc：可执行文件名为 opencc（通过 PROJECT_NAME := opencc 配置）
-  - 默认参数：包装脚本自动添加 --dangerously-skip-permissions 参数
-  - 两种安装方式：
-    - 系统级：sudo make install（安装到 /usr/local/bin/opencc）
-    - 用户级：make install-local（安装到 ~/.local/bin/opencc）
+OpenCC 现在可作为 MateBot 的多 Agent harness 运行：协调者将目标分解给 `researcher` / `planner` / `builder` / `evaluator` 等异构角色，通过独立 evaluator 和持久任务证据防止“实现完成”被误当作“产品交付”。
 
-  使用方法
+```bash
+# package.json 提供的 MateBot 启动命令（推荐）
+bun run matebot
 
-  # 查看所有命令
-  make help
+# 开发模式：通过环境变量启用 MateBot
+OPENCC_MATEBOT=1 bun run dev
 
-  # 构建项目
-  make build
+# 通过 make install / make install-local 安装 opencc 后
+opencc --matebot
+```
 
-  # 用户安装（推荐，无需 sudo）
-  make install-local
+三种方式都会启用 MateBot Coordinator、专家 Agent、持久任务图、可见 Actor 通信与独立评估流程。Coordinator 拥有普通模式的完整工具集（shell、编辑、Notebook、浏览器、Web、Skill、MCP 等）并叠加协调工具，由主 Agent 自主判断直接完成还是委派专家 Agent，不通过工具白名单强制分工。不带 `--matebot` 且未设置 `OPENCC_MATEBOT=1` 时，默认运行普通 OpenCC 单 Agent 模式。
 
-  # 系统安装（需要 sudo）
-  sudo make install
+架构、质量门禁和云端/HCI 接入边界见 [MateBot 群体智能 Harness](docs/matebot-swarm-harness.md)。
 
-  # 清理构建文件
-  make clean
+## 编译与安装
 
-  # 卸载用户安装
-  make uninstall-local
+| 命令 | 作用 |
+|------|------|
+| `make build` | 运行 `bun run build`，生成 `dist/cli.js` |
+| `make install` | 安装到 `/usr/local`（需要 sudo） |
+| `make install-local` | 安装到 `~/.local/`（无需 sudo，推荐） |
+| `make uninstall` / `make uninstall-local` | 卸载系统级 / 用户级安装 |
+| `make clean` / `make dev` / `make test` / `make lint` | 清理 / 开发 / 测试 / 检查 |
 
-  安装验证
+> `make build` 只更新仓库中的 `dist/cli.js`，不会覆盖已经安装到
+> `~/.local/share/opencc/` 或 `/usr/local/share/opencc/` 的版本。拉取新代码并构建后，
+> 需要再次执行 `make install-local`（或 `sudo make install`），本机的 `opencc` 才会使用最新能力。
 
-  安装后，运行 opencc --help 即可使用。包装脚本会自动添加 --dangerously-skip-permissions 参数。
+### 约定
+
+- 可执行文件名为 `opencc`（`Makefile` 中 `PROJECT_NAME := opencc`）。
+- 包装脚本自动追加 `--dangerously-skip-permissions` 参数。
+- 两种安装路径：系统级 `/usr/local/bin/opencc`，用户级 `~/.local/bin/opencc`。
+
+### 使用
+
+```bash
+make help          # 查看所有命令
+make build         # 构建项目
+make install-local # 用户安装（推荐，无需 sudo）
+sudo make install  # 系统安装（需要 sudo）
+make clean         # 清理构建文件
+make uninstall-local
+```
+
+安装后运行 `opencc --help` 即可使用。
 
 ## 快速开始
 
@@ -71,11 +86,220 @@ echo "say hello" | bun run src/entrypoints/cli.tsx -p
 bun run build
 ```
 
-构建产物输出到 `dist/cli.js`（~25.75 MB，5326 模块）。
+构建产物输出到 `dist/cli.js`。产物大小会随依赖和构建配置变化，不作为功能完整性的判断依据。
+
+## 近期能力概览
+
+- **浏览器自动化：** `KimiWebBridgeTool` 通过本机 daemon 与 Chrome/Edge 扩展复用真实登录态；`ChromeCDPTool` 可直接拉起 `scripts/cdp.mjs`，并以浏览器级常驻连接复用多个标签页。Chrome 144+ 的“允许远程调试”是浏览器原生安全提示，通常只在建立新 daemon 连接时出现一次，而不是每条命令或每个标签页都出现。
+- **远程开发与群体协作：** `SSHRemoteTool` 提供受工作区约束的远程文件和命令操作；`WideResearchTool` 可把研究问题并行分发给 Agent；`ActorTool` 提供可见的跨目录 tx/rx 与共享计算资源租约，`EvalApplyTool` 提供 SICP 式持久元解释器。
+- **研究与验证：** `AutoresearchTool`、`SelfImproveTool`（`rsi`）和 `LearnTool` 组成“试验—比较—归因—沉淀”闭环；`Paper2CodeTool`、`SoftwareAnalysisTool`、`QuantOrientTool`、`QuantVerifyTool` 分别覆盖论文落地、软件分析、量化研究阶段判定与结果复核。
+- **AWR 工作流：** `AwrOpsTool` 提供部署、刷写与真机验证所需的指南/脚本资产；`AwrStRunTool` 负责把多机 ST 任务编排给 Agent。真正执行时仍依赖可访问的开发板、SSH 环境及人工安全步骤。
+
+上面列出的是源码当前具备的能力。某项工具是否会出现在一次会话中，还取决于运行模式、feature flag、环境变量、外部服务和本机运行时；具体边界见下方能力清单。
+
+### 使用 `wide_research`
+
+`wide_research` 是模型可调用的工具，不是斜杠命令。直接用自然语言要求 OpenCC 对一组相互独立的条目执行同一个任务即可；为了让调用稳定，最好明确给出模板、条目、Agent 类型和并发数：
+
+```text
+请使用 wide_research：
+task: 审查 {{item}} 是否存在硬编码凭据；每个结论给出文件和行号，没有发现也要明确说明。
+items: [src/services/auth, src/services/billing, src/services/notify]
+subagent_type: Explore
+concurrency: 3
+```
+
+使用约束：
+
+- `task` 必须包含 `{{item}}`；每个 Agent 只看到替换后的当前条目。
+- `items` 支持 2–50 项，`concurrency` 默认 5、最大 15。并发越高，API 消耗和限流压力越大。
+- 显式指定 `subagent_type` 时必须选当前会话列出的可用 Agent；复杂通用任务可省略该字段，普通会话会选 `general-purpose`，coordinator/goal 会话会自动回退到 `worker`。
+- 各条目必须互不依赖；需要共享中间结论或完整长报告时，应改用单个 Agent 或分阶段执行。
+- 支持本地同步、后台和 `isolation: remote` Agent；调用会等待所有条目到达终态后统一聚合。写入型任务应使用 `isolation: worktree`，保留下来的 worktree 路径与分支会同时出现在逐项报告和结构化 `worktrees` 字段中，调用方仍需复核并合并这些分支。
+
+## SSH Remote：在另一台电脑的目录中开发
+
+`/ssh-remote` 把模型和 API 凭据保留在本机，通过系统 `ssh` 在远端工作区执行命令和文件操作。远端只需要可用的 SSH 服务与 POSIX shell，不需要安装 opencc、Bun 或守护进程。首次配置、SSH Config 别名、密钥认证、目录选择和故障排查参见 [SSH Remote 远程开发完整指南](docs/tools/ssh-remote.mdx)。
+该实现参考并以 TypeScript 重写了 AgentReach 的 SSH 传输、退出码哨兵、连接复用和本地审计设计；原项目的 MIT 许可证随工具源码保留。
+
+```text
+/ssh-remote ssh://dev@build-box/srv/app 修复测试失败并运行 bun test
+
+# 同样支持 ssh_config 中的 Host 别名和 scp 风格
+/ssh-remote build-box:/srv/app 检查当前分支并继续开发
+
+# 省略目录时使用远端登录用户的主目录
+/ssh-remote build-box 帮我找一下项目目录
+```
+
+内置 `SSHRemoteTool` 支持命名会话，以及 `connect`、`status`、`exec`、`read`、`write`、`edit`、`list`、`search`、`mkdir`、`rename`、`remove`、`log` 和 `disconnect` 操作。文件路径限制在连接时指定的工作区内；`exec` 以该目录为默认目录，但仍拥有远端 SSH 用户的正常系统权限，并不是操作系统沙箱。
+
+安全默认值：
+
+- 只使用系统 SSH 配置、密钥或本机 SSH agent 认证；不要把密码或私钥写进 slash 命令。
+- 强制 `ForwardAgent=no`，并使用 `BatchMode=yes` 避免不可见的密码提示卡住工具调用。
+- SSH 连接通过 `ControlMaster` 复用一小时，`disconnect` 会在没有共享会话时主动关闭。
+- 操作审计记录在 `~/.claude/ssh-remote/<session>.audit.jsonl`；设置 `OPENCC_SSH_REMOTE_NO_AUDIT=1` 可关闭。
+- 可用 `OPENCC_SSH_REMOTE_CONFIG=/path/to/ssh_config` 指定独立 SSH 配置文件。
+
+## MCP-FS：基于文件系统的 MCP 工具桥接
+
+从 ChatWise 导入 MCP 工具到本地 mcp-fs 注册表，无需常驻进程，按需 bridge 执行。
+
+### 快速导入
+
+```bash
+# 从 ChatWise 导入所有启用的 MCP 服务端（自动检测 OS 下的 DB 路径）
+bun run scripts/chatwise-to-mcpfs.ts
+
+# 自定义 ChatWise DB 路径
+CHATWISE_DB_PATH=/path/to/app.db bun run scripts/chatwise-to-mcpfs.ts
+
+# 仅预览（不写入文件）
+DRY_RUN=true bun run scripts/chatwise-to-mcpfs.ts
+```
+
+导入后在 REPL 中调用 `mcpfs_discover regenerate=true`，即可使用 `mcpfs` / `mcpfs_exec` 调用任意已导入的工具。
+
+### 架构
+
+```
+ChatWise SQLite DB (~/.config/app.chatwise/app.db)
+  ├─ enabled MCP servers  ──import──→  ~/.claude/mcp-fs/
+  ├─ cached tool schemas                ├─ servers/<name>/manifest.json  (服务 & 工具定义)
+  └─ env / API keys                     ├─ servers/<name>/*.ts           (wrapper，供 mcpfs_exec 调用)
+                                        ├─ bridge.mjs                   (运行时桥接：curl + SSE + 代理)
+                                        ├─ client.ts                    (TypeScript 客户端)
+                                        └─ registry.json               (工具索引)
+```
+
+- **`bun run scripts/chatwise-to-mcpfs.ts`** — 读取 ChatWise DB，生成 manifest + 拷贝运行时文件
+- **`mcpfs_discover`** (REPL 内) — 扫描 manifest，生成 `.ts` wrapper 和 `registry.json`
+- **`mcpfs`** — REPL 内单次工具调用，走 bridge 执行
+- **`mcpfs_exec`** — REPL 内执行 Agent 编写的 TypeScript 代码，import 工具 wrapper 后直接调用
+
+### 多端一致性
+
+`bridge.mjs` 和 `client.ts` 的权威源码存放在本仓库 `src/utils/` 中。在任何机器上执行
+`chatwise-to-mcpfs.ts` 或 `mcpfs_discover regenerate=true` 时，会自动从仓库拷贝到
+`~/.claude/mcp-fs/`，无需手动复制。只需 `git pull && bun run scripts/chatwise-to-mcpfs.ts`
+即可完整重建 mcp-fs 环境。
+
+### 修复的桥接问题
+
+- **代理穿透：** bridge.mjs 使用 curl（非 Node.js fetch），自动尊重 `http_proxy` / `HTTPS_PROXY` 环境变量
+- **SSE 解析：** 支持 `text/event-stream` 响应（`data:` / `event:` 行解析）
+- **参数大小写：** 通过 `MCP_ARGS` JSON 环境变量传递参数，保留 `camelCase` 键名
+- **跨平台 DB 路径：** Linux 依次尝试 `~/.config/app.chatwise/app.db` → `~/.local/share/app.chatwise/app.db`，macOS 使用 `~/Library/Application Support/app.chatwise/app.db`
+
+## LearnTool：受控的自我改进工具
+
+`learn-tool`（注册名 `LearnTool`，源码 `src/tools/LearnTool/`）是一个“记录—规划—验证—晋升—撤回”的自我改进闭环。它内置 CS329A 的生成—评估—筛选—训练框架，能规划 Memory/Reflexion、LoRA SFT、DPO、GRPO 与 DAPO，但不会自行修改模型权重。设计原则对齐 Anthropic Institute 关于
+[Recursive Self-Improvement](https://www.anthropic.com/institute/recursive-self-improvement) 的立场：跨会话生效的写入必须**有证据支撑**、**可审计**、**可逆**。
+
+### 默认行为
+
+| 维度 | 默认 | 含义 |
+|------|------|------|
+| `promote_memory` 是否真写 | 写盘 | 默认直接晋升；准入闸是 `**Verified-By**` 证据，无真实证据的条目一律跳过。`dryRun: true` 可先预览 |
+| `onlyVerified` | 固定为 `true` | 仅为兼容旧调用保留；传 `false` 会被 schema 拒绝，准入闸不可关闭 |
+| 写入哪种 memory type | `project` | `feedback` 类型对未来会话的行为影响最大，需要显式指定 |
+| 「已验证」判定 | 严格 | 证据必须能归类到人工、测试、CI、benchmark 或独立 review；占位符、模糊文本和模型自证一律拒绝 |
+| 高影响 `feedback` 晋升 | 双通道 | 需要显式人工确认，或至少测试/CI/benchmark/review 中两个不同通道 |
+| `ingest_memory` 的 `topic` 参数 | 必填 | 不传会报错 |
+
+### 状态目录
+
+所有状态写在 `~/.claude/projects/<project>/learn-tool/`：
+
+```
+.self_improving_promotions.log     # 每次真实晋升的审计日志（JSON Lines）
+.learnings/
+  ├─ LEARNINGS.md                  # learn / ingest_memory 写入
+  ├─ ERRORS.md
+  └─ FEATURE_REQUESTS.md
+```
+
+`.self_improving_promotions.log` 每行一条 JSON，字段：
+`{timestamp, entryId, sourceFile, contentSha, memoryType, savedMemoryId, gitHead, verificationChannels}` —
+这是后续 `demote_memory` 回滚的依据，也是 RSI 安全审计的"verifiable trail"。
+
+### 日常使用姿势
+
+```bash
+# 1) 让模型记 learning（只写本地 .learnings/，不影响后续会话）
+learn-tool action=learn learningType=insight title="..." details="..."
+
+# 2) 你 review 后觉得真有用，编辑 .learnings/LEARNINGS.md 在那条目里加：
+#    **Verified-By**: regression test tests/foo.test.ts
+#    证据必须是真实的——模型不能给自己写证据，否则整个机制失效
+
+# 3) 晋升（默认写盘，无证据的条目跳过）：
+learn-tool action=promote_memory
+
+# 4) 想先看会晋升哪些，再决定：
+learn-tool action=promote_memory dryRun=true
+
+# 5) 后悔了？按 entryId 撤回：
+learn-tool action=demote_memory entryId=LRN-20260606-001
+#    会删除从该条目 promote 出去的所有记忆文件，并在 promotions.log 留下反向记录
+
+# 6) 只规划训练，不修改模型权重：
+learn-tool action=plan_training trainingGoal=tool_use \
+  hasVerifiableReward=true longHorizon=true computeBudget=medium
+```
+
+### action 速查
+
+| action | 写入位置 | 跨会话影响 |
+|--------|----------|------------|
+| `learn` | `.learnings/{LEARNINGS,ERRORS,FEATURE_REQUESTS}.md` | 无（除非后续 promote） |
+| `ingest_memory` | `.learnings/LEARNINGS.md` | 无（除非后续 promote） |
+| `plan_training` | 不写盘；返回方法、超参数、评估门和停止条件 | 无 |
+| `promote_memory` | `~/.claude/projects/<proj>/memory/*.md` + `MEMORY.md` + promotions.log | **有**（所有后续会话都会加载） |
+| `demote_memory` | 删除 memory 文件 + 追加反向 promotions.log | **有**（反向） |
 
 ## 能力清单
 
 > ✅ = 已实现  ⚠️ = 部分实现 / 条件启用  ❌ = stub / 移除 / feature flag 关闭
+
+### 自定义工具（本仓库新增）
+
+这些工具都已接入 `src/tools.ts`；“条件”表示工具本身已实现，但完整效果需要对应的本机运行时、服务、硬件或会话模式。
+
+| 工具 | 注册名 | 状态 / 依赖 | 说明 |
+|------|--------|-------------|------|
+| CodeActTool | `CodeAct` | ⚠️ 按宿主运行时探测 | 执行 TypeScript / Python / Bash / C / C++ / Rust / OCaml / Scheme；统一复用宿主绝对工具链路径，不在每个沙箱安装环境；OCaml 自动解析当前 opam switch 的 `ocamlopt`，Scheme 优先 Chez 并兼容 Guile |
+| ActionTool | `Action` | ⚠️ `~/.claude/action/` | 执行本地可复用的 Actions 脚本；编译型 Action 与 CodeAct 共用宿主工具链，不创建沙箱专属 compiler/opam/Cargo 环境 |
+| MythosTool | `mythos` | ✅ | 六阶段深度研究：结构化 claim、证据、对抗性验证与运行完整性自检 |
+| AutoresearchTool | `autoresearch` | ✅ | verifier 锁定的自主研究循环：基线、数值目标、重复测量、噪声门槛、实验队列与证据审计 |
+| WideResearchTool | `wide_research` | ⚠️ Agent/远程环境 | 将同一任务并行 fan-out 到 2–50 个独立条目，按会话选择 `general-purpose` 或 `worker`，等待同步/后台/远程任务并聚合结果；保留写入型 worktree 的路径与分支 |
+| SelfImproveTool | `rsi` | ✅ | 运行可测量试验，比较、分配、归因和定位改进，并把验证通过的经验沉淀为仓库 Skill |
+| WikiTool | `wikitool` | ✅ | 三层个人 wiki：抓取归档、检索、提炼和比较 |
+| MemoryTool | `MemoryTool` | ✅ | 四层记忆系统（临时 / 工作 / 长期 / 主动），支持搜索、晋级、降级和合成 |
+| LearnTool | `learn-tool` | ✅ | 有证据门禁、审计和回滚能力的受控自我改进闭环，见上文专章 |
+| KimiTool | `kimitool` | ⚠️ Kimi 凭据与网络 | 调用 Kimi 对话能力，并从本机配置加载 refresh token |
+| KimiWebBridgeTool | `kimi_webbridge` | ⚠️ daemon + 浏览器扩展 | 控制真实 Chrome/Edge 会话，支持导航、读取、点击、输入、截图及连接状态诊断 |
+| ChromeCDPTool | `ChromeCDP` | ⚠️ `scripts/cdp.mjs` + Chrome | 直接拉起浏览器级 CDP daemon，以一条远程调试连接复用导航、截图、点击、JS 和网络请求操作 |
+| GeminiSubtitleTool | `geminisubtitle` | ⚠️ Gemini 登录态 + CDP | 通过真实浏览器会话调用 Gemini 生成中文字幕 |
+| SSHRemoteTool | `SSHRemoteTool` | ⚠️ 可用的 SSH 目标 | 命名会话和连接复用，以及远程 exec/read/write/edit/list/search 等工作区操作；见上文专章 |
+| PMTool | `pm-tool` | ✅ | 项目管理：任务依赖图、ready/blocked 推导、决策日志与防陷阱 |
+| SETool | `se-tool` | ✅ | 系统工程规划，与 PMTool 共享任务依赖图引擎 |
+| ActorTool | `ActorTool` | ✅ | 可见的本地/跨 IP tx/rx；跨目录 Agent 可发布、查看、原子抢占和释放带 TTL 的共享计算资源租约，通信与资源事件进入正常 transcript |
+| EvalApplyTool | `eval_apply` | ✅ | SICP 式持久元解释器：显式 `eval` / `apply`、高阶过程、递归、持久 bindings 与 reset；按 Actor 地址隔离环境 |
+| Paper2CodeTool | `paper2code` | ⚠️ 网络与 PDF/Python 工具 | 将 arXiv 论文切成可引用产物，并对实现做结构、语法、引用、import 和冒烟验证 |
+| QuantOrientTool | `quant_orient` | ✅ | 读取研究说明和结果，识别当前研究阶段、证据缺口与下一道门禁 |
+| QuantVerifyTool | `quant_verify` | ✅ | 从收益序列重算风险收益指标，检查拆分、统计功效、测试集暴露和多重检验；同时验证定价结果，且在净/毛收益同时提供时核对成本差额 |
+| SoftwareAnalysisTool | `software_analysis` | ✅ | 选择测试/模糊测试/静态分析/符号执行方法，并提供可复算的数据流与故障定位内核；外部分析器仍需另行运行 |
+| ManuscriptCheckTool | `manuscript_check` | ✅ | 中文稿件的 AI 痕迹、对话占比、五感覆盖、角色声音和伏笔回收检查 |
+| AwrOpsTool | `awr-ops` | ✅ | 返回 AWR 部署、刷写、传输和真机验证所需的指南、参考与脚本资产，不直接替代现场执行 |
+| AwrStRunTool | `awr-st-run` | ⚠️ Agent/SSH/硬件环境 | 编排多机 ST 运行、Gate-1 检查和人工安全步骤 |
+| RedTeamSkill | `RedTeamSkill` / `redteam` | ⚠️ 授权场景 | 为授权 CTF/靶场生成证据驱动的二进制分析和加固计划；不提升权限或关闭沙箱 |
+| RedoTool | `redotool` | ⚠️ Git 仓库 | 重放仓库早期提交历史，生成可发布的教学讲解 |
+| GoalTool | `create_goal` 等 | ✅ | 长期目标追踪：成功标准、证据门禁、人类闸门、停滞检测及预算 |
+| McpFsTool | `mcpfs` 等 | ⚠️ 已导入的 manifest | 本地注册表按需 bridge 执行 MCP 工具，见上文 MCP-FS 节 |
+| ContentAnalystTool | `ContentAnalyst` | ✅ | 爆款内容结构、标题公式和情绪触发分析 |
+| StrategyDBTool | `StrategyDB` | ✅ | 内容策略知识库：模板、头条模式和竞品情报归档 |
 
 ### 核心系统
 
@@ -95,11 +319,11 @@ bun run build
 | Doctor 诊断 (`/doctor`) | ✅ | 版本、API、插件、沙箱检查 |
 | 自动压缩 (compaction) | ✅ | auto-compact / micro-compact / API compact |
 
-### 工具 — 始终可用
+### 工具 — 默认会话可用
 
 | 工具 | 状态 | 说明 |
 |------|------|------|
-| BashTool | ✅ | Shell 执行，沙箱，权限检查 |
+| BashTool | ✅ | Shell 执行、沙箱与权限检查；内置 modern-bash“字符串 Lisp”语义、引用/作用域/副作用规范，并将严格模式和函数式流脚本安全路由到 CodeAct Bash |
 | FileReadTool | ✅ | 文件 / PDF / 图片 / Notebook 读取 |
 | FileEditTool | ✅ | 字符串替换式编辑 + diff 追踪 |
 | FileWriteTool | ✅ | 文件创建 / 覆写 + diff 生成 |
@@ -108,17 +332,12 @@ bun run build
 | WebFetchTool | ✅ | URL 抓取 → Markdown → AI 摘要 |
 | WebSearchTool | ✅ | 网页搜索 + 域名过滤 |
 | AskUserQuestionTool | ✅ | 多问题交互提示 + 预览 |
-| SendMessageTool | ✅ | 消息发送（peers / teammates / mailbox） |
 | SkillTool | ✅ | 斜杠命令 / Skill 调用 |
 | EnterPlanModeTool | ✅ | 进入计划模式 |
 | ExitPlanModeTool (V2) | ✅ | 退出计划模式 |
-| TodoWriteTool | ✅ | Todo 列表 v1 |
-| BriefTool | ✅ | 简短消息 + 附件发送 |
+| TodoWriteTool | ✅ | 旧版 Todo 列表；goal/task-v2 续跑不会再调用或复诵它 |
 | TaskOutputTool | ✅ | 后台任务输出读取 |
 | TaskStopTool | ✅ | 后台任务停止 |
-| ListMcpResourcesTool | ✅ | MCP 资源列表 |
-| ReadMcpResourceTool | ✅ | MCP 资源读取 |
-| SyntheticOutputTool | ✅ | 非交互会话结构化输出 |
 
 ### 工具 — 条件启用
 
@@ -134,10 +353,15 @@ bun run build
 | ExitWorktreeTool | ⚠️ | 同上 |
 | TeamCreateTool | ⚠️ | `isAgentSwarmsEnabled()` |
 | TeamDeleteTool | ⚠️ | 同上 |
+| SendMessageTool | ⚠️ | `isAgentSwarmsEnabled()`；Agent 队友 / mailbox 通信 |
 | ToolSearchTool | ⚠️ | `isToolSearchEnabledOptimistic()` |
 | PowerShellTool | ⚠️ | Windows 平台检测 |
 | LSPTool | ⚠️ | `ENABLE_LSP_TOOL` 环境变量 |
+| ListMcpResourcesTool / ReadMcpResourceTool | ⚠️ | 会话存在可用 MCP 资源时按需注入 |
+| SyntheticOutputTool (`StructuredOutput`) | ⚠️ | 非交互会话请求 JSON Schema 结构化输出时动态创建 |
 | ConfigTool | ❌ | `USER_TYPE === 'ant'`（永远为 false） |
+
+goal 循环使用 `TaskCreate`、`TaskUpdate` 和 `TaskList` 管理进度；启用 task-v2 后，查询层会主动移除旧的 TodoWrite 复诵消息，避免自动续跑再次请求不存在的 `TodoWrite`。
 
 ### 工具 — Feature Flag 关闭（全部不可用）
 
@@ -148,6 +372,7 @@ bun run build
 | RemoteTriggerTool | `AGENT_TRIGGERS_REMOTE` |
 | MonitorTool | `MONITOR_TOOL` |
 | SendUserFileTool | `KAIROS` |
+| BriefTool | `KAIROS` / `KAIROS_BRIEF`，并受 entitlement 和用户 opt-in 控制 |
 | OverflowTestTool | `OVERFLOW_TEST_TOOL` |
 | TerminalCaptureTool | `TERMINAL_PANEL` |
 | WebBrowserTool | `WEB_BROWSER_TOOL` |
@@ -229,6 +454,7 @@ bun run build
 | `/security-review` | ✅ | 安全审查 |
 | `/session` | ✅ | 会话信息 |
 | `/skills` | ✅ | Skill 管理 |
+| `/ssh-remote` (`remote-dev` / `ssh-dev`) | ✅ | 通过 `SSHRemoteTool` 在远端工作区开发 |
 | `/stats` | ✅ | 会话统计 |
 | `/status` | ✅ | 状态信息 |
 | `/statusline` | ✅ | 状态栏 UI |
@@ -318,20 +544,28 @@ bun run build
 | `@ant/computer-use-input` | ❌ | stub，仅类型声明 |
 | `@ant/computer-use-swift` | ❌ | stub，仅类型声明 |
 
-### Feature Flags（30 个，全部返回 `false`）
+### Feature Flags（`feature()` 恒为 `false`）
 
 `ABLATION_BASELINE` `AGENT_MEMORY_SNAPSHOT` `BG_SESSIONS` `BRIDGE_MODE` `BUDDY` `CCR_MIRROR` `CCR_REMOTE_SETUP` `CHICAGO_MCP` `COORDINATOR_MODE` `DAEMON` `DIRECT_CONNECT` `EXPERIMENTAL_SKILL_SEARCH` `FORK_SUBAGENT` `HARD_FAIL` `HISTORY_SNIP` `KAIROS` `KAIROS_BRIEF` `KAIROS_CHANNELS` `KAIROS_GITHUB_WEBHOOKS` `LODESTONE` `MCP_SKILLS` `PROACTIVE` `SSH_REMOTE` `TORCH` `TRANSCRIPT_CLASSIFIER` `UDS_INBOX` `ULTRAPLAN` `UPLOAD_USER_SETTINGS` `VOICE_MODE` `WEB_BROWSER_TOOL` `WORKFLOW_SCRIPTS`
+
+`feature()` 在本构建中被 polyfill 为始终返回 `false`，代码中全部 86 个 feature flag 都关闭。上面是与工具 / 命令开关直接相关的 30 个；完整集合以代码为准。
 
 
 ## 项目结构
 
 ```
-claude-code/
+opencc/
 ├── src/
 │   ├── entrypoints/
 │   │   ├── cli.tsx          # 入口文件（含 MACRO/feature polyfill）
 │   │   └── sdk/             # SDK 子模块 stub
 │   ├── main.tsx             # 主 CLI 逻辑（Commander 定义）
+│   ├── tools/               # 工具目录，一工具一目录，含大量自定义工具
+│   │   ├── CodeActTool/     # 沙箱代码执行
+│   │   ├── MythosTool/      # 六阶段深度研究
+│   │   ├── planning/        # SE/PM 共享的任务依赖图引擎
+│   │   └── …                # 其余见上方"自定义工具"清单
+│   ├── services/            # API / MCP / OAuth 等服务层
 │   └── types/
 │       ├── global.d.ts      # 全局变量/宏声明
 │       └── internal-modules.d.ts  # 内部 npm 包类型声明
@@ -346,7 +580,7 @@ claude-code/
 │       ├── computer-use-mcp/
 │       ├── computer-use-input/
 │       └── computer-use-swift/
-├── scripts/                 # 自动化 stub 生成脚本
+├── scripts/                 # 构建、类型 stub 修复、MCP 导入等脚本
 ├── dist/                    # 构建输出
 └── package.json             # Bun workspaces monorepo 配置
 ```
@@ -362,6 +596,8 @@ claude-code/
 
 ### Monorepo
 
+项目采用 Bun workspaces 管理内部包。原先手工放在 `node_modules/` 下的 stub 已统一迁入 `packages/`，通过 `workspace:*` 解析。
+
 ## IPFS Mirror
 
 A full copy of this repository is permanently pinned on IPFS via Filecoin:
@@ -371,11 +607,9 @@ A full copy of this repository is permanently pinned on IPFS via Filecoin:
 
 If this repo gets taken down, the code lives on.
 
-项目采用 Bun workspaces 管理内部包。原先手工放在 `node_modules/` 下的 stub 已统一迁入 `packages/`，通过 `workspace:*` 解析。
-
 ## Feature Flags 详解
 
-原版 Claude Code 通过 `bun:bundle` 的 `feature()` 在构建时注入 feature flag，由 GrowthBook 等 A/B 实验平台控制灰度发布。本项目中 `feature()` 被 polyfill 为始终返回 `false`，因此以下 30 个 flag 全部关闭。
+原版 Claude Code 通过 `bun:bundle` 的 `feature()` 在构建时注入 feature flag，由 GrowthBook 等 A/B 实验平台控制灰度发布。本项目中 `feature()` 被 polyfill 为始终返回 `false`，代码中 86 个 flag 全部关闭。下面分类说明的是与工具 / 命令开关直接相关的 30 个；其余 flag 同样恒不执行。
 
 ### 自主 Agent
 

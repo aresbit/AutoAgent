@@ -34,6 +34,13 @@ import type { CanUseToolFn } from './hooks/useCanUseTool.js'
 import { loadMemoryPrompt } from './memdir/memdir.js'
 import { hasAutoMemPathOverride } from './memdir/paths.js'
 import { query } from './query.js'
+import {
+  markTurnStart,
+  markTurnEnd,
+} from './utils/goalAccounting.js'
+import { decideGoalTurn } from './utils/goalDecision.js'
+import { onUserOrToolActivity, blockContinuation } from './utils/goalContinuation.js'
+import { pauseGoal, resumeGoal, getGoal, consumeGoalTransition, formatTransitionLine, pendingGates } from './tools/GoalTool/utils.js'
 import { categorizeRetryableAPIError } from './services/api/errors.js'
 import type { MCPServerConnection } from './services/mcp/types.js'
 import type { AppState } from './state/AppState.js'
@@ -109,15 +116,7 @@ import {
   normalizeMessage,
 } from './utils/queryHelpers.js'
 
-// Dead code elimination: conditional import for coordinator mode
-/* eslint-disable @typescript-eslint/no-require-imports */
-const getCoordinatorUserContext: (
-  mcpClients: ReadonlyArray<{ name: string }>,
-  scratchpadDir?: string,
-) => { [k: string]: string } = feature('COORDINATOR_MODE')
-  ? require('./coordinator/coordinatorMode.js').getCoordinatorUserContext
-  : () => ({})
-/* eslint-enable @typescript-eslint/no-require-imports */
+import { getCoordinatorUserContext } from './coordinator/coordinatorMode.js'
 
 // Dead code elimination: conditional import for snip compaction
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -430,6 +429,9 @@ export class QueryEngine {
       querySource: 'sdk',
     })
 
+    // Reset auto-continuation guard on user activity
+    onUserOrToolActivity()
+
     // Push new messages, including user input and any attachments
     this.mutableMessages.push(...messagesFromUserInput)
 
@@ -676,7 +678,44 @@ export class QueryEngine {
       ? countToolCalls(this.mutableMessages, SYNTHETIC_OUTPUT_TOOL_NAME)
       : 0
 
-    for await (const message of query({
+    // Active Memory: auto-continuation loop for goal pursuit
+    const MAX_AUTO_CONTINUATIONS = 10
+    let autoContinuationCount = 0
+    let autoContinuationPrompt: ContentBlockParam[] | null = null
+
+    while (true) {
+      // Inject continuation prompt on subsequent loop iterations
+      if (autoContinuationPrompt) {
+        onUserOrToolActivity()
+        const contMsg: Message = {
+          type: 'user',
+          uuid: randomUUID(),
+          isMeta: true,
+          message: {
+            role: 'user',
+            content: autoContinuationPrompt,
+          },
+        }
+        this.mutableMessages.push(contMsg)
+        messages.push(contMsg)
+        turnCount = 1
+        autoContinuationPrompt = null
+      }
+
+    // Goal accounting: mark turn start with current token baseline
+    await markTurnStart(this.totalUsage.input_tokens + this.totalUsage.output_tokens).catch(() => {})
+
+    // Relieve memory pressure before starting the query loop to prevent
+    // the 2GB+ RSS peaks that cause aggressive GC and generator
+    // use-after-free segfaults.
+    try {
+      const { relieveMemoryPressure } = await import('./utils/memoryPressure.js')
+      await relieveMemoryPressure()
+    } catch { /* non-fatal */ }
+
+    // Hold the generator reference to prevent GC while cleanup microtasks
+    // are pending. Same fix as REPL.tsx — see comment there for details.
+    const queryGen = query({
       messages,
       systemPrompt,
       userContext,
@@ -687,7 +726,9 @@ export class QueryEngine {
       querySource: 'sdk',
       maxTurns,
       taskBudget,
-    })) {
+    })
+    try {
+    for await (const message of queryGen) {
       // Record assistant, user, and compact boundary messages
       if (
         message.type === 'assistant' ||
@@ -1072,6 +1113,59 @@ export class QueryEngine {
         }
       }
     }
+    } finally {
+      // Ensure the generator is closed and its cleanup microtasks drain
+      // before the reference is released. Prevents JSC use-after-free
+      // segfault when the generator is GC'd with pending microtasks.
+      try { await queryGen.return(undefined as never); } catch { /* already closed */ }
+      await new Promise<void>(r => queueMicrotask(r));
+    }
+
+    // Goal accounting: finalize turn and check for auto-continuation
+    await markTurnEnd(this.totalUsage.input_tokens + this.totalUsage.output_tokens).catch(() => {})
+
+    // Surface any state-machine transition that fired this turn so the user
+    // (and the SDK consumer) sees the edge event rather than only the polled
+    // status indicator. Consumes the transition so it doesn't re-fire.
+    try {
+      const consumed = await consumeGoalTransition()
+      if (consumed) {
+        yield {
+          type: 'system',
+          subtype: 'info',
+          message: `${formatTransitionLine(consumed.transition)} — "${consumed.goal.objective}"`,
+          session_id: getSessionId(),
+          uuid: randomUUID(),
+        }
+      }
+    } catch {
+      // best-effort
+    }
+
+    // Active Memory: one typed decision governs the loop. `run` continues;
+    // `ask`/`wait` end the loop but must never end it silently — the user
+    // gets told what the goal is waiting on.
+    const goalDecision = await decideGoalTurn({
+      iteration: autoContinuationCount,
+      maxIterations: MAX_AUTO_CONTINUATIONS,
+      afterContinuationTurn: autoContinuationCount > 0,
+    }).catch(() => null)
+
+    if (goalDecision?.decision === 'run' && goalDecision.promptBlocks) {
+      autoContinuationPrompt = goalDecision.promptBlocks
+      autoContinuationCount++
+      continue
+    }
+
+    if (goalDecision?.userMessage) {
+      yield {
+        type: 'system',
+        subtype: 'info',
+        message: goalDecision.userMessage,
+        session_id: getSessionId(),
+        uuid: randomUUID(),
+      }
+    }
 
     // Stop hooks yield progress/attachment messages AFTER the assistant
     // response (via yield* handleStopHooks in query.ts). Since #23537 pushes
@@ -1178,10 +1272,15 @@ export class QueryEngine {
       ),
       uuid: randomUUID(),
     }
+    break
+    }
   }
 
   interrupt(): void {
     this.abortController.abort()
+    // Auto-pause active goal on interrupt (matches Codex behavior)
+    pauseGoal().catch(() => {})
+    blockContinuation(30000)
   }
 
   getMessages(): readonly Message[] {
@@ -1310,6 +1409,63 @@ export async function* ask({
   })
 
   try {
+    // Surface goal status at session start so the user/SDK can see paused /
+    // budget_limited goals up front (matches Codex's "resume objective?"
+    // affordance) and any unconsumed transition recorded from a prior process.
+    try {
+      const goal = await getGoal()
+      if (goal) {
+        const consumed = await consumeGoalTransition()
+        if (consumed) {
+          yield {
+            type: 'system',
+            subtype: 'info',
+            message: `${formatTransitionLine(consumed.transition)} — "${consumed.goal.objective}"`,
+            session_id: getSessionId(),
+            uuid: randomUUID(),
+          }
+        }
+        if (goal.status === 'paused') {
+          yield {
+            type: 'system',
+            subtype: 'info',
+            message: `Paused goal found: "${goal.objective}" (${goal.tokensUsed.toLocaleString()} tokens used, ${goal.timeUsedSeconds}s elapsed). Use /goal resume to continue.`,
+            session_id: getSessionId(),
+            uuid: randomUUID(),
+          }
+        } else if (goal.status === 'blocked') {
+          const gates = pendingGates(goal)
+            .map(g => `  ? ${g.id}: ${g.question}`)
+            .join('\n')
+          yield {
+            type: 'system',
+            subtype: 'info',
+            message: `Goal is blocked on your decision: "${goal.objective}"\n${gates}\nAnswer with /goal gate <id> approve|reject|defer [note].`,
+            session_id: getSessionId(),
+            uuid: randomUUID(),
+          }
+        } else if (goal.status === 'budget_limited') {
+          yield {
+            type: 'system',
+            subtype: 'info',
+            message: `Goal is budget-limited: "${goal.objective}" (${goal.tokensUsed.toLocaleString()} / ${goal.tokenBudget?.toLocaleString() ?? '∞'} tokens). Increase budget or /goal clear to remove.`,
+            session_id: getSessionId(),
+            uuid: randomUUID(),
+          }
+        } else if (goal.status === 'complete') {
+          yield {
+            type: 'system',
+            subtype: 'info',
+            message: `Goal is complete: "${goal.objective}". Use /goal clear to remove it.`,
+            session_id: getSessionId(),
+            uuid: randomUUID(),
+          }
+        }
+      }
+    } catch {
+      // Goal storage may not be available
+    }
+
     yield* engine.submitMessage(prompt, {
       uuid: promptUuid,
       isMeta,

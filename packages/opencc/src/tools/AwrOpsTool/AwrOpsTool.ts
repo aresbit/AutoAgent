@@ -1,0 +1,319 @@
+import { z } from 'zod/v4'
+import { buildTool, type ToolDef } from '../../Tool.js'
+import { lazySchema } from '../../utils/lazySchema.js'
+import { zodToJsonSchema } from '../../utils/zodToJsonSchema.js'
+import {
+  GUIDE,
+  GUIDE_PATH,
+  getReference,
+  getScript,
+  listReferences,
+  listScripts,
+  type ReferenceAsset,
+  type ScriptAsset,
+} from './assets.js'
+
+const AWR_OPS_TOOL_NAME = 'awr-ops'
+
+const DESCRIPTION = `Thor 开发板应用包和固件部署操作知识工具。加载 AWR 部署运维文档（板载编译、.run 大包部署、thor 镜像烧录、A/B slot 切换恢复、rsync/三跳中继传输、eHMI 远程控制、Gate-1 E2E 验证）与 eHMI 客户端脚本。所有内容内置于工具目录，无外部依赖。返回文档正文与脚本源码，模型可用 BashTool/FileWriteTool 实际执行命令。触发词："部署到 thor"、"刷大包"、"刷镜像"、"deploy to thor"、"awr deploy"、"烧录固件"、"rsync 传输"、"锁精定位"、"ehmi"、"HMI 控制"、"recipe 创建"、"gate1"、"节点挂了"、"重启节点"、"节点起不来"、"质检"、"标定"、"ST 测试"、"轨迹生成"、"start-job"、"报告"。`
+
+const SAFETY_RULES_PROMPT = `
+## AWR 安全规则 (每次操作机器人前必须遵守)
+
+### 规则 1: 质检必须依次执行
+标定质检 (quality-check, mode 154/155/156/157) 必须串行：前一项完成并返回结果后才能发下一项。禁止 for 循环批量下发。
+
+### 规则 2: 机器人操作指令高度安全优先级
+所有机器人操作（锁精定位、标定、质检、启动作业、轨迹生成、复位、归零等）只能通过 ehmi_client.py 脚本执行，使用脚本提供的命令行参数。禁止生成新的 Python 脚本直接通过 WebSocket 操作机器人。如确需生成新脚本，必须先获得人类确认。
+
+### 规则 3: 机器人运行时操作禁止 sudo
+在 nvidia 机器人上，运行时/应用层操作（解压大包 \`bash awr_*.run\`、起节点 \`start_awr.sh\`、跑 ehmi/job 等）禁止用 sudo，必须直接以 nvidia 用户运行（sudo 会让产物/进程归属 root，破坏环境）。例外：\`tars_flash\` 烧录、\`sudo systemctl restart/enable\`、写入系统路径(\`/usr/local/bin\`/\`/etc/systemd/system\`/\`/apollo\`)、\`apt-get\`/\`sysctl\`/\`iptables\` 等。
+
+### 使用 ehmi_client.py 脚本
+本工具内置了 ehmi_client.py，通过 awr-ops action=script script=ehmi-client 获取源码，用 FileWriteTool 写到 /tmp/ehmi_client.py，然后通过 BashTool 执行:
+  python3 /tmp/ehmi_client.py <机器人IP> <命令>
+常用命令: status / lock / recipe-create / recipe-list / quality-check / calibrate / single-traj / start-job / gate1 / rebind / bindmap
+注意: 脚本依赖 websockets 库 (pip3 install websockets)。
+
+### 节点重启
+当用户说"节点挂了"/"重启节点"时:
+  cd /apollo && source gaea.bashrc 2>/dev/null && bash /apollo/scripts/humanoid/start_awr.sh 2>&1
+重启后验证: ps aux | grep mainboard | grep -v grep | wc -l  应 ≥6
+
+### SSH 连接: 先问用户角色
+- 开发者 (办公网络, 需要跳板): 通过跳板机 192.168.84.160 中转, 需要设置 AWR_JUMP_* 环境变量, 用 ssh-tunnel.sh 建立隧道
+- 测试人员 (实验室现场, 直连机器人): 不需要跳板, 直接 ssh nvidia@<机器人IP>, ehmi 命令直连机器人 IP
+不清楚时先问用户"你是开发者还是测试人员? 能否直连机器人?"
+
+### ST 测试报告
+每次 ST 测试必须在当前目录生成 report.md，每条指令执行完立即 append 结果（checklist 表格: 步骤/状态/详情/时间）。质检必须输出详细数据（std 值 mm、validate_success、耗时），不能只写 pass/fail。
+
+详细操作指南: 调用 awr-ops action=guide 获取完整 SKILL.md。`
+
+const inputSchema = lazySchema(() =>
+  z.strictObject({
+    action: z
+      .enum(['guide', 'reference', 'script', 'list'])
+      .describe(
+        'guide: 返回主部署运维指南 (SKILL.md 正文). reference: 返回指定参考文档. script: 返回指定脚本源码 (模型可写入临时文件后用 BashTool 执行). list: 列出所有可用参考文档与脚本.',
+      ),
+    reference: z
+      .string()
+      .optional()
+      .describe('参考文档名 (不含 .md 后缀). 仅当 action="reference" 时有效. 用 list 查看可选项.')
+      .meta({ eligibleActions: ['reference'] }),
+    script: z
+      .string()
+      .optional()
+      .describe('脚本名. 仅当 action="script" 时有效. 用 list 查看可选项.')
+      .meta({ eligibleActions: ['script'] }),
+  }),
+)
+
+type InputSchema = ReturnType<typeof inputSchema>
+type Input = z.infer<InputSchema>
+
+const outputSchema = lazySchema(() =>
+  z.object({
+    success: z.boolean().describe('请求是否成功'),
+    action: z
+      .enum(['guide', 'reference', 'script', 'list'])
+      .describe('执行的 action'),
+    summary: z.string().describe('本次操作的一行摘要'),
+    content: z
+      .string()
+      .optional()
+      .describe('请求的文档/脚本正文 (guide/reference/script 时返回)'),
+    contentPath: z
+      .string()
+      .optional()
+      .describe('资产在工具目录内的逻辑路径 (guide/reference/script 时返回)'),
+    bytes: z
+      .number()
+      .int()
+      .optional()
+      .describe('返回内容的字节大小 (guide/reference/script 时返回)'),
+    language: z
+      .enum(['python', 'bash', 'text'])
+      .optional()
+      .describe('脚本语言 (script 时返回)'),
+    suggestedFilename: z
+      .string()
+      .optional()
+      .describe('建议的临时文件名 (script 时返回，便于模型用 FileWriteTool 落盘执行)'),
+    availableReferences: z
+      .array(z.object({ name: z.string(), bytes: z.number() }))
+      .optional()
+      .describe('可用参考文档 (list 时返回)'),
+    availableScripts: z
+      .array(
+        z.object({
+          name: z.string(),
+          language: z.enum(['python', 'bash', 'text']),
+          suggestedFilename: z.string(),
+          bytes: z.number(),
+        }),
+      )
+      .optional()
+      .describe('可用脚本 (list 时返回)'),
+  }),
+)
+
+type OutputSchema = ReturnType<typeof outputSchema>
+export type Output = z.infer<OutputSchema>
+
+function refToSummary(r: ReferenceAsset): { name: string; bytes: number } {
+  return { name: r.name, bytes: Buffer.byteLength(r.content, 'utf-8') }
+}
+
+function scriptToSummary(s: ScriptAsset): {
+  name: string
+  language: 'python' | 'bash' | 'text'
+  suggestedFilename: string
+  bytes: number
+} {
+  return {
+    name: s.name,
+    language: s.language,
+    suggestedFilename: s.suggestedFilename,
+    bytes: Buffer.byteLength(s.content, 'utf-8'),
+  }
+}
+
+function runGuide(): Output {
+  return {
+    success: true,
+    action: 'guide',
+    summary: 'Loaded awr-ops main deployment guide (SKILL.md).',
+    content: GUIDE,
+    contentPath: GUIDE_PATH,
+    bytes: Buffer.byteLength(GUIDE, 'utf-8'),
+  }
+}
+
+function runReference(reference: string | undefined): Output {
+  if (!reference || !reference.trim()) {
+    return {
+      success: false,
+      action: 'reference',
+      summary: `action="reference" requires the "reference" parameter. Available: ${listReferences()
+        .map(r => r.name)
+        .join(', ')}.`,
+      availableReferences: listReferences().map(refToSummary),
+    }
+  }
+  const ref = getReference(reference)
+  if (!ref) {
+    return {
+      success: false,
+      action: 'reference',
+      summary: `Unknown reference "${reference}". Available: ${listReferences()
+        .map(r => r.name)
+        .join(', ')}.`,
+      availableReferences: listReferences().map(refToSummary),
+    }
+  }
+  return {
+    success: true,
+    action: 'reference',
+    summary: `Loaded reference "${ref.name}".`,
+    content: ref.content,
+    contentPath: ref.path,
+    bytes: Buffer.byteLength(ref.content, 'utf-8'),
+  }
+}
+
+function runScript(script: string | undefined): Output {
+  if (!script || !script.trim()) {
+    return {
+      success: false,
+      action: 'script',
+      summary: `action="script" requires the "script" parameter. Available: ${listScripts()
+        .map(s => s.name)
+        .join(', ')}.`,
+      availableScripts: listScripts().map(scriptToSummary),
+    }
+  }
+  const s = getScript(script)
+  if (!s) {
+    return {
+      success: false,
+      action: 'script',
+      summary: `Unknown script "${script}". Available: ${listScripts()
+        .map(x => x.name)
+        .join(', ')}.`,
+      availableScripts: listScripts().map(scriptToSummary),
+    }
+  }
+  return {
+    success: true,
+    action: 'script',
+    summary: `Loaded script "${s.name}" (${s.language}). Write to a temp file (e.g. /tmp/${s.suggestedFilename}) and run via BashTool.`,
+    content: s.content,
+    contentPath: s.path,
+    bytes: Buffer.byteLength(s.content, 'utf-8'),
+    language: s.language,
+    suggestedFilename: s.suggestedFilename,
+  }
+}
+
+function runList(): Output {
+  const refs = listReferences().map(refToSummary)
+  const scripts = listScripts().map(scriptToSummary)
+  return {
+    success: true,
+    action: 'list',
+    summary: `awr-ops bundled assets: ${refs.length} references, ${scripts.length} scripts.`,
+    availableReferences: refs,
+    availableScripts: scripts,
+  }
+}
+
+export const AwrOpsTool = buildTool({
+  name: AWR_OPS_TOOL_NAME,
+  searchHint: 'thor board deployment flashing rsync ehmi',
+  maxResultSizeChars: 200_000,
+  async description() {
+    return DESCRIPTION
+  },
+  async prompt() {
+    return DESCRIPTION + SAFETY_RULES_PROMPT
+  },
+  get inputSchema(): InputSchema {
+    return inputSchema()
+  },
+  get inputJSONSchema() {
+    const schema = zodToJsonSchema(inputSchema())
+    schema.type = 'object'
+    return schema
+  },
+  get outputSchema(): OutputSchema {
+    return outputSchema()
+  },
+  userFacingName() {
+    return 'AwrOps'
+  },
+  isConcurrencySafe() {
+    return true
+  },
+  isReadOnly() {
+    return true
+  },
+  toAutoClassifierInput(input) {
+    return `${input.action}${input.reference ? ` ${input.reference}` : ''}${input.script ? ` ${input.script}` : ''}`
+  },
+  async call(input: Input) {
+    switch (input.action) {
+      case 'reference':
+        return { data: runReference(input.reference) }
+      case 'script':
+        return { data: runScript(input.script) }
+      case 'list':
+        return { data: runList() }
+      case 'guide':
+      default:
+        return { data: runGuide() }
+    }
+  },
+  mapToolResultToToolResultBlockParam(output, toolUseID) {
+    const lines = [output.summary]
+
+    if (output.contentPath) {
+      const sizeInfo = output.bytes ? ` (${output.bytes} bytes)` : ''
+      lines.push(`Source: ${output.contentPath}${sizeInfo}`)
+    }
+
+    if (output.suggestedFilename) {
+      lines.push(`Suggested temp file: /tmp/${output.suggestedFilename}`)
+    }
+
+    if (output.availableReferences && output.availableReferences.length > 0) {
+      lines.push(
+        `References: ${output.availableReferences.map(r => `${r.name}(${r.bytes}b)`).join(', ')}`,
+      )
+    }
+
+    if (output.availableScripts && output.availableScripts.length > 0) {
+      lines.push(
+        `Scripts: ${output.availableScripts
+          .map(s => `${s.name}[${s.language}](${s.bytes}b)`)
+          .join(', ')}`,
+      )
+    }
+
+    // Keep the in-transcript preview short — the full content is in the tool
+    // result payload. A 200-char preview is enough for the human to see what
+    // was returned without flooding the terminal.
+    if (output.content) {
+      const preview = output.content.slice(0, 200)
+      const ellipsis = output.content.length > 200 ? '…' : ''
+      lines.push(`Preview:\n${preview}${ellipsis}`)
+    }
+
+    return {
+      tool_use_id: toolUseID,
+      type: 'tool_result',
+      content: lines.join('\n'),
+    }
+  },
+} satisfies ToolDef<InputSchema, Output>)

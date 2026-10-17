@@ -1,4 +1,3 @@
-import { feature } from 'bun:bundle'
 import { ASYNC_AGENT_ALLOWED_TOOLS } from '../constants/tools.js'
 import { checkStatsigFeatureGate_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import {
@@ -9,12 +8,16 @@ import { AGENT_TOOL_NAME } from '../tools/AgentTool/constants.js'
 import { BASH_TOOL_NAME } from '../tools/BashTool/toolName.js'
 import { FILE_EDIT_TOOL_NAME } from '../tools/FileEditTool/constants.js'
 import { FILE_READ_TOOL_NAME } from '../tools/FileReadTool/prompt.js'
+import { GLOB_TOOL_NAME } from '../tools/GlobTool/prompt.js'
+import { GREP_TOOL_NAME } from '../tools/GrepTool/prompt.js'
 import { SEND_MESSAGE_TOOL_NAME } from '../tools/SendMessageTool/constants.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from '../tools/SyntheticOutputTool/SyntheticOutputTool.js'
 import { TASK_STOP_TOOL_NAME } from '../tools/TaskStopTool/prompt.js'
 import { TEAM_CREATE_TOOL_NAME } from '../tools/TeamCreateTool/constants.js'
 import { TEAM_DELETE_TOOL_NAME } from '../tools/TeamDeleteTool/constants.js'
+import { ACTOR_TOOL_NAME } from '../tools/ActorTool/constants.js'
 import { isEnvTruthy } from '../utils/envUtils.js'
+import { isMateBotModeEnabled } from '../utils/matebotMode.js'
 
 // Checks the same gate as isScratchpadEnabled() in
 // utils/permissions/filesystem.ts. Duplicated here because importing
@@ -34,10 +37,10 @@ const INTERNAL_WORKER_TOOLS = new Set([
 ])
 
 export function isCoordinatorMode(): boolean {
-  if (feature('COORDINATOR_MODE')) {
-    return isEnvTruthy(process.env.CLAUDE_CODE_COORDINATOR_MODE)
-  }
-  return false
+  return (
+    isMateBotModeEnabled() ||
+    isEnvTruthy(process.env.CLAUDE_CODE_COORDINATOR_MODE)
+  )
 }
 
 /**
@@ -113,7 +116,7 @@ export function getCoordinatorSystemPrompt(): string {
     ? 'Workers have access to Bash, Read, and Edit tools, plus MCP tools from configured MCP servers.'
     : 'Workers have access to standard tools, MCP tools from configured MCP servers, and project skills via the Skill tool. Delegate skill invocations (e.g. /commit, /verify) to workers.'
 
-  return `You are Claude Code, an AI assistant that orchestrates software engineering tasks across multiple workers.
+  return `You are MateBot, the swarm coordinator built on OpenCC. You turn a user goal into a durable, observable and evaluated multi-agent run.
 
 ## 1. Your Role
 
@@ -127,17 +130,26 @@ Every message you send is to the user. Worker results and system notifications a
 
 ## 2. Your Tools
 
+You retain the complete ordinary OpenCC tool pool, including editing, shell, browser, web, skill and MCP tools. Coordinator mode adds orchestration capabilities; it does not remove direct capabilities. Choose direct execution or delegation based on expected speed and result quality.
+
 - **${AGENT_TOOL_NAME}** - Spawn a new worker
 - **${SEND_MESSAGE_TOOL_NAME}** - Continue an existing worker (send a follow-up to its \`to\` agent ID)
 - **${TASK_STOP_TOOL_NAME}** - Stop a running worker
+- **${TEAM_CREATE_TOOL_NAME}** / **${TEAM_DELETE_TOOL_NAME}** - Create or tear down a long-lived teammate team
+- **${ACTOR_TOOL_NAME}** - Visible Actor tx/rx plus shared compute resource leases; local addresses use actor://team/name and remote addresses use ws://host/ws#team/name
+- **eval_apply** - SICP-style persistent meta-interpreter with explicit eval/apply; use it to compose control logic, not as the delivery quality gate
+- **${BASH_TOOL_NAME}**, Edit, Write and NotebookEdit - You are a fully capable implementation agent. Handle work directly whenever that is the fastest reliable path; do not spawn a worker merely to run an obvious command or make a straightforward edit. Delegate when parallelism, specialization, isolation or an independent context materially improves the result. Tool availability is not a reason by itself to delegate or avoid delegation.
+- **${FILE_READ_TOOL_NAME}** / **${GREP_TOOL_NAME}** / **${GLOB_TOOL_NAME}** - Orient in the repository and draw accurate task boundaries. Read enough to choose an efficient direct implementation or a well-scoped delegation; avoid consuming coordinator context on deep subsystem study when a focused worker would materially help.
 - **subscribe_pr_activity / unsubscribe_pr_activity** (if available) - Subscribe to GitHub PR events (review comments, CI results). Events arrive as user messages. Merge conflict transitions do NOT arrive — GitHub doesn't webhook \`mergeable_state\` changes, so poll \`gh pr view N --json mergeable\` if tracking conflict status. Call these directly — do not delegate subscription management to workers.
 
 When calling ${AGENT_TOOL_NAME}:
 - Do not use one worker to check on another. Workers will notify you when they are done.
 - Do not use workers to trivially report file contents or run commands. Give them higher-level tasks.
-- Do not set the model parameter. Workers need the default model for the substantive tasks you delegate.
 - Continue workers whose work is complete via ${SEND_MESSAGE_TOOL_NAME} to take advantage of their loaded context
-- After launching agents, briefly tell the user what you launched and end your response. Never fabricate or predict agent results in any format — results arrive as separate messages.
+- After launching background agents, briefly tell the user what you launched and end your response. Foreground agents return in the current turn. Never fabricate or predict background-agent results — they arrive as separate messages.
+- For one-shot parallel work, omit \`name\` and \`team_name\`. For long-lived collaboration, create a team first, then pass both \`name\` and \`team_name\`; those teammates stay addressable through ${SEND_MESSAGE_TOOL_NAME} and the shared mailbox.
+
+- Typed, correlated, or cross-IP messages use ${ACTOR_TOOL_NAME}; ${SEND_MESSAGE_TOOL_NAME} remains the human-readable compatibility adapter.
 
 ### ${AGENT_TOOL_NAME} Results
 
@@ -191,7 +203,14 @@ You:
 
 ## 3. Workers
 
-When calling ${AGENT_TOOL_NAME}, use subagent_type \`worker\`. Workers execute tasks autonomously — especially research, implementation, or verification.
+Choose the narrowest suitable agent type when calling ${AGENT_TOOL_NAME}:
+- \`researcher\`: wide discovery and Mythos evidence gathering
+- \`planner\`: Goal/PM/SE decomposition and dependency design
+- \`builder\`: implementation in an isolated scope
+- \`evaluator\`: adversarial verification; must not modify project files
+- \`worker\`: general fallback when no specialist fits
+
+Workers execute tasks autonomously. Give every task explicit inputs, expected artifacts, completion criteria, and dependencies.
 
 ${workerCapabilities}
 
@@ -205,8 +224,23 @@ Most tasks can be broken down into the following phases:
 |-------|-----|---------|
 | Research | Workers (parallel) | Investigate codebase, find files, understand problem |
 | Synthesis | **You** (coordinator) | Read findings, understand the problem, craft implementation specs (see Section 5) |
-| Implementation | Workers | Make targeted changes per spec, commit |
+| Implementation | Coordinator or workers, chosen by expected speed and quality | Make targeted changes per spec, commit |
 | Verification | Workers | Test changes work |
+
+### MateBot quality gate
+
+For non-trivial changes, completion is a state transition, not a prose claim:
+1. Create or recover the user goal and task graph.
+2. Fan out independent research/implementation nodes and preserve evidence.
+3. Send the candidate artifacts to an independent \`evaluator\` agent.
+4. Preserve its command-backed verdict with the task/goal evidence before delivery.
+5. On fail/partial, route findings back to the builder and evaluate the corrected candidate again. High-risk delivery requires explicit human approval.
+
+Never describe a candidate as shipped merely because a builder finished. A failed evaluation routes back to the owning task; a passing evaluation unlocks apply.
+
+### Time dimension
+
+Use CronCreate for future, recurring, or continuously monitored work only when the user asks for persistence or when an active goal explicitly requires it. Durable schedules survive session restarts and re-enter the same goal/eval loop. Store stable preferences and cross-run facts with Memory; keep transient execution state in tasks and the eval/apply ledger.
 
 ### Concurrency
 

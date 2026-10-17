@@ -1,0 +1,241 @@
+import type { Message } from '../types/message.js'
+
+/**
+ * Breaking out of a rut.
+ *
+ * Manus's sixth lesson is that a context full of near-identical action/
+ * observation pairs makes the model imitate the pattern past the point where it
+ * works. Their remedy is controlled variation in how actions are serialized —
+ * which is not portable here: deliberate noise in the serialized prefix is
+ * exactly what invalidates the KV cache, and cache handling is one of the
+ * stronger parts of this codebase.
+ *
+ * What is portable is catching the failure the lesson is about. The sharpest
+ * form of it needs no statistics: the same tool, called with the same input,
+ * failing again. A retry after a genuine change is ordinary; the third
+ * byte-identical call that errored twice already is the model copying its own
+ * recent behaviour rather than reacting to the result.
+ *
+ * GoalTool has this for goal continuation (a progress fingerprint and a replan
+ * directive). The ordinary tool-use loop had nothing.
+ */
+
+/** Stable marker so a previous notice can be found and replaced. */
+export const RUT_MARKER = '<repeated-failure>'
+const RUT_CLOSE = '</repeated-failure>'
+
+/**
+ * Identical failures before saying something. Two can be a flaky network or a
+ * race worth one retry; by three the model is repeating itself.
+ */
+export const DEFAULT_FAILURE_THRESHOLD = 3
+
+/** How far back to look. Beyond this the repetition is not a live pattern. */
+const LOOKBACK_TOOL_CALLS = 40
+
+export interface RepeatedFailure {
+  toolName: string
+  /** The repeated input, serialized for display. */
+  inputPreview: string
+  count: number
+  /** The last error text seen for this call, trimmed. */
+  lastError: string
+}
+
+function stableKey(name: string, input: unknown): string {
+  // Key ordering must not matter — the same call written two ways is the same
+  // call. JSON.stringify with sorted keys gives that cheaply.
+  const canonical = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(canonical)
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(
+        Object.entries(value as Record<string, unknown>)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([k, v]) => [k, canonical(v)]),
+      )
+    }
+    return value
+  }
+  try {
+    return `${name}\u0000${JSON.stringify(canonical(input))}`
+  } catch {
+    return `${name}\u0000<unserializable>`
+  }
+}
+
+function errorTextOf(content: unknown): string | null {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return null
+  const parts: string[] = []
+  for (const block of content) {
+    if (
+      block &&
+      typeof block === 'object' &&
+      (block as { type?: string }).type === 'text'
+    ) {
+      const text = (block as { text?: unknown }).text
+      if (typeof text === 'string') parts.push(text)
+    }
+  }
+  return parts.length > 0 ? parts.join('\n') : null
+}
+
+function truncate(text: string, maxLen: number): string {
+  const collapsed = text.replace(/\s+/g, ' ').trim()
+  if (collapsed.length <= maxLen) return collapsed
+  return `${collapsed.slice(0, maxLen - 1)}…`
+}
+
+/**
+ * Find a tool call that has failed the same way repeatedly. Returns the worst
+ * offender at or above the threshold, or null.
+ */
+export function findRepeatedFailure(
+  messages: Message[],
+  threshold: number = DEFAULT_FAILURE_THRESHOLD,
+): RepeatedFailure | null {
+  // tool_use_id → the call that produced it, so an error result can be traced
+  // back to what was actually asked for.
+  const callsById = new Map<string, { name: string; input: unknown }>()
+  for (const message of messages) {
+    if (message.type !== 'assistant' || !Array.isArray(message.message.content)) {
+      continue
+    }
+    for (const block of message.message.content) {
+      if (block.type === 'tool_use') {
+        callsById.set(block.id, { name: block.name, input: block.input })
+      }
+    }
+  }
+
+  const failures = new Map<
+    string,
+    { name: string; input: unknown; count: number; lastError: string }
+  >()
+  let seenToolResults = 0
+
+  // Walk backwards so the lookback window is the recent tail.
+  outer: for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]!
+    if (message.type !== 'user' || !Array.isArray(message.message.content)) {
+      continue
+    }
+    for (const block of message.message.content) {
+      if (block.type !== 'tool_result') continue
+      seenToolResults++
+      if (seenToolResults > LOOKBACK_TOOL_CALLS) break outer
+      if (!block.is_error) continue
+
+      const call = callsById.get(block.tool_use_id)
+      if (!call) continue
+
+      const key = stableKey(call.name, call.input)
+      const existing = failures.get(key)
+      if (existing) {
+        existing.count++
+      } else {
+        failures.set(key, {
+          name: call.name,
+          input: call.input,
+          count: 1,
+          lastError: errorTextOf(block.content) ?? '',
+        })
+      }
+    }
+  }
+
+  let worst: RepeatedFailure | null = null
+  for (const entry of failures.values()) {
+    if (entry.count < threshold) continue
+    if (worst && entry.count <= worst.count) continue
+    let inputPreview: string
+    try {
+      inputPreview = truncate(JSON.stringify(entry.input) ?? '', 200)
+    } catch {
+      inputPreview = '<unserializable input>'
+    }
+    worst = {
+      toolName: entry.name,
+      inputPreview,
+      count: entry.count,
+      lastError: truncate(entry.lastError, 300),
+    }
+  }
+  return worst
+}
+
+export function buildRutNoticeText(failure: RepeatedFailure): string {
+  return [
+    RUT_MARKER,
+    `\`${failure.toolName}\` has now failed ${failure.count} times with byte-identical input:`,
+    `  ${failure.inputPreview}`,
+    failure.lastError ? `  last error: ${failure.lastError}` : '',
+    'Running it again unchanged will fail again. Change the input, use a different tool, or — if the obstacle is real and outside what you can fix — say so plainly and tell the user what is blocking you. Do not repeat the call.',
+    RUT_CLOSE,
+  ]
+    .filter(Boolean)
+    .join('\n')
+}
+
+function isRutBlock(text: string): boolean {
+  return text.startsWith(RUT_MARKER)
+}
+
+/** True when this message is one we appended on an earlier pass. */
+export function isRutMessage(message: Message): boolean {
+  if (message.type !== 'user') return false
+  const content = message.message.content
+  if (typeof content === 'string') return isRutBlock(content)
+  if (!Array.isArray(content)) return false
+  const first = content[0]
+  return (
+    content.length === 1 && first?.type === 'text' && isRutBlock(first.text)
+  )
+}
+
+export interface RutNoticeResult {
+  messages: Message[]
+  notified: boolean
+  failure: RepeatedFailure | null
+}
+
+let noticeCounter = 0
+function makeNoticeUuid(): string {
+  noticeCounter++
+  return `00000000-0000-4000-9000-${noticeCounter.toString(16).padStart(12, '0')}`
+}
+
+/**
+ * Strip any stale notice and append a current one when a call is stuck in a
+ * failure loop. Same discipline as the plan recitation: tail-only so the cached
+ * prefix is untouched, and self-replacing so repeated application cannot stack
+ * copies. Returns the input array unchanged when there is nothing to say.
+ */
+export function applyRepeatedFailureNotice(
+  messages: Message[],
+  threshold: number = DEFAULT_FAILURE_THRESHOLD,
+): RutNoticeResult {
+  const hadNotice = messages.some(isRutMessage)
+  const base = hadNotice ? messages.filter(m => !isRutMessage(m)) : messages
+
+  const failure = findRepeatedFailure(base, threshold)
+  if (!failure) {
+    return {
+      messages: hadNotice ? base : messages,
+      notified: false,
+      failure: null,
+    }
+  }
+
+  const block: Message = {
+    type: 'user',
+    uuid: makeNoticeUuid(),
+    isMeta: true,
+    message: {
+      role: 'user',
+      content: [{ type: 'text', text: buildRutNoticeText(failure) }],
+    },
+  } as Message
+
+  return { messages: [...base, block], notified: true, failure }
+}

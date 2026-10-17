@@ -36,6 +36,7 @@ import { QueryGuard } from '../utils/QueryGuard.js';
 import { isEnvTruthy } from '../utils/envUtils.js';
 import { formatTokens, truncateToWidth } from '../utils/format.js';
 import { consumeEarlyInput } from '../utils/earlyInput.js';
+import { relieveMemoryPressure } from '../utils/memoryPressure.js';
 import { setMemberActive } from '../utils/swarm/teamHelpers.js';
 import { isSwarmWorker, generateSandboxRequestId, sendSandboxPermissionRequestViaMailbox, sendSandboxPermissionResponseViaMailbox } from '../utils/swarm/permissionSync.js';
 import { registerSandboxPermissionCallback } from '../hooks/useSwarmPermissionPoller.js';
@@ -116,7 +117,7 @@ const getCoordinatorUserContext: (mcpClients: ReadonlyArray<{
   name: string;
 }>, scratchpadDir?: string) => {
   [k: string]: string;
-} = feature('COORDINATOR_MODE') ? require('../coordinator/coordinatorMode.js').getCoordinatorUserContext : () => ({});
+} = require('../coordinator/coordinatorMode.js').getCoordinatorUserContext;
 /* eslint-enable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 import useCanUseTool from '../hooks/useCanUseTool.js';
 import type { ToolPermissionContext, Tool } from '../Tool.js';
@@ -143,6 +144,10 @@ import { handlePromptSubmit, type PromptInputHelpers } from '../utils/handleProm
 import { useQueueProcessor } from '../hooks/useQueueProcessor.js';
 import { useMailboxBridge } from '../hooks/useMailboxBridge.js';
 import { queryCheckpoint, logQueryProfileReport } from '../utils/queryProfiler.js';
+import { markTurnStart, markTurnEnd, createGoalQueryTracker } from '../utils/goalAccounting.js';
+import { decideGoalTurn } from '../utils/goalDecision.js';
+import { onUserOrToolActivity } from '../utils/goalContinuation.js';
+import { consumeGoalTransition, formatTransitionLine } from '../tools/GoalTool/utils.js';
 import type { Message as MessageType, UserMessage, ProgressMessage, HookResultMessage, PartialCompactDirection } from '../types/message.js';
 import { query } from '../query.js';
 import { mergeClients, useMergedClients } from '../hooks/useMergedClients.js';
@@ -190,6 +195,8 @@ import { isBgSession, updateSessionName, updateSessionActivity } from '../utils/
 import { isInProcessTeammateTask, type InProcessTeammateTaskState } from '../tasks/InProcessTeammateTask/types.js';
 import { restoreRemoteAgentTasks } from '../tasks/RemoteAgentTask/RemoteAgentTask.js';
 import { useInboxPoller } from '../hooks/useInboxPoller.js';
+import { useActorInboxPoller } from '../hooks/useActorInboxPoller.js';
+import { isActorNetworkingEnabled } from '../actor/currentActor.js';
 // Dead code elimination: conditional import for loop mode
 /* eslint-disable @typescript-eslint/no-require-imports */
 const proactiveModule = feature('PROACTIVE') || feature('KAIROS') ? require('../proactive/index.js') : null;
@@ -197,7 +204,7 @@ const PROACTIVE_NO_OP_SUBSCRIBE = (_cb: () => void) => () => {};
 const PROACTIVE_FALSE = () => false;
 const SUGGEST_BG_PR_NOOP = (_p: string, _n: string): boolean => false;
 const useProactive = feature('PROACTIVE') || feature('KAIROS') ? require('../proactive/useProactive.js').useProactive : null;
-const useScheduledTasks = feature('AGENT_TRIGGERS') ? require('../hooks/useScheduledTasks.js').useScheduledTasks : null;
+const useScheduledTasks = require('../hooks/useScheduledTasks.js').useScheduledTasks;
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { isAgentSwarmsEnabled } from '../utils/agentSwarmsEnabled.js';
 import { useTaskListWatcher } from '../hooks/useTaskListWatcher.js';
@@ -1749,7 +1756,7 @@ export function REPL({
       const messages = deserializeMessages(log.messages);
 
       // Match coordinator/normal mode to the resumed session
-      if (feature('COORDINATOR_MODE')) {
+      {
         /* eslint-disable @typescript-eslint/no-require-imports */
         const coordinatorModule = require('../coordinator/coordinatorMode.js') as typeof import('../coordinator/coordinatorMode.js');
         /* eslint-enable @typescript-eslint/no-require-imports */
@@ -1901,7 +1908,7 @@ export function REPL({
       }
 
       // Persist the current mode so future resumes know what mode this session was in
-      if (feature('COORDINATOR_MODE')) {
+      {
         /* eslint-disable @typescript-eslint/no-require-imports */
         const {
           saveMode
@@ -2799,17 +2806,97 @@ export function REPL({
     resetTurnHookDuration();
     resetTurnToolDuration();
     resetTurnClassifierDuration();
-    for await (const event of query({
-      messages: messagesIncludingNewMessages,
-      systemPrompt,
-      userContext,
-      systemContext,
-      canUseTool,
-      toolUseContext,
-      querySource: getQuerySourceForREPL()
-    })) {
-      onQueryEvent(event);
-    }
+    const goalTracker = createGoalQueryTracker();
+    const MAX_GOAL_AUTO_CONT = 10;
+    let goalAutoContCount = 0;
+    await markTurnStart(0).catch(() => {});
+    do {
+      // Relieve memory pressure before starting the query to prevent the
+      // 2GB+ RSS peaks that cause aggressive GC and generator use-after-free
+      // segfaults. Forces GC and clears transient state when RSS is high.
+      await relieveMemoryPressure();
+      // Hold the generator reference in a variable that outlives the for-await
+      // loop. Bun/JavaScriptCore can GC the generator object while its cleanup
+      // microtasks (finally blocks, async resource disposal) are still pending
+      // in the microtask queue. This causes a use-after-free segfault at
+      // address 0x00000000 in llint_call_javascript when the microtask tries
+      // to resume the freed JSGenerator. Keeping a strong reference until after
+      // a microtask drain prevents the premature GC.
+      const queryGen = query({
+        messages: messagesIncludingNewMessages,
+        systemPrompt,
+        userContext,
+        systemContext,
+        canUseTool,
+        toolUseContext,
+        querySource: getQuerySourceForREPL()
+      });
+      try {
+        for await (const event of queryGen) {
+          goalTracker.processStreamEvent(event);
+          onQueryEvent(event);
+        }
+      } finally {
+        // Ensure the generator is closed (not just abandoned). If the loop
+        // exited via exception or abort, .return() runs the generator's
+        // finally blocks which may schedule cleanup microtasks.
+        try { await queryGen.return(undefined as never); } catch { /* already closed */ }
+        // Drain pending microtasks so generator cleanup completes before the
+        // reference is released. Without this, JSC can GC the generator while
+        // its finally-block microtasks are still queued → segfault.
+        await new Promise<void>(r => queueMicrotask(r));
+      }
+
+      await markTurnEnd(goalTracker.getTotalTokens()).catch(() => {});
+
+      // Surface state-machine transition (e.g. active → budget_limited or
+      // → complete) as a visible system info message so the user sees the
+      // edge event, not just the polled status indicator. consume so it
+      // doesn't re-fire on every turn.
+      try {
+        const consumed = await consumeGoalTransition();
+        if (consumed) {
+          setMessages(prev => [
+            ...prev,
+            createSystemMessage(
+              `${formatTransitionLine(consumed.transition)} — "${consumed.goal.objective}"`,
+              'info',
+            ),
+          ]);
+        }
+      } catch {
+        // best-effort
+      }
+
+      // Active Memory: one typed decision governs the loop. `run` continues;
+      // `ask`/`wait` end it with a visible explanation rather than silently.
+      const goalDecision = await decideGoalTurn({
+        iteration: goalAutoContCount,
+        maxIterations: MAX_GOAL_AUTO_CONT,
+        afterContinuationTurn: goalAutoContCount > 0,
+      }).catch(() => null);
+
+      if (goalDecision?.decision === 'run' && goalDecision.promptBlocks) {
+        onUserOrToolActivity();
+        goalAutoContCount++;
+        const contMsg = createUserMessage({
+          content: goalDecision.promptBlocks,
+          isMeta: true,
+        });
+        messagesIncludingNewMessages.push(contMsg);
+        goalTracker.reset();
+        await markTurnStart(0).catch(() => {});
+        continue;
+      }
+
+      if (goalDecision?.userMessage) {
+        setMessages(prev => [
+          ...prev,
+          createSystemMessage(goalDecision.userMessage!, 'info'),
+        ]);
+      }
+      break;
+    } while (true);
     if (feature('BUDDY')) {
       void fireCompanionObserver(messagesRef.current, reaction => setAppState(prev => prev.companionReaction === reaction ? prev : {
         ...prev,
@@ -4046,27 +4133,26 @@ export function REPL({
     focusedInputDialog,
     onSubmitMessage: handleIncomingPrompt
   });
+  useActorInboxPoller({
+    enabled: isActorNetworkingEnabled(),
+    isLoading,
+    focusedInputDialog,
+    onSubmitMessage: handleIncomingPrompt
+  });
   useMailboxBridge({
     isLoading,
     onSubmitMessage: handleIncomingPrompt
   });
 
   // Scheduled tasks from .claude/scheduled_tasks.json (CronCreate/Delete/List)
-  if (feature('AGENT_TRIGGERS')) {
-    // Assistant mode bypasses the isLoading gate (the proactive tick →
-    // Sleep → tick loop would otherwise starve the scheduler).
-    // kairosEnabled is set once in initialState (main.tsx) and never mutated — no
-    // subscription needed. The tengu_kairos_cron runtime gate is checked inside
-    // useScheduledTasks's effect (not here) since wrapping a hook call in a dynamic
-    // condition would break rules-of-hooks.
-    const assistantMode = store.getState().kairosEnabled;
-    // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
-    useScheduledTasks!({
-      isLoading,
-      assistantMode,
-      setMessages
-    });
-  }
+  // Always mount the hook to obey React's hook ordering. Its effect checks the
+  // runtime gate, including MateBot mode, before starting the scheduler.
+  const assistantMode = store.getState().kairosEnabled;
+  useScheduledTasks({
+    isLoading,
+    assistantMode,
+    setMessages
+  });
 
   // Note: Permission polling is now handled by useInboxPoller
   // - Workers receive permission responses via mailbox messages

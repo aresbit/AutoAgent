@@ -71,10 +71,8 @@ const getTeammateUtils = () => require('./utils/teammate.js') as typeof import('
 const getTeammatePromptAddendum = () => require('./utils/swarm/teammatePromptAddendum.js') as typeof import('./utils/swarm/teammatePromptAddendum.js');
 const getTeammateModeSnapshot = () => require('./utils/swarm/backends/teammateModeSnapshot.js') as typeof import('./utils/swarm/backends/teammateModeSnapshot.js');
 /* eslint-enable @typescript-eslint/no-require-imports */
-// Dead code elimination: conditional import for COORDINATOR_MODE
-/* eslint-disable @typescript-eslint/no-require-imports */
-const coordinatorModeModule = feature('COORDINATOR_MODE') ? require('./coordinator/coordinatorMode.js') as typeof import('./coordinator/coordinatorMode.js') : null;
-/* eslint-enable @typescript-eslint/no-require-imports */
+import * as coordinatorModeModule from './coordinator/coordinatorMode.js';
+import { setMateBotMode } from './utils/matebotMode.js';
 // Dead code elimination: conditional import for KAIROS (assistant mode)
 /* eslint-disable @typescript-eslint/no-require-imports */
 const assistantModule = feature('KAIROS') ? require('./assistant/index.js') as typeof import('./assistant/index.js') : null;
@@ -906,6 +904,11 @@ async function run(): Promise<CommanderCommand> {
   // not when displaying help. This avoids the need for env variable signaling.
   program.hook('preAction', async thisCommand => {
     profileCheckpoint('preAction_start');
+    // Commander owns flag semantics -- aliases, the `--` end-of-options marker,
+    // unknown-option handling. Hand its verdict to the MateBot gate so every
+    // downstream check agrees with what the user actually typed, instead of
+    // each one re-scanning raw argv and disagreeing about edge cases.
+    setMateBotMode(thisCommand.opts().matebot === true);
     // Await async subprocess loads started at module evaluation (lines 12-20).
     // Nearly free — subprocesses complete during the ~135ms of imports above.
     // Must resolve before init() which triggers the first settings read
@@ -1866,15 +1869,6 @@ async function run(): Promise<CommanderCommand> {
     // The later REPL-path maybeActivateProactive() calls are idempotent.
     maybeActivateProactive(options);
     let tools = getTools(toolPermissionContext);
-
-    // Apply coordinator mode tool filtering for headless path
-    // (mirrors useMergedTools.ts filtering for REPL/interactive path)
-    if (feature('COORDINATOR_MODE') && isEnvTruthy(process.env.CLAUDE_CODE_COORDINATOR_MODE)) {
-      const {
-        applyCoordinatorToolFilter
-      } = await import('./utils/toolPool.js');
-      tools = applyCoordinatorToolFilter(tools);
-    }
     profileCheckpoint('action_tools_loaded');
     let jsonSchema: ToolInputJSONSchema | undefined;
     if (isSyntheticOutputToolEnabled({
@@ -2191,12 +2185,9 @@ async function run(): Promise<CommanderCommand> {
         setUserMsgOptIn(true);
       }
     }
-    // Coordinator mode has its own system prompt and filters out Sleep, so
-    // the generic proactive prompt would tell it to call a tool it can't
-    // access and conflict with delegation instructions.
     if ((feature('PROACTIVE') || feature('KAIROS')) && ((options as {
       proactive?: boolean;
-    }).proactive || isEnvTruthy(process.env.CLAUDE_CODE_PROACTIVE)) && !coordinatorModeModule?.isCoordinatorMode()) {
+    }).proactive || isEnvTruthy(process.env.CLAUDE_CODE_PROACTIVE))) {
       /* eslint-disable @typescript-eslint/no-require-imports */
       const briefVisibility = feature('KAIROS') || feature('KAIROS_BRIEF') ? (require('./tools/BriefTool/BriefTool.js') as typeof import('./tools/BriefTool/BriefTool.js')).isBriefEnabled() ? 'Call SendUserMessage at checkpoints to mark where things stand.' : 'The user will see any text you output.' : 'The user will see any text you output.';
       /* eslint-enable @typescript-eslint/no-require-imports */
@@ -3767,9 +3758,7 @@ async function run(): Promise<CommanderCommand> {
       maybeActivateProactive(options);
       maybeActivateBrief(options);
       // Persist the current mode for fresh sessions so future resumes know what mode was used
-      if (feature('COORDINATOR_MODE')) {
-        saveMode(coordinatorModeModule?.isCoordinatorMode() ? 'coordinator' : 'normal');
-      }
+      saveMode(coordinatorModeModule.isCoordinatorMode() ? 'coordinator' : 'normal');
 
       // If launched via a deep link, show a provenance banner so the user
       // knows the session originated externally. Linux xdg-open and
@@ -3810,6 +3799,7 @@ async function run(): Promise<CommanderCommand> {
   // Worktree flags
   program.option('-w, --worktree [name]', 'Create a new git worktree for this session (optionally specify a name)');
   program.option('--tmux', 'Create a tmux session for the worktree (requires --worktree). Uses iTerm2 native panes when available; use --tmux=classic for traditional tmux.');
+  program.option('--matebot', 'Run as a MateBot swarm coordinator with specialist workers and eval/apply gates');
   if (canUserConfigureAdvisor()) {
     program.addOption(new Option('--advisor <model>', 'Enable the server-side advisor tool with the specified model (alias or full ID).').hideHelp());
   }
@@ -3824,8 +3814,15 @@ async function run(): Promise<CommanderCommand> {
       permissionMode: 'auto'
     }));
     program.addOption(new Option('--tasks [id]', '[ANT-ONLY] Tasks mode: watch for tasks and auto-process them. Optional id is used as both the task list ID and agent ID (defaults to "tasklist").').argParser(String).hideHelp());
-    program.option('--agent-teams', '[ANT-ONLY] Force Claude to use multi-agent mode for solving problems', () => true);
   }
+  // Registered for every build, not just ant: isAgentSwarmsEnabled() offers
+  // external users two opt-in doors — CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS or
+  // this flag — and reads it straight off process.argv. Registering it inside
+  // the ant block left the second door walled off: commander rejects unknown
+  // options, so passing --agent-teams outside ant killed the process before
+  // isAgentTeamsFlagSet() could ever see it. The flag only opts in; the gate
+  // still applies, including the external killswitch.
+  program.addOption(new Option('--agent-teams', 'Enable multi-agent teammate mode (experimental)').hideHelp().argParser(() => true));
   if (feature('TRANSCRIPT_CLASSIFIER')) {
     program.addOption(new Option('--enable-auto-mode', 'Opt in to auto mode').hideHelp());
   }
@@ -4590,7 +4587,7 @@ async function logTenguInit({
         appendSystemPromptFlag: appendSystemPromptFlag as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
       }),
       is_simple: isBareMode() || undefined,
-      is_coordinator: feature('COORDINATOR_MODE') && coordinatorModeModule?.isCoordinatorMode() ? true : undefined,
+      is_coordinator: coordinatorModeModule.isCoordinatorMode() ? true : undefined,
       ...(assistantActivationPath && {
         assistantActivationPath: assistantActivationPath as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
       }),
