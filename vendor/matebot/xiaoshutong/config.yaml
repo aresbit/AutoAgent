@@ -1,0 +1,31 @@
+# ── 小书童 Agent 配置 ──────────────────────────────
+# 个人助理：一天三次（10:30 / 16:30 / 22:30）从飞书聊天提取待办、挖掘风险
+
+# ── 数据 ─────────────────────────────────────────
+data_dir: data                # 数据目录（SQLite + latest.md + 游标）
+token_file: ~/.xiaoshutong/tokens.json   # OAuth user_access_token 存储
+
+# ── 智能引擎 (opencc CLI) ─────────────────────────
+# 留空 = 用 opencc_backend.resolve_cli_path() 自动检测：
+#   ../vendor/opencc/dist/cli.js → ~/.local/share/opencc/cli.js → ~/.opencc/cli.js
+# 只有要钉死某个特定构建时才填绝对路径 —— 写死路径在换机器后就是个哑火的 cron。
+claude_cli: ""
+claude_bun: bun               # bun 运行时
+dangerously_skip_permissions: true   # headless 无权限弹窗（与 MateBot bridge 一致）
+
+# ── 抓取窗口 ─────────────────────────────────────
+fetch_hours: 6                # 每次拉取最近 N 小时；也是增量窗口上限（游标太老时最多回溯 N 小时，昨天的消息不进窗口）
+initial_backfill_hours: 24    # 首跑回填窗口
+pagination_page_size: 100     # 飞书分页拉取大小（最大 100）
+
+# ── 会话过滤 ─────────────────────────────────────
+# 只监控工作相关的会话；空 = 全部
+chat_filters:
+  enabled: false              # true 时启用以下过滤
+  include_keywords: []        # 只监控名称含这些关键词的会话，如 [工作, 项目]
+  exclude_keywords: []        # 排除名称含这些关键词的会话，如 [闲聊, 家庭]
+  max_chats: 30               # 每次最多拉取会话数（防超时）
+
+# ── 发送 ─────────────────────────────────────────
+send_chat: ""                 # 结果发送到哪个 chat_id；留空 = 用环境变量 FEISHU_CHAT_ID
+send_title: 小书童             # 飞书卡片标题

@@ -1,4 +1,6 @@
 #!/bin/sh
+# AutoAgent launcher. One fixed install root, one Electron binary, no PATH
+# search; the Chromium sandbox stays enabled.
 set -eu
 umask 077
 
@@ -9,10 +11,22 @@ STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}/autoagent"
 LOG_DIR="$STATE_HOME/logs"
 LOG_FILE="$LOG_DIR/desktop.log"
 
+export AUTOAGENT_APP_DIR="$APP_DIR"
+export AUTOAGENT_PACKAGED=1
 export AUTOAGENT_ENGINE_DIR="${AUTOAGENT_ENGINE_DIR:-$APP_DIR/engine}"
+export AUTOAGENT_BUN_PATH="${AUTOAGENT_BUN_PATH:-$AUTOAGENT_ENGINE_DIR/bun}"
+export AUTOAGENT_OPENCC_CLI_PATH="${AUTOAGENT_OPENCC_CLI_PATH:-$AUTOAGENT_ENGINE_DIR/opencc-dist/cli.js}"
+export AUTOAGENT_FRONTEND_DIST="${AUTOAGENT_FRONTEND_DIST:-$APP_DIR/frontend/dist}"
+# Do not set AUTOAGENT_ENGINE: the backend defaults to "matebot" in packaged
+# mode and loads the vendored module by path.
+export AUTOAGENT_MATEBOT_VENDOR_DIR="${AUTOAGENT_MATEBOT_VENDOR_DIR:-$APP_DIR/vendor/matebot}"
 
 [ -x "$ELECTRON" ] || { echo "AutoAgent: missing $ELECTRON" >&2; exit 1; }
-[ -f "$DESKTOP_APP/main.js" ] || { echo "AutoAgent: missing $DESKTOP_APP/main.js" >&2; exit 1; }
+[ -f "$DESKTOP_APP/entry.js" ] || { echo "AutoAgent: missing $DESKTOP_APP/entry.js" >&2; exit 1; }
+[ -x "$AUTOAGENT_BUN_PATH" ] || { echo "AutoAgent: missing $AUTOAGENT_BUN_PATH" >&2; exit 1; }
+[ -f "$AUTOAGENT_OPENCC_CLI_PATH" ] || { echo "AutoAgent: missing $AUTOAGENT_OPENCC_CLI_PATH" >&2; exit 1; }
+[ -f "$AUTOAGENT_FRONTEND_DIST/index.html" ] || { echo "AutoAgent: missing $AUTOAGENT_FRONTEND_DIST/index.html" >&2; exit 1; }
+[ -f "$AUTOAGENT_MATEBOT_VENDOR_DIR/opencc_backend.py" ] || { echo "AutoAgent: missing $AUTOAGENT_MATEBOT_VENDOR_DIR/opencc_backend.py" >&2; exit 1; }
 
 mkdir -p "$LOG_DIR"
 

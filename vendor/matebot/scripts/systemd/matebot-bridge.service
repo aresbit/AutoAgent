@@ -1,0 +1,34 @@
+# MateBot 飞书桥 systemd user unit（备份归档）
+#
+# 这是 ~/.config/systemd/user/matebot-bridge.service 的仓库内副本，
+# 供机器重装 / ~/.config 丢失后重建用。入口代码 feishu_bridge.py 在仓库根目录。
+#
+# 安装/重建：
+#   mkdir -p ~/.config/systemd/user ~/.config/matebot
+#   cp scripts/systemd/matebot-bridge.service ~/.config/systemd/user/
+#   cp scripts/systemd/matebot-bridge.env.example ~/.config/matebot/matebot-bridge.env  # 填真实密钥
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now matebot-bridge
+#
+# 注意：WorkingDirectory/ExecStart 里的绝对路径是当前机器的，换机器要改成实际仓库路径。
+
+[Unit]
+Description=MateBot Feishu Bridge (interactive assistant with memory)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/matebot/matebot-bridge.env
+Environment=PATH=/home/pc/.bun/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONUNBUFFERED=1
+WorkingDirectory=/home/pc/yysapp/MateBot
+# Python 用 uv 管理的项目 venv（funasr/torch/httpx 等都在里面）
+ExecStart=/home/pc/yysapp/MateBot/.venv/bin/python feishu_bridge.py
+Restart=always
+RestartSec=5
+# 崩溃/OOM 自动拉起；KillMode=control-group 保证连 claude-js 子进程一起回收
+KillMode=control-group
+
+[Install]
+WantedBy=default.target

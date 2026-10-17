@@ -1,0 +1,90 @@
+[project]
+name = "autoagent-backend"
+version = "0.1.0"
+description = "AutoAgent local backend: MateBot engine adapter, turn service and HTTP API"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi==0.143.3",
+    "pydantic==2.14.1",
+    "uvicorn==0.54.0",
+]
+
+[dependency-groups]
+dev = [
+    "httpx==0.28.1",
+    "import-linter==2.15",
+    "mypy==2.4.0",
+    "nuitka==2.7.12",
+    "patchelf==0.19.1.0",
+    "pytest==9.1.1",
+    "ruff==0.17.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/autoagent_backend"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+    "integration: requires a real subprocess or filesystem dependency",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+# B008: Depends()/Body() in defaults is the FastAPI dependency idiom.
+# SIM105: explicit try/except around signal/process cleanup is clearer here.
+ignore = ["B008", "SIM105"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src"]
+mypy_path = "src"
+strict = true
+warn_unused_ignores = true
+disallow_untyped_decorators = false
+
+[[tool.mypy.overrides]]
+module = ["uvicorn.*"]
+ignore_missing_imports = true
+
+[tool.importlinter]
+root_package = "autoagent_backend"
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "domain and application are framework-free"
+type = "forbidden"
+source_modules = [
+    "autoagent_backend.domain",
+    "autoagent_backend.application",
+]
+forbidden_modules = [
+    "fastapi",
+    "starlette",
+    "pydantic",
+    "sqlite3",
+    "subprocess",
+    "httpx",
+    "requests",
+]
+
+[[tool.importlinter.contracts]]
+name = "layer order"
+type = "layers"
+layers = [
+    "autoagent_backend.api",
+    "autoagent_backend.adapters",
+    "autoagent_backend.application",
+    "autoagent_backend.domain",
+]

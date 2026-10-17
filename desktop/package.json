@@ -1,0 +1,15 @@
+{
+  "name": "@autoagent/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AutoAgent thin Electron shell (modern backend mode)",
+  "scripts": {
+    "build": "node build.mjs",
+    "build:main": "node build.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node test/smoke.mjs",
+    "dev": "node build.mjs && node ../node_modules/electron/cli.js dist/entry.js",
+    "dev:legacy": "node build.mjs && AUTOAGENT_LEGACY=1 node ../node_modules/electron/cli.js dist/entry.js"
+  }
+}

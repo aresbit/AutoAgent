@@ -1,0 +1,34 @@
+# PM Charter: AutoAgent MateBot Modernization
+
+## Operating Model
+- Human leads architecture and sequencing.
+- AI executes scoped tasks, then human audits and refactors continuously.
+
+## Tasks
+
+| ID | Task | Status | Depends On | Verify |
+|----|------|--------|------------|--------|
+| T1 | Agree problem statement and success metrics | complete | — | — |
+| T2 | Select and freeze the language/runtime | complete | T1 | — |
+| T3 | Document module boundaries and data flow | complete | T2 | — |
+| T4 | Implement features with a refactor pass each cycle | complete | T3 | — |
+| T5 | Complete validation and prepare delivery notes | complete | T4 | — |
+| T6 | 调研 MateBot 后台链接、opencc --matebot 协议、vendored 差异与旧桌面能力清单 | complete | — | exists:docs/matebot-modernization/recon.md |
+| T7 | 架构与 API 契约：Electron 薄壳 + Python 后端 + React SPA，定义 REST/SSE 与迁移边界 | complete | T6 | exists:docs/matebot-modernization/architecture.md |
+| T8 | 同步 vendored opencc 到 MateBot 版本并验证 --matebot 协调器模式 | complete | T7 | exists:docs/matebot-modernization/opencc-sync.md |
+| T9 | Python 后端纵切：health/settings/sessions/chat + 长驻 opencc --matebot 引擎 + SSE | complete | T7 | exists:backend/autoagent/server.py |
+| T10 | Electron 薄壳：Python 后端生命周期、健康探针、端口协商、加载 SPA、日志与退出兜底 | complete | T7 | exists:desktop/main.cjs |
+| T11 | 现代前端：React+TS+Tailwind/shadcn，Apple 动效与 Claude 设计系统，替换单体 app.tsx | complete | T7 | exists:frontend/src/App.tsx |
+| T12 | 集成与打包：构建链、Python 后端随包、deb、Wayland/X11 启动 | complete | T8, T9, T10, T11 | exists:docs/matebot-modernization/packaging.md |
+| T13 | 独立评估：API 契约、--matebot 流式对话、现代前端、X11/Wayland、打包回归 | complete | T12 | exists:docs/matebot-modernization/evaluation.md |
+| T14 | 交付文档、迁移说明与可复用技能沉淀 | complete | T13 | exists:docs/matebot-modernization/README.md |
+| T15 | M5 后端：skills/MCP/workspace/artifacts 端口、适配器与路由 | complete | T9 | exists:backend/tests/integration/test_skills.py |
+| T16 | M5 前端：skills/MCP/workspace/artifacts 面板与 API 客户端 | complete | T11 | exists:frontend/src/features/skills |
+| T17 | Vendor MateBot/opencc，接入 OpenccSession 长连接，并复用 ~/.claude/settings.json 模型 | complete | T9 | exists:vendor/matebot/opencc_backend.py |
+
+## Anti-Trap Control Checklist
+- [ ] Vibe coding constrained: no long unreviewed AI coding streaks
+- [ ] Fatigue guardrail enabled: avoid late-night prompt loops
+- [ ] Code awareness maintained: read each AI patch and keep module map updated
+- [ ] Design decisions made early: no repeated "later" deferrals for core architecture
+- [ ] Time context logged: external API evolution notes include explicit dates

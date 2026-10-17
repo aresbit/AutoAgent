@@ -22,3 +22,33 @@ Each decision must include alternatives, rationale, tradeoffs, and time context.
 - Tradeoffs: More code to maintain than electron-builder; requires a pinned Electron archive and checksum in CI.
 - Time context: Artifact autoagent_0.8.0_amd64.deb, 2026-10-17
 - Guardrail risk signals: (none)
+
+
+## Decision 2026-10-17T03:50:54.408Z: Deep interfaces for all business APIs
+- Type: architecture
+- Chosen: Coarse-grained intention-revealing HTTP API + Protocol/ABC ports + thin adapters
+- Options considered: Thin CRUD endpoints mirroring DB rows | Expose opencc CLI/stream-json directly to the SPA | Deep interfaces: narrow public surface, rich hidden implementation (chosen)
+- Rationale: Per software-design-skill (ADT/information hiding, dependency inversion, FastAPI layering): the SPA should depend on a small set of stable, business-level operations, not on SQLite rows, subprocess argv, or raw stream-json frames. Define EnginePort, SessionStorePort, SettingsPort, WorkspacePort and MateBotPort as Protocol/ABCs; HTTP handlers are thin adapters; opencc details (--matebot, resume, restart) are hidden behind EnginePort. This keeps the API testable and lets us swap the engine or storage without touching the UI.
+- Tradeoffs: Fewer, coarser endpoints require careful DTO design and make ad-hoc UI queries harder; mitigated by a documented bootstrap snapshot and typed client.
+- Time context: AutoAgent MateBot modernization, 2026-10-17
+- Guardrail risk signals: (none)
+
+
+## Decision 2026-10-17T06:24:27.993Z: MateBot vendoring and model configuration
+- Type: architecture
+- Chosen: Vendor MateBot source at vendor/matebot; OpenCC source at vendor/opencc (symlink to packages/opencc); desktop long connection uses the vendored OpenccSession; model config is read from ~/.claude/settings.json with an optional per-app override
+- Options considered: Reimplement the long connection inside the backend | Import the vendored OpenccSession (chosen) | Maintain a separate provider/model store
+- Rationale: The user clarified that OpenCC is the harness and MateBot is the Feishu bridge plus the desktop long-connection channel. Vendoring the actual MateBot OpenccSession keeps the desktop and Feishu bridge behavior aligned (persistent child, --matebot, session resume) instead of maintaining a divergent copy. Reusing ~/.claude/settings.json avoids a second model/provider configuration and keeps the desktop compatible with the CLI; an optional per-app override is passed as --model without mutating the user's file.
+- Tradeoffs: Vendored code must be updated deliberately; model source precedence must be documented; packaged Nuitka must ship the vendored Python file or a compiled bridge.
+- Time context: MateBot upstream c0deb163, 2026-10-17
+- Guardrail risk signals: (none)
+
+
+## Decision 2026-10-17T06:41:55.723Z: Engine configuration precedence
+- Type: architecture
+- Chosen: Reuse ~/.claude/settings.json first; fall back to a frontend-editable ~/.autoagent/settings.json; process env last; per-app override remains highest priority
+- Options considered: Only ~/.claude/settings.json | Only an AutoAgent-local config | Claude settings first, AutoAgent fallback, frontend-editable (chosen)
+- Rationale: The user wants maximum reuse: the desktop must behave like the OpenCC CLI when ~/.claude/settings.json is present. When it is missing or incomplete, AutoAgent stores its own engine config under ~/.autoagent (not a separate provider silo) and the frontend can edit it. Model precedence: explicit app override > Claude settings > ~/.autoagent/settings.json > process env > OpenCC default. Credentials follow the same idea and are never serialized.
+- Tradeoffs: Two config files to reconcile; atomic writes and 0600 permissions are required; silent token exposure must be avoided.
+- Time context: 2026-10-17
+- Guardrail risk signals: (none)

@@ -1,0 +1,33 @@
+# ── 飞书应用凭证 ──────────────────────────────
+# 请在 feishu_config.yaml 中填入实际值
+# 或通过环境变量设置: FEISHU_APP_ID, FEISHU_APP_SECRET
+
+# ── Bot 身份 ──────────────────────────────────
+chat_id: ""                    # Bot 与用户的 P2P chat_id（留空自动发现）
+
+# ── 用户身份 ──────────────────────────────────
+user_open_id: ""               # 飞书用户 Open ID（用于自动发现 P2P chat）
+
+# ── 轮询配置 ──────────────────────────────────
+poll_interval_sec: 5           # 轮询间隔（秒）
+
+# ── OpenCC (spawn 模式 / 长连接) ────────────────
+# 每个 chat 一个常驻子进程，跨轮次复用；session_id 落盘，重启用 --resume 续上。
+opencc_spawn_mode: true        # 优先 spawn 模式（stream-json 直连）
+opencc_cli_path: ""            # 留空自动检测：vendor/opencc/dist/cli.js →
+                               #   ~/.local/share/opencc/cli.js → ~/.opencc/cli.js
+opencc_bun_path: "bun"         # bun 运行时
+opencc_model: ""               # 模型（留空使用 CLI 默认）
+opencc_cwd: ""                 # 工作目录（留空使用当前目录）
+opencc_prewarm: true           # 启动时预热进程，第一条消息不等冷启动
+
+# ── Agent workspace (SOUL.md 等) ───────────────
+# 人格/身份/用户档案以纯文本存 workspace/，spawn 时用 --append-system-prompt 注入。
+# 进程常驻 → 每个会话只付一次成本。改完用 /reload_soul 生效。
+soul_enabled: true
+workspace_dir: ""              # 留空 = <repo>/workspace
+soul_max_chars: 20000          # 单文件上限，超出会截断并标注
+soul_daily_notes: true         # 每轮追加一行到 workspace/memory/YYYY-MM-DD.md
+
+# ── 通知 ──────────────────────────────────────
+desktop_notify: true           # notify-send 桌面弹窗

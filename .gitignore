@@ -11,7 +11,6 @@ coverage
 .learnings/
 .self_improving_experience.json
 .self_improving_performance.json
-vendor/
 build-resources/
 build/
 release/
@@ -24,3 +23,11 @@ packaging/deb/usr/lib/autoagent/rg
 packaging/deb/usr/lib/autoagent/electron
 packaging/deb/usr/lib/autoagent/electron-dist/
 packaging/deb/usr/bin/rg
+
+# Python backend
+backend/.venv/
+backend/.pytest_cache/
+backend/.ruff_cache/
+backend/.import_linter_cache/
+__pycache__/
+*.py[cod]

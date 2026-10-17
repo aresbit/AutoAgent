@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","session_id":"22222222-2222-4222-8222-222222222222","model":"claude-sonnet-4-6","uuid":"e1"}
+{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["model call failed"],"stop_reason":null,"usage":{"input_tokens":3,"output_tokens":0},"session_id":"22222222-2222-4222-8222-222222222222","uuid":"e2"}

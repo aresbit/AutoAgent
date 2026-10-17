@@ -78,10 +78,22 @@ log "version: $VERSION"
 
 # ---------------------------------------------------------------- build
 # Kiln may build concurrently; serialize install + build.
-log "installing dependencies and building desktop bundles (flock: $BUILD_LOCK)"
+log "installing dependencies and building (flock: $BUILD_LOCK)"
 run_build() {
   bun install --frozen-lockfile
-  bun run build:desktop
+  (
+    cd "$PROJECT_DIR/frontend"
+    bun install --frozen-lockfile
+    bun run build
+  )
+  bun build packages/opencc/src/entrypoints/cli.tsx \
+    --outdir packages/opencc/dist --target bun
+  bun desktop/build.mjs
+  if [ "${AUTOAGENT_REUSE_BACKEND:-0}" = "1" ]; then
+    log "AUTOAGENT_REUSE_BACKEND=1: keeping backend/build as-is"
+  else
+    bash scripts/build-backend.sh
+  fi
 }
 if command -v flock >/dev/null 2>&1; then
   ( flock -x 9; run_build ) 9>"$BUILD_LOCK"
@@ -90,15 +102,18 @@ else
 fi
 
 for required in \
-  "dist/main.js" \
-  "dist/preload.cjs" \
-  "dist/artifact-preload.cjs" \
-  "dist/client/index.html" \
-  "dist/autowork/assets" \
-  "dist/icon.png" \
+  "desktop/dist/entry.js" \
+  "desktop/dist/main.js" \
+  "desktop/dist/preload.cjs" \
+  "frontend/dist/index.html" \
+  "frontend/dist/assets" \
+  "backend/build/autoagent-backend" \
+  "vendor/matebot/opencc_backend.py" \
   "packages/opencc/dist/cli.js"; do
   [ -e "$PROJECT_DIR/$required" ] || die "build output missing: $required"
 done
+[ -x "$PROJECT_DIR/backend/build/autoagent-backend" ] \
+  || die "backend binary is not executable: backend/build/autoagent-backend"
 
 # ---------------------------------------------------------------- electron
 if [ ! -f "$ELECTRON_ZIP" ]; then
@@ -132,11 +147,17 @@ STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 
 ENGINE_DIR="$STAGE/opt/autoagent/engine"
+BACKEND_DIR="$STAGE/opt/autoagent/backend"
+FRONTEND_DIST="$STAGE/opt/autoagent/frontend/dist"
+VENDOR_DIR="$STAGE/opt/autoagent/vendor/matebot"
 DESKTOP_DIR="$STAGE/opt/autoagent/desktop"
 APP_DIR="$DESKTOP_DIR/resources/app"
 
 mkdir -p \
   "$ENGINE_DIR" \
+  "$BACKEND_DIR" \
+  "$FRONTEND_DIST" \
+  "$VENDOR_DIR" \
   "$APP_DIR" \
   "$STAGE/usr/bin" \
   "$STAGE/usr/share/applications" \
@@ -159,7 +180,8 @@ fi
 
 install -m 0755 "$BUN_BIN" "$ENGINE_DIR/bun"
 install -m 0755 "$RG_BIN" "$ENGINE_DIR/rg"
-install -m 0644 "$PROJECT_DIR/packages/opencc/dist/cli.js" "$ENGINE_DIR/cli.js"
+install -D -m 0644 "$PROJECT_DIR/packages/opencc/dist/cli.js" \
+  "$ENGINE_DIR/opencc-dist/cli.js"
 
 if command -v strip >/dev/null 2>&1; then
   strip --strip-unneeded "$ENGINE_DIR/bun" 2>/dev/null || true
@@ -169,16 +191,44 @@ fi
 "$ENGINE_DIR/bun" --version >/dev/null 2>&1 || die "bundled bun runtime failed to execute"
 "$ENGINE_DIR/rg" --version >/dev/null 2>&1 || die "bundled rg runtime failed to execute"
 
+# ---------------------------------------------------------------- backend
+# Self-contained Nuitka tree (or embedded-Python fallback); the executable is
+# at the top level so the desktop can spawn /opt/autoagent/backend/<binary>.
+cp -a "$PROJECT_DIR/backend/build/." "$BACKEND_DIR/"
+[ -x "$BACKEND_DIR/autoagent-backend" ] || die "backend executable missing from stage"
+
+# ---------------------------------------------------------------- vendor
+# Vendored MateBot is loaded by path at runtime (never bundled into Nuitka).
+# Ship Python sources only: no caches, VCS metadata, source maps or node trees.
+VENDOR_SRC="$PROJECT_DIR/vendor/matebot"
+[ -f "$VENDOR_SRC/opencc_backend.py" ] || die "missing vendor/matebot/opencc_backend.py"
+cp -a "$VENDOR_SRC/." "$VENDOR_DIR/"
+find "$VENDOR_DIR" -depth \( -name '__pycache__' -o -name 'node_modules' \) \
+  -type d -prune -exec rm -rf {} +
+find "$VENDOR_DIR" \( -name '*.pyc' -o -name '.git*' -o -name '*.map' \) -delete
+[ -f "$VENDOR_DIR/opencc_backend.py" ] || die "vendored MateBot module missing from stage"
+
+log "backend runtime-check from the staged tree"
+env -u AUTOAGENT_ENGINE \
+  AUTOAGENT_MATEBOT_VENDOR_DIR="$VENDOR_DIR" \
+  AUTOAGENT_BUN_PATH="$ENGINE_DIR/bun" \
+  AUTOAGENT_OPENCC_CLI_PATH="$ENGINE_DIR/opencc-dist/cli.js" \
+  "$BACKEND_DIR/autoagent-backend" --runtime-check >/dev/null \
+  || die "staged backend failed --runtime-check"
+
+# ---------------------------------------------------------------- frontend
+cp -a "$PROJECT_DIR/frontend/dist/." "$FRONTEND_DIST/"
+[ -f "$FRONTEND_DIST/index.html" ] || die "frontend index.html missing from stage"
+[ -d "$FRONTEND_DIST/assets" ] || die "frontend assets missing from stage"
+
 # ---------------------------------------------------------------- app payload
-install -m 0644 "$PROJECT_DIR/dist/main.js" "$APP_DIR/main.js"
-install -m 0644 "$PROJECT_DIR/dist/preload.cjs" "$APP_DIR/preload.cjs"
-install -m 0644 "$PROJECT_DIR/dist/artifact-preload.cjs" "$APP_DIR/artifact-preload.cjs"
-install -m 0644 "$PROJECT_DIR/dist/icon.png" "$APP_DIR/icon.png"
-cp -a "$PROJECT_DIR/dist/client" "$APP_DIR/client"
-cp -a "$PROJECT_DIR/dist/autowork" "$APP_DIR/autowork"
+install -m 0644 "$PROJECT_DIR/desktop/dist/entry.js" "$APP_DIR/entry.js"
+install -m 0644 "$PROJECT_DIR/desktop/dist/main.js" "$APP_DIR/main.js"
+install -m 0644 "$PROJECT_DIR/desktop/dist/preload.cjs" "$APP_DIR/preload.cjs"
+install -m 0644 "$PROJECT_DIR/assets/icon.png" "$APP_DIR/icon.png"
 
 cat > "$APP_DIR/package.json" <<APP_PACKAGE_JSON
-{"name":"autoagent","version":"${VERSION}","private":true,"type":"module","main":"main.js"}
+{"name":"autoagent","version":"${VERSION}","private":true,"type":"module","main":"entry.js"}
 APP_PACKAGE_JSON
 
 # ---------------------------------------------------------------- electron
@@ -254,8 +304,15 @@ chmod 0755 \
   "$STAGE/DEBIAN/postrm" \
   "$ENGINE_DIR/bun" \
   "$ENGINE_DIR/rg" \
+  "$BACKEND_DIR/autoagent-backend" \
   "$DESKTOP_DIR/electron" \
   "$DESKTOP_DIR/chrome_crashpad_handler"
+
+# Embedded-Python fallback: the interpreter and its entrypoints must stay
+# executable after the blanket 0644 normalization above.
+if [ -d "$BACKEND_DIR/python" ]; then
+  find "$BACKEND_DIR/python" -type f -path '*/bin/*' -exec chmod 0755 {} +
+fi
 
 # Chromium's SUID sandbox: the only setuid file in the package.
 chmod 4755 "$DESKTOP_DIR/chrome-sandbox"
@@ -264,7 +321,8 @@ chmod 4755 "$DESKTOP_DIR/chrome-sandbox"
 check_stage_leaks() {
   local found
   found="$(find "$STAGE" \
-    \( -name node_modules -o -name '*.map' -o -name '.git*' -o -name '*.ts' -o -name '*.tsx' \) \
+    \( -name node_modules -o -name '*.map' -o -name '.git*' -o -name '*.ts' -o -name '*.tsx' \
+       -o -name '__pycache__' -o -name '*.pyc' \) \
     -print -quit)"
   [ -z "$found" ] || die "forbidden build artifact in package: $found"
 
@@ -334,12 +392,30 @@ fi
 [ -x "$TMP_EXTRACT/opt/autoagent/desktop/electron" ] || die "electron not executable after extraction"
 [ -x "$TMP_EXTRACT/opt/autoagent/engine/bun" ] || die "bun not executable after extraction"
 [ -x "$TMP_EXTRACT/opt/autoagent/engine/rg" ] || die "rg not executable after extraction"
-[ -f "$TMP_EXTRACT/opt/autoagent/engine/cli.js" ] || die "cli.js missing after extraction"
+[ -f "$TMP_EXTRACT/opt/autoagent/engine/opencc-dist/cli.js" ] || die "opencc cli.js missing after extraction"
+[ -x "$TMP_EXTRACT/opt/autoagent/backend/autoagent-backend" ] \
+  || die "backend binary missing after extraction"
+[ -f "$TMP_EXTRACT/opt/autoagent/frontend/dist/index.html" ] \
+  || die "frontend index.html missing after extraction"
+[ -f "$TMP_EXTRACT/opt/autoagent/vendor/matebot/opencc_backend.py" ] \
+  || die "vendored MateBot module missing after extraction"
+[ "$(stat -c '%a' "$TMP_EXTRACT/opt/autoagent/vendor/matebot")" = "755" ] \
+  || die "vendored MateBot directory mode is not 755"
+[ "$(stat -c '%a' "$TMP_EXTRACT/opt/autoagent/vendor/matebot/opencc_backend.py")" = "644" ] \
+  || die "vendored MateBot module mode is not 644"
+if grep -q 'export AUTOAGENT_ENGINE=' "$TMP_EXTRACT/usr/bin/autoagent"; then
+  die "installed launcher sets AUTOAGENT_ENGINE; the backend must default to matebot"
+fi
+[ -f "$TMP_EXTRACT/opt/autoagent/desktop/resources/app/entry.js" ] \
+  || die "entry.js missing after extraction"
 [ -f "$TMP_EXTRACT/opt/autoagent/desktop/resources/app/main.js" ] \
   || die "main.js missing after extraction"
 
 LDD_MISSING="$(ldd "$TMP_EXTRACT/opt/autoagent/desktop/electron" 2>/dev/null | grep 'not found' || true)"
 [ -z "$LDD_MISSING" ] || die "unresolved Electron dependencies: $LDD_MISSING"
+
+LDD_BACKEND_MISSING="$(ldd "$TMP_EXTRACT/opt/autoagent/backend/autoagent-backend" 2>/dev/null | grep 'not found' || true)"
+[ -z "$LDD_BACKEND_MISSING" ] || die "unresolved backend dependencies: $LDD_BACKEND_MISSING"
 
 desktop-file-validate "$TMP_EXTRACT/usr/share/applications/autoagent.desktop" \
   || die "desktop entry failed validation"

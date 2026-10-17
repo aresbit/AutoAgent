@@ -1,0 +1,40 @@
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.env
+*.log
+*.pid
+*.url
+.DS_Store
+.self*
+
+# Large binaries
+demo.gif
+
+# User config with secrets
+feishu_config.yaml
+
+# Generated plan files
+findings.md
+progress.md
+task_plan.md
+
+# 运行期产物：prune_transcripts.py 的 cron 日志、crontab 备份、临时快照
+tmp/
+*.bak.*
+
+# Agent workspace: templates are tracked, personal content is not.
+# USER.md and the daily notes accumulate facts about you and raw conversation
+# excerpts — keep them local, or move them to a private repo.
+workspace/USER.md
+workspace/MEMORY.md
+workspace/memory/
+
+# Vendored CLI build (25MB blob).
+# NOTE: vendor/opencc is currently committed as a gitlink (mode 160000) with no
+# .gitmodules entry, so a fresh clone gets an EMPTY vendor/opencc/ — which is
+# why the default CLI path never resolved. This ignore only takes effect after
+# `git rm --cached vendor/opencc`.
+vendor/opencc/.cosyvoice/
+vendor/cosyvoice/

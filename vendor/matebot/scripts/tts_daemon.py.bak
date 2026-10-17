@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+"""CosyVoice TTS 常驻守护进程。
+
+模型只加载一次，通过 Unix socket (/tmp/matebot_tts.sock) 收合成请求：
+    {"text": "...", "out": "/tmp/x.wav"}  →  {"ok": true, "out": "/tmp/x.wav"}
+
+bridge 的 synthesize_voice() 保证这个进程活着（懒启动 + 崩溃重拉），然后走 socket。
+"""
+
+import json
+import os
+import socket
+import sys
+
+REPO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "vendor", "cosyvoice")
+sys.path.insert(0, REPO)
+sys.path.insert(0, os.path.join(REPO, "third_party", "Matcha-TTS"))
+
+SOCK = "/tmp/matebot_tts.sock"
+
+
+def main() -> int:
+    from cosyvoice.cli.cosyvoice import AutoModel
+    import torch
+    import torchaudio
+
+    model_dir = os.path.join(REPO, "pretrained_models", "CosyVoice2-0.5B")
+    if not os.path.exists(model_dir):
+        from modelscope import snapshot_download
+        model_dir = snapshot_download("iic/CosyVoice2-0.5B")
+    model = AutoModel(model_dir=model_dir)
+
+    # CosyVoice2 的 SFT 说话人不稳，统一用 zero_shot（仓库自带参考音色）
+    prompt = os.path.join(REPO, "asset", "zero_shot_prompt.wav")
+    prompt_text = "希望你以后能够做的比我还好呦。"
+    print("TTS 模型已加载，等待请求", flush=True)
+
+    if os.path.exists(SOCK):
+        os.unlink(SOCK)
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(SOCK)
+    srv.listen(5)
+
+    def synthesize(text: str, out: str) -> bool:
+        chunks = []
+        for ch in model.inference_zero_shot(text, prompt_text, prompt):
+            chunks.append(ch["tts_speech"])
+        if not chunks:
+            return False
+        wav = torch.cat(chunks, dim=1)
+        torchaudio.save(out, wav, model.sample_rate)
+        return True
+
+    while True:
+        try:
+            conn, _ = srv.accept()
+            data = conn.recv(65536)
+            try:
+                req = json.loads(data.decode())
+                ok = synthesize(req.get("text", ""), req.get("out", ""))
+                resp = {"ok": ok, "out": req.get("out", "")}
+            except Exception as e:
+                resp = {"ok": False, "error": str(e)}
+            conn.sendall(json.dumps(resp).encode())
+            conn.close()
+        except KeyboardInterrupt:
+            break
+        except Exception as e:
+            print(f"[tts-daemon] {e}", flush=True)
+
+    if os.path.exists(SOCK):
+        os.unlink(SOCK)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
