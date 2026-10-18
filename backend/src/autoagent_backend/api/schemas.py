@@ -15,6 +15,8 @@ from ..domain.errors import InvalidInput
 from ..domain.models import (
     Artifact,
     ArtifactCreate,
+    ArtifactVerification,
+    ArtifactVersion,
     AutoAgentConfig,
     AutoAgentConfigPatch,
     ChangedFile,
@@ -440,6 +442,21 @@ class FileDiffView(ApiModel):
 # -- artifacts -------------------------------------------------------------
 
 
+class ArtifactVersionView(ApiModel):
+    versionId: str
+    createdAt: int
+    source: str
+    sessionId: str | None
+    turnId: str | None
+    messageId: str | None
+    sizeBytes: int
+    sha256: str
+    immutable: bool
+    uri: str
+    mimeType: str
+    entry: str
+
+
 class ArtifactView(ApiModel):
     id: str
     title: str
@@ -450,14 +467,44 @@ class ArtifactView(ApiModel):
     versions: list[int]
     contentUrl: str
     thumbnailUrl: str | None
+    kind: str
+    sessionId: str | None
+    turnId: str | None
+    messageId: str | None
+    revision: str
+    versionCount: int
+    sizeBytes: int
+    versionRefs: list[ArtifactVersionView]
 
 
 class ArtifactListView(ApiModel):
     artifacts: list[ArtifactView]
 
 
+class ArtifactVersionsView(ApiModel):
+    versions: list[ArtifactVersionView]
+
+
+class ArtifactVerifyView(ApiModel):
+    artifactId: str
+    version: str
+    ok: bool
+    sha256: str
+    expectedSha256: str
+    sizeBytes: int
+
+
 class ArtifactPathView(ApiModel):
     path: str
+
+
+class ArtifactFrameTokenRequest(StrictModel):
+    version: str | None = None
+
+
+class ArtifactFrameTokenView(ApiModel):
+    url: str
+    expiresAt: int
 
 
 # -- conversion ------------------------------------------------------------
@@ -873,6 +920,23 @@ def to_file_diff_view(diff: FileDiff) -> FileDiffView:
     )
 
 
+def to_artifact_version_view(version: ArtifactVersion) -> ArtifactVersionView:
+    return ArtifactVersionView(
+        versionId=version.version_id,
+        createdAt=version.created_at,
+        source=version.source,
+        sessionId=version.session_id,
+        turnId=version.turn_id,
+        messageId=version.message_id,
+        sizeBytes=version.size_bytes,
+        sha256=version.sha256,
+        immutable=version.immutable,
+        uri=version.uri,
+        mimeType=version.mime_type,
+        entry=version.entry,
+    )
+
+
 def to_artifact_view(artifact: Artifact) -> ArtifactView:
     return ArtifactView(
         id=artifact.id,
@@ -884,6 +948,30 @@ def to_artifact_view(artifact: Artifact) -> ArtifactView:
         versions=list(artifact.versions),
         contentUrl=artifact.content_url,
         thumbnailUrl=artifact.thumbnail_url,
+        kind=artifact.kind,
+        sessionId=artifact.session_id,
+        turnId=artifact.turn_id,
+        messageId=artifact.message_id,
+        revision=artifact.revision,
+        versionCount=len(artifact.version_refs),
+        sizeBytes=artifact.size_bytes,
+        versionRefs=[
+            to_artifact_version_view(version)
+            for version in artifact.version_refs
+        ],
+    )
+
+
+def to_artifact_verify_view(
+    verification: ArtifactVerification,
+) -> ArtifactVerifyView:
+    return ArtifactVerifyView(
+        artifactId=verification.artifact_id,
+        version=verification.version_id,
+        ok=verification.ok,
+        sha256=verification.sha256,
+        expectedSha256=verification.expected_sha256,
+        sizeBytes=verification.size_bytes,
     )
 
 

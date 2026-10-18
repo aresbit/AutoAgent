@@ -23,6 +23,8 @@ from ..domain.errors import (
     TurnNotFound,
 )
 from ..domain.events import (
+    ArtifactCreated,
+    ArtifactUpdated,
     DomainEvent,
     TurnCompleted,
     TurnFailed,
@@ -37,6 +39,7 @@ from ..domain.models import (
     TurnStatus,
 )
 from ..domain.ports import (
+    ArtifactStorePort,
     ClockPort,
     EnginePort,
     EngineRefStorePort,
@@ -46,6 +49,7 @@ from ..domain.ports import (
     TurnHandle,
     TurnStorePort,
 )
+from .artifact_materializer import materialize_artifacts
 from .event_bus import EventBus
 from .journal import TurnJournal, TurnSubscription
 from .settings_service import merge_settings
@@ -79,6 +83,7 @@ class TurnService:
         settings: SettingsPort,
         clock: ClockPort,
         events: EventBus | None = None,
+        artifacts: ArtifactStorePort | None = None,
         cancel_wait_s: float = 5.0,
     ) -> None:
         self._sessions = sessions
@@ -88,6 +93,7 @@ class TurnService:
         self._settings = settings
         self._clock = clock
         self._events = events
+        self._artifacts = artifacts
         self._cancel_wait_s = max(0.0, cancel_wait_s)
         self._lock = threading.RLock()
         self._runs: dict[str, _Run] = {}
@@ -348,6 +354,7 @@ class TurnService:
         cancelled = event.stop_reason == "cancelled"
         state = TurnState.CANCELLED if cancelled else TurnState.COMPLETED
         message_id: str | None = None
+        artifact_events: list[ArtifactCreated | ArtifactUpdated] = []
         try:
             if event.text:
                 message = self._sessions.record_turn(
@@ -359,6 +366,10 @@ class TurnService:
                     ),
                 )
                 message_id = message.id
+                if not cancelled and message_id is not None:
+                    artifact_events = self._materialize(
+                        run=run, text=event.text, message_id=message_id
+                    )
             if not cancelled:
                 ref = self._engine.session_ref(run.session_id)
                 if ref is not None:
@@ -377,7 +388,76 @@ class TurnService:
             )
         except Exception:
             LOG.exception("failed to update the turn row")
-        return dataclasses.replace(event, message_id=message_id)
+        return dataclasses.replace(
+            event, message_id=message_id, artifacts=tuple(artifact_events)
+        )
+
+    def _materialize(
+        self, *, run: _Run, text: str, message_id: str
+    ) -> list[ArtifactCreated | ArtifactUpdated]:
+        """Materialize fenced artifacts; never fail the turn."""
+
+        if self._artifacts is None:
+            return []
+        events: list[ArtifactCreated | ArtifactUpdated] = []
+        try:
+            result = materialize_artifacts(text)
+        except Exception:
+            LOG.warning("artifact materialization failed", exc_info=True)
+            return []
+        for warning in result.warnings:
+            LOG.warning("artifact materialization: %s", warning)
+        for draft in result.artifacts:
+            try:
+                mutation = self._artifacts.save_materialized(
+                    draft,
+                    session_id=run.session_id,
+                    turn_id=run.turn_id,
+                    message_id=message_id,
+                )
+            except Exception:
+                LOG.warning(
+                    "failed to store materialized artifact %r",
+                    draft.title,
+                    exc_info=True,
+                )
+                continue
+            if not mutation.changed:
+                continue
+            if mutation.created:
+                events.append(
+                    ArtifactCreated(
+                        turn_id=run.turn_id,
+                        session_id=run.session_id,
+                        artifact=mutation.artifact,
+                    )
+                )
+                reason = "created"
+            else:
+                events.append(
+                    ArtifactUpdated(
+                        turn_id=run.turn_id,
+                        session_id=run.session_id,
+                        artifact_id=mutation.artifact.id,
+                        revision=mutation.artifact.revision,
+                        artifact=mutation.artifact,
+                    )
+                )
+                reason = "updated"
+            self._publish_artifacts_changed(mutation.artifact.id, reason)
+        return events
+
+    def _publish_artifacts_changed(self, artifact_id: str, reason: str) -> None:
+        if self._events is None:
+            return
+        self._events.publish(
+            {
+                "type": "artifacts.changed",
+                "reason": reason,
+                "artifactIds": [artifact_id],
+                "ts": self._clock.now_ms(),
+            }
+        )
 
     def _persist_failed(self, run: _Run, event: TurnFailed) -> None:
         try:

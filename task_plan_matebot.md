@@ -24,6 +24,10 @@
 | T15 | M5 后端：skills/MCP/workspace/artifacts 端口、适配器与路由 | complete | T9 | exists:backend/tests/integration/test_skills.py |
 | T16 | M5 前端：skills/MCP/workspace/artifacts 面板与 API 客户端 | complete | T11 | exists:frontend/src/features/skills |
 | T17 | Vendor MateBot/opencc，接入 OpenccSession 长连接，并复用 ~/.claude/settings.json 模型 | complete | T9 | exists:vendor/matebot/opencc_backend.py |
+| T18 | M5.1 后端：artifact 物化、不可变版本/manifest/sha256、SSE 顺序与版本 API | complete | T17 | exists:backend/src/autoagent_backend/application/artifact_materializer.py |
+| T19 | M5.1 前端：安全 ArtifactFrame（sandbox/CSP）、聊天卡片与面板联动、/api/events 刷新 | complete | T17 | exists:frontend/src/features/artifacts/ArtifactFrame.tsx |
+| T20 | M5.1 独立安全评估：物化/SSE 顺序/沙箱/CSP/版本恢复/面板联动 | complete | T18, T19 | exists:docs/matebot-modernization/evaluation.md |
+| T21 | M5.1 P1：独立 CSP artifact frame（短期 token/专用端点/注入 resize）+ 面板交互 + 版本计数修复 | pending | T18, T19 | exists:backend/src/autoagent_backend/api/routes/artifact_frame.py |
 
 ## Notes
 -

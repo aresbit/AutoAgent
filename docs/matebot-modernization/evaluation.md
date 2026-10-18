@@ -440,3 +440,205 @@ the new MateBot engine, vendor loading, config precedence, secret handling and
 Settings UI are verified. Remaining limitations are environmental/root-only
 verification and the pre-existing P2 items (Nuitka non-determinism, route
 count).
+
+---
+
+# M5.1 Artifacts — security-focused re-check
+
+Date: 2026-10-17 (third evaluation pass)
+Artifact: `/home/tars/yysapp/AutoAgent/release/autoagent_0.8.0_amd64.deb`
+Frontend bundle: `assets/index-B0bBiUq7.js` (the stale `DDOWgkAc` bundle was not
+required and is not referenced by the packaged `index.html`).
+
+## Verdict
+
+**P0 artifact security loop: PASS. No P0 findings.**
+
+One new **P1 functional defect** was found: inline scripts inside
+`srcdoc` artifact frames are blocked by the parent page's CSP
+(`script-src 'self'`, inherited by `srcdoc`), so interactive artifacts and the
+host resize reporter never execute. The security properties (network blocked,
+opaque origin, no token, no same-origin/top-navigation/popup/modal access) all
+hold — in fact more strongly than intended — but the artifact feature is
+functionally incomplete and logs CSP errors inside the preview. One **P2 UI
+defect** (version count in the artifact list) is also noted.
+
+## 1. Hash and deb audit — PASS
+
+- Size: **133,469,956 bytes** (matches).
+- SHA256: **`7365dc1499ccb73af5e7eefd453f93db4529b96eb094d71a8b0d22d12f773880`**
+  (reproduced exactly; `.sha256` sidecar agrees).
+- Exactly one setuid entry: `-rwsr-xr-x root/root 15248
+  ./opt/autoagent/desktop/chrome-sandbox`.
+- `vendor/matebot/opencc_backend.py` present, archive mode **0644**.
+- `frontend/dist/index.html` references **`assets/index-B0bBiUq7.js`**.
+- Key backend/frontend/engine/desktop paths present.
+- Launcher exports `AUTOAGENT_MATEBOT_VENDOR_DIR`; it does **not** export
+  `AUTOAGENT_ENGINE` (only `AUTOAGENT_ENGINE_DIR`, a path variable).
+
+## 2. Packaged artifact API — PASS
+
+Extracted backend, `AUTOAGENT_ENGINE=fake`.
+
+- `POST /api/artifacts` (new title) → `revision:"v1"`, `versionCount:1`.
+- `POST /api/artifacts` (same title, new HTML) → `revision:"v2"`,
+  `versionCount:2`.
+- `GET /api/artifacts/{id}/versions` → `v2` and `v1`; both
+  `immutable:true`, non-empty `sha256`, `uri` exactly
+  `ui://<id>/v<N>/index.html`, `mimeType: text/html;profile=mcp-app`,
+  `entry: index.html`.
+- `GET .../versions/v1/content` → v1 HTML with the injected CSP meta.
+- `POST .../versions/v1/restore` → creates **`v3`** (new version, `source:
+  restore`, `versionCount:3`) and moves current to v3 with v1's content/hash;
+  older v1/v2 remain immutable.
+- `POST .../verify` → `{ok:true, version:"v3", sha256 == expectedSha256}`.
+- Stored content contains
+  `<meta data-autoagent-csp="1" ...>` with `default-src 'none'`,
+  `connect-src 'none'`, `form-action 'none'`, `base-uri 'none'`.
+
+Note: `ArtifactView.versions` remains the legacy timestamp array; the
+authoritative IDs/hashes are in `versionRefs`/`versionCount` (see P2 UI bug).
+
+## 3. TurnService materialization and SSE order — PASS
+
+Packaged backend with `AUTOAGENT_ENGINE=matebot` and a scripted CLI that emits a
+valid `artifact-html` block and a second block referencing an external image.
+
+Observed SSE order:
+
+```
+turn.started
+message.delta
+usage
+message.completed
+artifact.created
+turn.completed
+```
+
+- `turn.started` first; `message.delta` before `message.completed`;
+  `artifact.created` after `message.completed` and before `turn.completed`.
+- `turn.completed` exactly once; no `error` event.
+- Artifact persisted and listed afterwards: `Recheck Artifact`, `v1`,
+  `versionCount 1`, `sessionId`/`turnId`/`messageId` populated, `source: turn`,
+  `immutable: true`, `uri: ui://recheck-artifact/v1/index.html`.
+- The invalid external-resource block was rejected with a warning
+  (`artifact materialization: ignored an artifact that references external
+  resources`) and **did not fail the turn** — only the valid artifact was
+  stored.
+- Engine: one persistent child across the turn, no orphan.
+
+## 4. Frontend security (source + GUI) — PASS on security / P1 functional finding
+
+Source and built bundle:
+- `ARTIFACT_SANDBOX = "allow-scripts allow-forms"` exactly; the built bundle
+  contains no `allow-same-origin`, `allow-top-navigation`, `allow-modals`, or
+  `allow-popups`.
+- The injected artifact CSP contains `default-src 'none'`, `connect-src 'none'`,
+  `form-action 'none'`, `base-uri 'none'`; the backend emits the same policy.
+- No `EventSource` anywhere in `frontend/src` or the built bundle (`grep -c` → 0);
+  `/api/events` uses authenticated `fetch` streaming.
+- `openArtifactWindow`/`bridge.artifact.open` has no call site in the UI; the
+  preload surface is frozen and native-only.
+
+Running GUI (CDP evaluation inside the packaged `about:srcdoc` iframe):
+- `origin: "null"` (opaque), sandbox attribute exactly
+  `allow-scripts allow-forms`.
+- `document.cookie` → `SecurityError`; `parent.location`, `parent.document`,
+  `top.location`, and `localStorage` → `SecurityError`.
+- `document.baseURI` → `http://127.0.0.1:<port>/` (no token); `referrer` empty;
+  no launch token appears in the iframe document or URL.
+- `fetch('/api/settings')` and absolute-origin fetch → **blocked**
+  (`TypeError: Failed to fetch`; CSP logs
+  `connect-src 'none'` / cross-origin denial).
+
+UI integration:
+- Chat artifact card renders (`data-testid="chat-artifact-card"`, title, size,
+  Preview/Open panel).
+- "Open panel" switches to the Artifacts tab and opens the preview dialog.
+- Versions list showed both snapshots; clicking **Restore** created a third
+  version and moved the `current` badge to the restored content.
+- An external restore (authenticated API) produced
+  `event: artifacts.changed` / `{"reason":"restored","artifactIds":["recheck-artifact"]}`
+  on `/api/events`, and the open versions dialog updated from 3 to 4 entries
+  **without any manual refresh** — confirming the fetch-based SSE refresh path.
+- No native `artifact.open` call; CDP target count stayed at the page + its
+  sandboxed iframes (no child `BrowserWindow`).
+- Parent page console errors: **0**; page exceptions: **0**.
+  Expected CSP violation messages appear only inside the probe iframe (the
+  probe deliberately attempts a blocked connection).
+
+### P1 finding — artifact inline scripts are blocked by the inherited parent CSP
+
+The parent document is served with
+`Content-Security-Policy: ... script-src 'self'; ...` (no `'unsafe-inline'`).
+`srcdoc` child documents inherit the parent's CSP, and CSP policies combine
+conjunctively with the artifact's own `script-src 'unsafe-inline'`. Result:
+
+- The artifact author script did not run (`window.__artReports` never received
+  its postMessage; a CDP-injected inline script also did not execute).
+- Chrome logs, for the packaged preview:
+  `Executing inline script violates ... 'script-src 'self'' ... The action has
+  been blocked.`
+- The frontend-injected resize reporter (`data-autoagent-resize`) is inline and
+  is blocked too, so iframes never auto-size.
+- This contradicts the UI copy "scripts may run" and defeats the purpose of
+  `allow-scripts` for interactive artifacts.
+
+Security is not weakened (scripts are simply inert); this is a functional P1.
+Likely fixes: serve artifact documents from a separate CSP-free/independent
+origin (separate loopback port or a path/response without the parent CSP), or
+use a frame mechanism that does not inherit the parent `script-src` while
+keeping an opaque origin. Do not loosen the main app's `script-src` to
+`'unsafe-inline'`.
+
+### P2 finding — artifact list version count is wrong
+
+`ArtifactsPanel.tsx` renders `artifact.versions.length` (the legacy timestamp
+array, which only ever contains the first snapshot timestamp) instead of
+`artifact.versionCount`. In the GUI, an artifact with 2, 3, and 4 immutable
+versions continuously displayed **"1 version"**. The versions dialog itself was
+correct.
+
+## 5. X11 + nested Wayland regression — PASS
+
+X11 (test-only `--no-sandbox`, as before):
+- Window loaded; renderer globals: `process`, `require`, `module`, `Buffer` all
+  `undefined`; `window.autoagentNative` exposes only the native allowlist.
+- Artifact iframe sandbox exact; parent console errors 0; exceptions 0.
+- Graceful quit: Electron, backend, and the engine child all exited; port
+  closed; **no orphan** (backend shutdown completed in ~3.1 s).
+
+Nested Wayland (gnome-shell 46.2, `DISPLAY` unset for the app):
+- Electron argv contains `--ozone-platform=wayland` (count 1); child env has no
+  `DISPLAY`; `WAYLAND_DISPLAY=wayland-0`.
+- `app.ready=1`, `window.load=1`; CDP page loaded.
+- GPU context-lost count over 10 s: **0 → 0 (delta 0)**.
+- Graceful quit: no electron/backend orphans (`orphan_count=0`).
+
+## 6. Deferred / remaining limitations
+
+- Deferred P1 (as stated by the implementation): MCP bridge/consent,
+  custom-protocol child window (the preload handler exists but has no UI call
+  site), diff/split view, and artifact export UI. The export backend endpoint
+  exists and is authenticated, but the UI path is not exercised in this P0 loop.
+- Deferred P2: A2UI.
+- P1 (new, above): interactive artifact scripts are blocked by CSP inheritance.
+- P2 (new, above): artifact list shows a stale version count.
+- Root-only install/upgrade/remove and the installed setuid sandbox remain
+  unverified (no sudo); extraction-based tests were used.
+- No real model/API call: the packaged MateBot engine was driven with a
+  scripted stream-json CLI, and the artifact API used `AUTOAGENT_ENGINE=fake`.
+- Environment note: a pre-existing unrelated backend held port 8787 during the
+  run; the app correctly selected 8788. It was not touched.
+
+## M5.1 final verdict
+
+**P0 artifact security loop: PASS. The artifact is safe to ship from the
+security standpoint tested here: opaque-origin sandbox, no same-origin/network/
+popup/top-navigation, fetch blocked, launch token inaccessible, authenticated
+version lifecycle correct, materialization cannot fail a turn, and
+`/api/events` refresh works without EventSource.**
+
+**Not complete:** the new P1 (inline artifact scripts never execute under the
+inherited parent CSP) should be fixed before calling interactive artifacts
+done; the P2 version-count display should also be corrected.

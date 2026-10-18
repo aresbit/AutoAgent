@@ -35,6 +35,7 @@ import {
   useScrollFade,
   useScrollPinning,
 } from "@/cds";
+import type { ChatArtifact } from "@/features/artifacts/logic";
 import { Markdown } from "./markdown";
 
 interface LiveTurn {
@@ -71,6 +72,7 @@ export function ChatPanel({
   onToggleRight,
   onCreateSession,
   onCreated,
+  onOpenArtifact,
 }: {
   sessionId: string | null;
   summary: SessionSummary | undefined;
@@ -81,6 +83,7 @@ export function ChatPanel({
   onToggleRight: () => void;
   onCreateSession: () => void;
   onCreated: (id: string) => void;
+  onOpenArtifact?: (artifact: ChatArtifact) => void;
 }) {
   const queryClient = useQueryClient();
   const [messages, setMessages] = useState<MessageView[]>([]);
@@ -100,10 +103,13 @@ export function ChatPanel({
 
   useEffect(() => {
     setMessages(sessionQuery.data?.messages ?? []);
+  }, [sessionQuery.data]);
+
+  useEffect(() => {
     setLive(null);
     setFailure(null);
     setComposerValue("");
-  }, [sessionId, sessionQuery.data]);
+  }, [sessionId]);
 
   useEffect(
     () => () => {
@@ -528,7 +534,7 @@ export function ChatPanel({
                     time={message.createdAt}
                   >
                     {message.role === "assistant" ? (
-                      <Markdown text={message.text} />
+                      <Markdown text={message.text} onOpenArtifact={onOpenArtifact} />
                     ) : (
                       message.text
                     )}
@@ -553,7 +559,7 @@ export function ChatPanel({
                       <ToolDecisionCard key={tool.ref} tool={tool} />
                     ))}
                     {live.text ? (
-                      <Markdown text={live.text} />
+                      <Markdown text={live.text} onOpenArtifact={onOpenArtifact} />
                     ) : live.status === "streaming" ? (
                       <span className="shimmer-text text-[12.5px]">
                         Composing response

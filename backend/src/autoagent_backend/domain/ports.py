@@ -19,6 +19,10 @@ from .events import DomainEvent
 from .models import (
     Artifact,
     ArtifactCreate,
+    ArtifactDraft,
+    ArtifactMutation,
+    ArtifactVerification,
+    ArtifactVersion,
     AutoAgentConfig,
     AutoAgentConfigPatch,
     EngineStatus,
@@ -343,3 +347,28 @@ class ArtifactStorePort(Protocol):
     def export(self, artifact_id: str, target_path: str) -> str: ...
 
     def import_archive(self, zip_path: str) -> Artifact: ...
+
+    def save_materialized(
+        self,
+        draft: ArtifactDraft,
+        *,
+        session_id: str | None,
+        turn_id: str | None,
+        message_id: str | None,
+    ) -> ArtifactMutation:
+        """Persist one materialized artifact as an immutable version.
+
+        Identity is ``(title, session_id)``: a later turn in the same session
+        updates the artifact; a different session gets a suffixed id.  Content
+        identical to the current version is deduplicated (``changed=False``).
+        """
+
+    def versions(self, artifact_id: str) -> Sequence[ArtifactVersion]: ...
+
+    def version_content(self, artifact_id: str, version_id: str) -> str: ...
+
+    def restore(self, artifact_id: str, version_id: str) -> Artifact:
+        """Create a NEW version from ``version_id`` and move ``current`` to it."""
+
+    def verify(self, artifact_id: str) -> ArtifactVerification:
+        """Recompute the current version's sha256 and compare it to the manifest."""

@@ -13,6 +13,8 @@ from typing import Any
 
 from ..application.journal import TurnSubscription
 from ..domain.events import (
+    ArtifactCreated,
+    ArtifactUpdated,
     DomainEvent,
     TextDelta,
     ThinkingDelta,
@@ -25,6 +27,7 @@ from ..domain.events import (
     is_terminal,
 )
 from ..domain.ports import ClockPort
+from .schemas import to_artifact_view
 
 LOG = logging.getLogger("autoagent.api.sse")
 
@@ -99,6 +102,30 @@ def project_event(
             usage["outputTokens"] = event.output_tokens
         return [("usage", {**common, "usage": usage})]
 
+    if isinstance(event, ArtifactCreated):
+        return [
+            (
+                "artifact.created",
+                {
+                    **common,
+                    "artifact": to_artifact_view(event.artifact).model_dump(),
+                },
+            )
+        ]
+
+    if isinstance(event, ArtifactUpdated):
+        return [
+            (
+                "artifact.updated",
+                {
+                    **common,
+                    "artifactId": event.artifact_id,
+                    "revision": event.revision,
+                    "artifact": to_artifact_view(event.artifact).model_dump(),
+                },
+            )
+        ]
+
     if isinstance(event, TurnCompleted):
         wire: list[tuple[str, dict[str, Any]]] = []
         if event.stop_reason != "cancelled" and event.message_id is not None:
@@ -110,6 +137,15 @@ def project_event(
                         "messageId": event.message_id,
                         "text": event.text,
                     },
+                )
+            )
+        for artifact_event in event.artifacts:
+            wire.extend(
+                project_event(
+                    artifact_event,
+                    session_id=session_id,
+                    seq=seq,
+                    ts=ts,
                 )
             )
         wire.append(

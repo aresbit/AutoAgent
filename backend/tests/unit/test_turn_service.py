@@ -5,12 +5,14 @@ from __future__ import annotations
 import threading
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 import pytest
 
+from autoagent_backend.adapters.artifacts.fs_store import FilesystemArtifactStore
 from autoagent_backend.adapters.engine.fake_engine import FakeEngine
+from autoagent_backend.api.sse import project_event
 from autoagent_backend.application.turn_service import TurnService
 from autoagent_backend.domain.errors import (
     EngineUnavailable,
@@ -19,6 +21,7 @@ from autoagent_backend.domain.errors import (
 )
 from autoagent_backend.domain.events import (
     DomainEvent,
+    TextDelta,
     TurnCompleted,
     TurnFailed,
     TurnStarted,
@@ -36,6 +39,7 @@ def make_service(
     engine: object,
     *,
     cancel_wait_s: float = 0.2,
+    artifacts: object | None = None,
 ) -> tuple[TurnService, InMemoryStore]:
     clock = FakeClock()
     store = InMemoryStore(clock)
@@ -47,6 +51,7 @@ def make_service(
         engine=engine,  # type: ignore[arg-type]
         settings=settings,
         clock=clock,
+        artifacts=artifacts,  # type: ignore[arg-type]
         cancel_wait_s=cancel_wait_s,
     )
     return service, store
@@ -64,6 +69,14 @@ def drain(subscription: object, limit: int = 200) -> list[DomainEvent]:
         if is_terminal(event):
             break
     return events
+
+
+def wait_terminal(service: TurnService, turn_id: str) -> None:
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+        if service.status(turn_id).state is not TurnState.RUNNING:
+            return
+        time.sleep(0.01)
 
 
 def test_completed_turn_streams_and_persists(tmp_path: Path) -> None:
@@ -191,6 +204,131 @@ def test_runner_continues_after_subscriber_disconnect(tmp_path: Path) -> None:
     assert service.status(turn_id).state is TurnState.COMPLETED
     stored = store.get(session.id)
     assert any(message.role == "assistant" for message in stored.messages)
+
+
+def _artifact_script(text: str):
+    def factory(turn_id: str, session_id: str) -> tuple[DomainEvent, ...]:
+        return (
+            TurnStarted(turn_id=turn_id, session_id=session_id, model="fake"),
+            TextDelta(turn_id=turn_id, session_id=session_id, text=text),
+            TurnCompleted(
+                turn_id=turn_id,
+                session_id=session_id,
+                stop_reason="end_turn",
+                text=text,
+            ),
+        )
+
+    return factory
+
+
+ARTIFACT_TEXT = (
+    "Here is your artifact.\n\n"
+    "```artifact-html\n"
+    "---\n"
+    "title: Demo\n"
+    "description: A demo\n"
+    "---\n"
+    "<h1>Hello</h1>\n"
+    "```\n"
+)
+
+
+def test_completed_turn_materializes_artifacts(tmp_path: Path) -> None:
+    store = FilesystemArtifactStore(tmp_path / "artifacts", FakeClock())
+    service, sessions = make_service(
+        tmp_path,
+        FakeEngine(script_factory=_artifact_script(ARTIFACT_TEXT)),
+        artifacts=store,
+    )
+    session = sessions.create("test")
+    turn_id = str(uuid.uuid4())
+
+    terminal = next(
+        event
+        for event in drain(service.start(turn_id, session.id, "hello"))
+        if is_terminal(event)
+    )
+    assert isinstance(terminal, TurnCompleted)
+    assert terminal.message_id is not None
+    assert len(terminal.artifacts) == 1
+    created = terminal.artifacts[0]
+    assert created.__class__.__name__ == "ArtifactCreated"
+    assert created.artifact.id == "demo"
+    assert created.artifact.message_id == terminal.message_id
+    assert created.artifact.session_id == session.id
+    assert created.artifact.revision == "v1"
+
+    names = [
+        name
+        for name, _ in project_event(
+            terminal, session_id=session.id, seq=1, ts=1
+        )
+    ]
+    assert names == ["message.completed", "artifact.created", "turn.completed"]
+
+
+def test_second_turn_emits_artifact_updated(tmp_path: Path) -> None:
+    store = FilesystemArtifactStore(tmp_path / "artifacts", FakeClock())
+    first_text = ARTIFACT_TEXT
+    second_text = ARTIFACT_TEXT.replace("<h1>Hello</h1>", "<h1>Changed</h1>")
+    scripts = [_artifact_script(first_text), _artifact_script(second_text)]
+
+    def script_factory(
+        turn_id: str, session_id: str
+    ) -> Sequence[DomainEvent]:
+        return scripts.pop(0)(turn_id, session_id)
+
+    engine = FakeEngine(script_factory=script_factory)
+    service, sessions = make_service(tmp_path, engine, artifacts=store)
+    session = sessions.create("test")
+
+    first = next(
+        event
+        for event in drain(service.start(str(uuid.uuid4()), session.id, "one"))
+        if is_terminal(event)
+    )
+    assert first.artifacts[0].__class__.__name__ == "ArtifactCreated"
+    wait_terminal(service, first.turn_id)
+
+    second = next(
+        event
+        for event in drain(service.start(str(uuid.uuid4()), session.id, "two"))
+        if is_terminal(event)
+    )
+    assert isinstance(second, TurnCompleted)
+    assert second.artifacts[0].__class__.__name__ == "ArtifactUpdated"
+    assert second.artifacts[0].revision == "v2"
+
+    names = [
+        name
+        for name, _ in project_event(
+            second, session_id=session.id, seq=1, ts=1
+        )
+    ]
+    assert names == ["message.completed", "artifact.updated", "turn.completed"]
+    assert store.get("demo").revision == "v2"
+
+
+def test_materialization_failure_does_not_fail_turn(tmp_path: Path) -> None:
+    class BrokenStore:
+        def save_materialized(self, *args: object, **kwargs: object) -> object:
+            raise RuntimeError("disk exploded")
+
+    service, sessions = make_service(
+        tmp_path,
+        FakeEngine(script_factory=_artifact_script(ARTIFACT_TEXT)),
+        artifacts=BrokenStore(),
+    )
+    session = sessions.create("test")
+    turn_id = str(uuid.uuid4())
+
+    events = drain(service.start(turn_id, session.id, "hello"))
+    terminal = [event for event in events if is_terminal(event)]
+    assert len(terminal) == 1
+    assert isinstance(terminal[0], TurnCompleted)
+    assert terminal[0].artifacts == ()
+    assert service.status(turn_id).state is TurnState.COMPLETED
 
 
 class _FailingEngine:

@@ -8,6 +8,7 @@ import {
   type SettingsPatch,
 } from "@/api/client";
 import { Button, ErrorState, QuietDots } from "@/cds";
+import { useServerEvents } from "@/api/events";
 import { Shell } from "./Shell";
 
 export function App() {
@@ -55,6 +56,8 @@ function Workspace({ bootstrap }: { bootstrap: BootstrapView }) {
   const [activeId, setActiveId] = useState<string | null>(
     bootstrap.sessions[0]?.id ?? null,
   );
+
+  useServerEvents(activeId);
 
   const sessionsQuery = useQuery({
     queryKey: ["sessions"],

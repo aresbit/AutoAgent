@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+import re
 from typing import TYPE_CHECKING
 
 from fastapi import Request
@@ -24,6 +25,11 @@ if TYPE_CHECKING:
 TOKEN_COOKIE = "autoagent_token"
 HEALTH_PATH = "/api/health"
 MAX_BODY_BYTES = 1024 * 1024
+
+# Frame GETs authenticate with their own scoped HMAC token in the query string;
+# the bearer token must never be copied into an iframe URL.  Only the exact
+# GET frame path is exempt -- frame-token issuance stays bearer-protected.
+_FRAME_PATH = re.compile(r"^/api/artifacts/[^/]+/frame$")
 
 
 def get_container(request: Request) -> Container:
@@ -119,6 +125,9 @@ def authorize_request(
             )
 
     if path == HEALTH_PATH:
+        return None
+
+    if request.method in {"GET", "HEAD"} and _FRAME_PATH.match(path):
         return None
 
     expected = config.api_token

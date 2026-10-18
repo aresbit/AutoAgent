@@ -14,6 +14,7 @@ from . import __version__
 from .api import static as static_api
 from .api.deps import authorize_request
 from .api.routes import (
+    artifact_frame,
     artifacts,
     auth,
     bootstrap,
@@ -103,6 +104,7 @@ def create_app(
     app.include_router(mcp.router)
     app.include_router(workspace.router)
     app.include_router(artifacts.router)
+    app.include_router(artifact_frame.router)
     app.include_router(events.router)
     # Last: the SPA catch-all must never shadow /api/*.
     app.include_router(static_api.router)

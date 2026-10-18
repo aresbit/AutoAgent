@@ -351,6 +351,28 @@ class McpInvocationResult:
 
 
 @dataclass(frozen=True, slots=True)
+class ArtifactVersion:
+    """One immutable artifact snapshot.
+
+    ``version_id`` is the monotonic public identifier (``v1``, ``v2``...);
+    ``sha256`` and ``size_bytes`` describe the exact stored document.
+    """
+
+    version_id: str
+    created_at: int
+    sha256: str
+    size_bytes: int
+    source: str = "manual"
+    session_id: str | None = None
+    turn_id: str | None = None
+    message_id: str | None = None
+    immutable: bool = True
+    uri: str = ""
+    mime_type: str = "text/html;profile=mcp-app"
+    entry: str = "index.html"
+
+
+@dataclass(frozen=True, slots=True)
 class Artifact:
     id: str
     title: str
@@ -361,6 +383,13 @@ class Artifact:
     versions: tuple[int, ...] = ()
     content_url: str = ""
     thumbnail_url: str | None = None
+    kind: str = "html"
+    session_id: str | None = None
+    turn_id: str | None = None
+    message_id: str | None = None
+    revision: str = "v1"
+    version_refs: tuple[ArtifactVersion, ...] = ()
+    size_bytes: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -368,3 +397,42 @@ class ArtifactCreate:
     html: str
     title: str | None = None
     description: str = ""
+    session_id: str | None = None
+    turn_id: str | None = None
+    message_id: str | None = None
+    source: str = "manual"
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactDraft:
+    """A validated, canonical artifact document ready for persistence."""
+
+    html: str
+    title: str
+    description: str
+    sha256: str
+    size_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactMutation:
+    """Result of materializing one artifact for a turn.
+
+    ``created`` distinguishes ``artifact.created`` from ``artifact.updated``;
+    ``changed`` is ``False`` when the content hash matched the current version
+    (the caller then emits no event).
+    """
+
+    artifact: Artifact
+    created: bool
+    changed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactVerification:
+    artifact_id: str
+    version_id: str
+    ok: bool
+    sha256: str
+    expected_sha256: str
+    size_bytes: int

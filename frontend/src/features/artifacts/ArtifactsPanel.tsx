@@ -15,7 +15,8 @@ import {
   type FormEvent,
   type KeyboardEvent,
 } from "react";
-import { api, type ArtifactView } from "@/api/client";
+import { api, ApiError, type ArtifactView } from "@/api/client";
+import { fallbackArtifactVersions } from "@/api/artifacts";
 import {
   Badge,
   Button,
@@ -33,14 +34,20 @@ import { cx } from "@/lib/cx";
 import { errorMessage } from "@/lib/errorMessage";
 import { relativeTime, truncate } from "@/lib/format";
 import { chooseOpenPath, chooseSavePath, nativeBridge } from "@/lib/native";
-import { displayTitle, newestVersion, sortArtifacts, versionLabel } from "./logic";
+import { ArtifactFrame } from "./ArtifactFrame";
+import { ArtifactVersionList } from "./VersionList";
+import { displayTitle, sortArtifacts, artifactVersionCount, type ChatArtifact } from "./logic";
 
 type PathAction = { kind: "export"; artifact: ArtifactView } | { kind: "import" };
 
 export function ArtifactsPanel({
   initialArtifacts = [],
+  request = null,
+  onRequestHandled,
 }: {
   initialArtifacts?: ArtifactView[];
+  request?: ChatArtifact | null;
+  onRequestHandled?: () => void;
 }) {
   const queryClient = useQueryClient();
   const queryKey = ["artifacts"] as const;
@@ -51,13 +58,23 @@ export function ArtifactsPanel({
   });
   const artifacts = sortArtifacts(artifactsQuery.data);
   const [preview, setPreview] = useState<ArtifactView | null>(null);
+  const [draft, setDraft] = useState<ChatArtifact | null>(null);
   const [mode, setMode] = useState<"preview" | "source">("preview");
+  const [versionApiSupported, setVersionApiSupported] = useState(true);
   const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [pathAction, setPathAction] = useState<PathAction | null>(null);
   const [pathDraft, setPathDraft] = useState("");
   const [pathError, setPathError] = useState<string | null>(null);
   const composing = useRef(false);
+
+  useEffect(() => {
+    if (!request) return;
+    setPreview(null);
+    setDraft(request);
+    setMode("preview");
+    onRequestHandled?.();
+  }, [request, onRequestHandled]);
 
   useEffect(() => {
     if (!actionError) return;
@@ -74,9 +91,37 @@ export function ArtifactsPanel({
   const contentQuery = useQuery({
     queryKey: ["artifact-content", preview?.id],
     queryFn: () => api.artifactContent(preview?.id ?? ""),
-    enabled: Boolean(preview),
+    enabled: Boolean(preview) && draft === null,
     staleTime: 30_000,
   });
+
+  const versionsQuery = useQuery({
+    queryKey: ["artifact-versions", preview?.id],
+    queryFn: () => api.artifactVersions(preview?.id ?? ""),
+    enabled: Boolean(preview) && draft === null && versionApiSupported,
+    retry: false,
+    staleTime: 15_000,
+  });
+
+  /**
+   * A short-lived token for the backend-served frame document. The key
+   * includes the revision, so restoring or switching versions refetches it.
+   * Failures (mock/dev without the endpoint) leave `data` undefined and the
+   * frame falls back to the static srcDoc.
+   */
+  const frameTokenQuery = useQuery({
+    queryKey: ["artifact-frame-token", preview?.id, preview?.revision ?? null],
+    queryFn: () => api.artifactFrameToken(preview?.id ?? "", preview?.revision),
+    enabled: Boolean(preview) && draft === null,
+    retry: false,
+  });
+
+  useEffect(() => {
+    const error = versionsQuery.error;
+    if (error instanceof ApiError && (error.status === 404 || error.status === 405)) {
+      setVersionApiSupported(false);
+    }
+  }, [versionsQuery.error]);
 
   const touch = useMutation({
     mutationFn: (id: string) => api.markArtifactOpened(id),
@@ -111,10 +156,33 @@ export function ArtifactsPanel({
     onError: (error) => setActionError(errorMessage(error, "The artifact could not be imported.")),
   });
 
+  const restoreVersion = useMutation({
+    mutationFn: ({ id, versionId }: { id: string; versionId: string }) =>
+      api.restoreArtifactVersion(id, versionId),
+    onSuccess: (next) => {
+      queryClient.setQueryData<ArtifactView[]>(queryKey, (current) =>
+        current?.map((item) => (item.id === next.id ? next : item)),
+      );
+      setPreview(next);
+      setNotice("Restored the snapshot as a new version.");
+      void queryClient.invalidateQueries({ queryKey: ["artifact-versions", next.id] });
+      void queryClient.invalidateQueries({ queryKey: ["artifact-content", next.id] });
+    },
+    onError: (error) =>
+      setActionError(errorMessage(error, "The artifact version could not be restored.")),
+  });
+
   const openPreview = (artifact: ArtifactView) => {
+    setDraft(null);
     setPreview(artifact);
     setMode("preview");
     touch.mutate(artifact.id);
+  };
+
+  const closePreview = () => {
+    setPreview(null);
+    setDraft(null);
+    setMode("preview");
   };
 
   const startExport = async (artifact: ArtifactView) => {
@@ -174,6 +242,19 @@ export function ArtifactsPanel({
   };
 
   const pathPending = exportArtifact.isPending || importArtifact.isPending;
+  const dialogOpen = preview !== null || draft !== null;
+  const previewTitle = draft?.title ?? (preview ? displayTitle(preview) : "Artifact");
+  const previewHtml = draft?.html ?? contentQuery.data ?? "";
+  const versions = !preview
+    ? []
+    : versionsQuery.data && versionsQuery.data.length > 0
+      ? versionsQuery.data.map((item) => ({
+          ...item,
+          current: preview.revision
+            ? item.versionId === preview.revision
+            : item.current,
+        }))
+      : fallbackArtifactVersions(preview.versions);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -284,8 +365,8 @@ export function ArtifactsPanel({
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5">
                     <Badge tone="neutral">
-                      <span className="t-num">{artifact.versions.length}</span>
-                      {artifact.versions.length === 1 ? " version" : " versions"}
+                      <span className="t-num">{artifactVersionCount(artifact)}</span>
+                      {artifactVersionCount(artifact) === 1 ? " version" : " versions"}
                     </Badge>
                     <span className="text-[10.5px] text-ink-3">
                       updated {relativeTime(artifact.updatedAt)}
@@ -305,20 +386,23 @@ export function ArtifactsPanel({
             <SectionLabel>Storage</SectionLabel>
             <p className="text-[11px] leading-relaxed text-ink-3">
               Artifacts are addressed by id. Preview content is fetched through the local API
-              and rendered in an empty-sandbox frame.
+              and rendered in a sandboxed frame with a strict CSP: scripts may run, but
+              same-origin access, network requests, top navigation and popups are blocked.
             </p>
           </div>
         </div>
       </PanelScroll>
 
       <Dialog
-        open={preview !== null}
+        open={dialogOpen}
         onOpenChange={(open) => {
-          if (!open) setPreview(null);
+          if (!open) closePreview();
         }}
-        title={preview ? displayTitle(preview) : "Artifact"}
-        description={preview?.description || undefined}
-        width={720}
+        title={previewTitle}
+        description={
+          draft ? "Artifact from the conversation" : preview?.description || undefined
+        }
+        width={760}
         footer={
           <>
             {preview ? (
@@ -332,7 +416,7 @@ export function ArtifactsPanel({
                 Export
               </Button>
             ) : null}
-            <Button variant="ghost" size="sm" onClick={() => setPreview(null)}>
+            <Button variant="ghost" size="sm" onClick={closePreview}>
               Close
             </Button>
           </>
@@ -370,9 +454,9 @@ export function ArtifactsPanel({
             </button>
           </div>
 
-          {contentQuery.isLoading ? (
+          {!draft && contentQuery.isLoading ? (
             <Skeleton className="h-[min(52vh,460px)]" />
-          ) : contentQuery.isError ? (
+          ) : !draft && contentQuery.isError ? (
             <ErrorState
               title="Preview unavailable"
               message={errorMessage(contentQuery.error, "The artifact content could not be read.")}
@@ -380,35 +464,49 @@ export function ArtifactsPanel({
               retrying={contentQuery.isFetching}
             />
           ) : mode === "preview" ? (
-            <iframe
-              title={`${preview ? displayTitle(preview) : "Artifact"} preview`}
-              sandbox=""
-              referrerPolicy="no-referrer"
-              srcDoc={contentQuery.data ?? ""}
-              className="h-[min(52vh,460px)] w-full rounded-card bg-panel shadow-panel"
+            <ArtifactFrame
+              html={previewHtml}
+              title={previewTitle}
+              minHeight={320}
+              maxHeight={460}
+              frameUrl={draft ? undefined : frameTokenQuery.data?.url}
+              onShowSource={() => setMode("source")}
             />
           ) : (
             <pre className="t-code scroll-area h-[min(52vh,460px)] overflow-auto rounded-card bg-code p-3 text-[11px] leading-relaxed text-code-ink">
-              {contentQuery.data ?? ""}
+              {previewHtml}
             </pre>
           )}
 
-          {preview && preview.versions.length > 0 ? (
+          {preview ? (
             <div className="flex flex-col gap-1.5">
-              <SectionLabel>Versions</SectionLabel>
-              <ul className="flex flex-wrap gap-1">
-                {[...preview.versions]
-                  .sort((a, b) => b - a)
-                  .map((timestamp) => (
-                    <li key={timestamp}>
-                      <Badge
-                        tone={timestamp === newestVersion(preview) ? "accent" : "neutral"}
-                      >
-                        <span className="t-num">{versionLabel(timestamp)}</span>
-                      </Badge>
-                    </li>
-                  ))}
-              </ul>
+              <div className="flex items-center justify-between gap-2">
+                <SectionLabel>Versions</SectionLabel>
+                {versionsQuery.isFetching ? (
+                  <span className="flex items-center gap-1 text-[10.5px] text-ink-3">
+                    <RefreshCw size={10} strokeWidth={2} className="animate-spin" />
+                    Refreshing
+                  </span>
+                ) : null}
+              </div>
+              <ArtifactVersionList
+                versions={versions}
+                canRestore={versionApiSupported && versionsQuery.isSuccess}
+                restoringVersion={
+                  restoreVersion.isPending
+                    ? restoreVersion.variables?.versionId ?? null
+                    : null
+                }
+                onRestore={(versionId) =>
+                  restoreVersion.mutate({ id: preview.id, versionId })
+                }
+              />
+              {!versionApiSupported ? (
+                <p className="text-[10.5px] leading-relaxed text-ink-3">
+                  This backend exposes version timestamps only; restore becomes available
+                  with the versions API.
+                </p>
+              ) : null}
             </div>
           ) : null}
         </div>

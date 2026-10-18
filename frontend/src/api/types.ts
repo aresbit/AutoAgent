@@ -248,6 +248,16 @@ export interface McpToolInvokeResult {
   [key: string]: unknown;
 }
 
+export interface ArtifactVersionView {
+  versionId: string;
+  createdAt: number;
+  sha256: string;
+  sizeBytes: number | null;
+  current: boolean;
+  source?: string;
+  immutable?: boolean;
+}
+
 export interface ArtifactView {
   id: string;
   title: string;
@@ -258,6 +268,20 @@ export interface ArtifactView {
   versions: number[];
   contentUrl: string;
   thumbnailUrl: string | null;
+  kind?: string;
+  sessionId?: string | null;
+  turnId?: string | null;
+  messageId?: string | null;
+  revision?: string;
+  versionCount?: number;
+  sizeBytes?: number;
+  versionRefs?: ArtifactVersionView[];
+}
+
+/** A short-lived URL for the backend-served artifact frame document. */
+export interface FrameTokenView {
+  url: string;
+  expiresAt: number;
 }
 
 export interface ArtifactCreateInput {

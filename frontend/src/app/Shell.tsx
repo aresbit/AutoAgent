@@ -44,6 +44,7 @@ import { SkillsPanel } from "@/features/skills/SkillsPanel";
 import { McpPanel } from "@/features/mcp/McpPanel";
 import { WorkspacePanel } from "@/features/workspace/WorkspacePanel";
 import { ArtifactsPanel } from "@/features/artifacts/ArtifactsPanel";
+import type { ChatArtifact } from "@/features/artifacts/logic";
 import { SessionsPanel } from "@/features/sessions/SessionsPanel";
 import { ChatPanel } from "@/features/chat/ChatPanel";
 import { cx } from "@/lib/cx";
@@ -98,6 +99,7 @@ export function Shell({
   const [mobileLeft, setMobileLeft] = useState(false);
   const [mobileRight, setMobileRight] = useState(false);
   const [tab, setTab] = useState("settings");
+  const [artifactRequest, setArtifactRequest] = useState<ChatArtifact | null>(null);
   const widthTransition = useSpring(SPRING_SNAP);
   const overlayTransition = useSpring(SPRING_REVEAL);
 
@@ -168,6 +170,22 @@ export function Shell({
     else setLayout((current) => ({ ...current, rightOpen: false }));
   }, [narrow]);
 
+  const openArtifact = useCallback(
+    (artifact: ChatArtifact) => {
+      setArtifactRequest(artifact);
+      setTab("artifacts");
+      if (narrow) {
+        setMobileLeft(false);
+        setMobileRight(true);
+      } else {
+        setLayout((current) => ({ ...current, rightOpen: true }));
+      }
+    },
+    [narrow],
+  );
+
+  const artifactRequestHandled = useCallback(() => setArtifactRequest(null), []);
+
   return (
     <div className="flex h-dvh w-full overflow-hidden bg-bg">
       <a
@@ -216,6 +234,7 @@ export function Shell({
           onToggleRight={toggleRight}
           onCreateSession={onCreateSession}
           onCreated={onCreated}
+          onOpenArtifact={openArtifact}
         />
       </main>
 
@@ -251,6 +270,8 @@ export function Shell({
               initialArtifacts={initialArtifacts}
               workspace={workspace}
               onClose={closeRight}
+              artifactRequest={artifactRequest}
+              onArtifactRequestHandled={artifactRequestHandled}
             />
           </motion.aside>
         </>
@@ -325,6 +346,8 @@ export function Shell({
               initialArtifacts={initialArtifacts}
               workspace={workspace}
               onClose={closeRight}
+              artifactRequest={artifactRequest}
+              onArtifactRequestHandled={artifactRequestHandled}
             />
           </motion.aside>
         ) : null}
@@ -347,6 +370,8 @@ function RightPanel({
   initialArtifacts,
   workspace,
   onClose,
+  artifactRequest,
+  onArtifactRequestHandled,
 }: {
   tab: string;
   onTabChange: (value: string) => void;
@@ -361,6 +386,8 @@ function RightPanel({
   initialArtifacts: ArtifactView[];
   workspace: WorkspaceStatusView;
   onClose: () => void;
+  artifactRequest: ChatArtifact | null;
+  onArtifactRequestHandled: () => void;
 }) {
   return (
     <Tabs value={tab} onValueChange={onTabChange} className="flex h-full min-h-0 flex-col">
@@ -438,7 +465,11 @@ function RightPanel({
         value="artifacts"
         className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden"
       >
-        <ArtifactsPanel initialArtifacts={initialArtifacts} />
+        <ArtifactsPanel
+          initialArtifacts={initialArtifacts}
+          request={artifactRequest}
+          onRequestHandled={onArtifactRequestHandled}
+        />
       </TabsContent>
     </Tabs>
   );

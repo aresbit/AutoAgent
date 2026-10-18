@@ -1,12 +1,15 @@
 import { ApiError } from "./errors";
+import { normalizeArtifactVersions } from "./artifacts";
 import { mockApi } from "./mock";
 import { SSEParser } from "./sse";
 import type {
   ApiErrorShape,
   ArtifactCreateInput,
   ArtifactExportResponse,
+  ArtifactVersionView,
   ArtifactView,
   BootstrapView,
+  FrameTokenView,
   EngineConfigPatch,
   EngineConfigView,
   EngineStatusView,
@@ -32,6 +35,11 @@ import type {
 
 export type * from "./types";
 export { ApiError } from "./errors";
+
+export interface ServerEvent {
+  name: string;
+  data: Record<string, unknown>;
+}
 
 const base = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, "") ?? "";
 const useMock =
@@ -201,6 +209,74 @@ async function streamTurnRequest(
   } finally {
     reader.releaseLock();
   }
+}
+
+async function streamEventsRequest(
+  onEvent: (event: ServerEvent) => void,
+  signal: AbortSignal,
+): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(`${base}/api/events`, {
+      method: "GET",
+      headers: headersFor({ accept: "text/event-stream" }),
+      credentials: "include",
+      signal,
+    });
+  } catch (error) {
+    if (isAbort(error)) throw error;
+    throw networkError(error);
+  }
+  if (!response.ok) throw await errorFromResponse(response);
+  if (!response.body) {
+    throw new ApiError({
+      status: 0,
+      code: "STREAM_UNAVAILABLE",
+      message: "The event stream could not be opened.",
+      retryable: true,
+    });
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const parser = new SSEParser();
+  const dispatch = (frames: ReturnType<SSEParser["push"]>) => {
+    for (const frame of frames) {
+      if (frame.event === "heartbeat" || frame.event === "message") continue;
+      let data: Record<string, unknown> = {};
+      try {
+        const parsed: unknown = JSON.parse(frame.data);
+        if (parsed && typeof parsed === "object") data = parsed as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+      onEvent({ name: frame.event, data });
+    }
+  };
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      dispatch(parser.push(decoder.decode(value, { stream: true })));
+    }
+    dispatch(parser.flush());
+  } catch (error) {
+    if (isAbort(error)) throw error;
+    throw networkError(error);
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+function idleUntilAborted(signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
+    signal.addEventListener("abort", () => resolve(), { once: true });
+  });
 }
 
 export const api = {
@@ -433,6 +509,39 @@ export const api = {
     return useMock
       ? mockApi.artifactContent(id)
       : requestText(`/api/artifacts/${encodeURIComponent(id)}/content`);
+  },
+
+  artifactVersions(id: string): Promise<ArtifactVersionView[]> {
+    return useMock
+      ? mockApi.artifactVersions(id)
+      : request<unknown>(`/api/artifacts/${encodeURIComponent(id)}/versions`).then(
+          normalizeArtifactVersions,
+        );
+  },
+
+  artifactFrameToken(id: string, version?: string): Promise<FrameTokenView> {
+    return useMock
+      ? mockApi.artifactFrameToken(id, version)
+      : request<FrameTokenView>(
+          `/api/artifacts/${encodeURIComponent(id)}/frame-token`,
+          { method: "POST", body: JSON.stringify(version ? { version } : {}) },
+        );
+  },
+
+  restoreArtifactVersion(id: string, versionId: string): Promise<ArtifactView> {
+    return useMock
+      ? mockApi.restoreArtifactVersion(id, versionId)
+      : request<ArtifactView>(
+          `/api/artifacts/${encodeURIComponent(id)}/versions/${encodeURIComponent(versionId)}/restore`,
+          { method: "POST", body: "{}" },
+        );
+  },
+
+  streamEvents(
+    onEvent: (event: ServerEvent) => void,
+    signal: AbortSignal,
+  ): Promise<void> {
+    return useMock ? idleUntilAborted(signal) : streamEventsRequest(onEvent, signal);
   },
 
   createArtifact(input: ArtifactCreateInput): Promise<ArtifactView> {

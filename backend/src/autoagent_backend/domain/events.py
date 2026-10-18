@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .models import Artifact
+
 
 @dataclass(frozen=True, slots=True)
 class TurnStarted:
@@ -60,6 +62,22 @@ class UsageReported:
 
 
 @dataclass(frozen=True, slots=True)
+class ArtifactCreated:
+    turn_id: str
+    session_id: str
+    artifact: Artifact
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactUpdated:
+    turn_id: str
+    session_id: str
+    artifact_id: str
+    revision: str
+    artifact: Artifact
+
+
+@dataclass(frozen=True, slots=True)
 class TurnCompleted:
     turn_id: str
     session_id: str
@@ -68,6 +86,9 @@ class TurnCompleted:
     # Populated by TurnService after the assistant message is persisted. It is
     # used by the SSE projection and is not a transport/engine representation.
     message_id: str | None = None
+    # Materialized artifact events. They are nested in the terminal event so the
+    # projection can guarantee message.completed -> artifact.* -> turn.completed.
+    artifacts: tuple[ArtifactCreated | ArtifactUpdated, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +107,8 @@ type DomainEvent = (
     | ToolStarted
     | ToolFinished
     | UsageReported
+    | ArtifactCreated
+    | ArtifactUpdated
     | TurnCompleted
     | TurnFailed
 )

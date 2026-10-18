@@ -13,8 +13,12 @@ from ..schemas import (
     ArtifactImportRequest,
     ArtifactListView,
     ArtifactPathView,
+    ArtifactVerifyView,
+    ArtifactVersionsView,
     ArtifactView,
     to_artifact_create,
+    to_artifact_verify_view,
+    to_artifact_version_view,
     to_artifact_view,
 )
 
@@ -65,6 +69,56 @@ def get_artifact_content(
     return PlainTextResponse(
         service.content(artifact_id), media_type="text/html; charset=utf-8"
     )
+
+
+@router.get("/api/artifacts/{artifact_id}/versions", response_model=ArtifactVersionsView)
+def list_artifact_versions(
+    artifact_id: str,
+    service: ArtifactService = Depends(get_artifact_service),
+) -> ArtifactVersionsView:
+    return ArtifactVersionsView(
+        versions=[
+            to_artifact_version_view(item) for item in service.versions(artifact_id)
+        ]
+    )
+
+
+@router.get(
+    "/api/artifacts/{artifact_id}/versions/{version_id}/content",
+    response_class=PlainTextResponse,
+)
+def get_artifact_version_content(
+    artifact_id: str,
+    version_id: str,
+    service: ArtifactService = Depends(get_artifact_service),
+) -> PlainTextResponse:
+    return PlainTextResponse(
+        service.version_content(artifact_id, version_id),
+        media_type="text/html; charset=utf-8",
+    )
+
+
+@router.post(
+    "/api/artifacts/{artifact_id}/versions/{version_id}/restore",
+    response_model=ArtifactView,
+)
+def restore_artifact_version(
+    artifact_id: str,
+    version_id: str,
+    service: ArtifactService = Depends(get_artifact_service),
+) -> ArtifactView:
+    return to_artifact_view(service.restore(artifact_id, version_id))
+
+
+@router.post(
+    "/api/artifacts/{artifact_id}/verify",
+    response_model=ArtifactVerifyView,
+)
+def verify_artifact(
+    artifact_id: str,
+    service: ArtifactService = Depends(get_artifact_service),
+) -> ArtifactVerifyView:
+    return to_artifact_verify_view(service.verify(artifact_id))
 
 
 @router.post("/api/artifacts/{artifact_id}/open", response_model=ArtifactView)

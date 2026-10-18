@@ -222,7 +222,9 @@ def build_container(
     skill_service = SkillService(skill_catalog, settings_store)
     mcp_service = McpService(mcp_registry)
     workspace_service = WorkspaceService(workspace, settings_store)
-    artifact_service = ArtifactService(artifact_store)
+    artifact_service = ArtifactService(
+        artifact_store, events=event_bus, clock=clock
+    )
     turn_service = TurnService(
         sessions=sessions,
         turns=sessions,
@@ -231,6 +233,7 @@ def build_container(
         settings=settings_store,
         clock=clock,
         events=event_bus,
+        artifacts=artifact_store,
         cancel_wait_s=config.cancel_grace_s * 2.0 + 1.0,
     )
     bootstrap_service = BootstrapService(

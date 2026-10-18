@@ -163,6 +163,50 @@ describe("artifacts API", () => {
     respond({ id: "a1" });
     await api.artifact("a1");
   });
+
+  it("requests a short-lived frame token for a version", async () => {
+    const calls = respond({
+      url: "/api/artifacts/a1/frame?token=abc",
+      expiresAt: 1_700_000_060_000,
+    });
+    await expect(api.artifactFrameToken("a1", "v2")).resolves.toEqual({
+      url: "/api/artifacts/a1/frame?token=abc",
+      expiresAt: 1_700_000_060_000,
+    });
+    expect(calls[0].url).toBe("/api/artifacts/a1/frame-token");
+    expect(calls[0].init?.method).toBe("POST");
+    expect(bodyOf(calls[0])).toEqual({ version: "v2" });
+
+    const noVersionCalls = respond({ url: "/api/artifacts/a1/frame?token=abc", expiresAt: 1 });
+    await api.artifactFrameToken("a1");
+    expect(bodyOf(noVersionCalls[0])).toEqual({});
+  });
+
+  it("lists and restores artifact versions", async () => {
+    const versionsCalls = respond({
+      versions: [
+        {
+          versionId: "v2",
+          createdAt: 3,
+          sha256: "ccc",
+          sizeBytes: 4,
+          source: "turn",
+          immutable: true,
+        },
+        { versionId: "v1", createdAt: 2, sha256: "bbb", sizeBytes: 3 },
+      ],
+    });
+    await expect(api.artifactVersions("a1")).resolves.toMatchObject([
+      { versionId: "v2", sha256: "ccc", current: true },
+      { versionId: "v1", sha256: "bbb", current: false },
+    ]);
+    expect(versionsCalls[0].url).toBe("/api/artifacts/a1/versions");
+
+    const restoreCalls = respond({ id: "a1" });
+    await api.restoreArtifactVersion("a1", "v1");
+    expect(restoreCalls[0].url).toBe("/api/artifacts/a1/versions/v1/restore");
+    expect(restoreCalls[0].init?.method).toBe("POST");
+  });
 });
 
 describe("engine config API", () => {

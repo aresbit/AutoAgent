@@ -12,7 +12,7 @@ Description: AI-powered coding agent desktop application
  It provides intelligent code generation, refactoring, debugging,
  and file manipulation through natural language interaction.
  .
- Powered by opencc engine with Anthropic Messages API support.
+ Powered by the local OpenCC harness in MateBot mode (opencc --matebot).
  .
  Features:
   - Native Electron desktop interface
@@ -21,4 +21,5 @@ Description: AI-powered coding agent desktop application
   - MCP server support
   - Session persistence and resumption
   - Skill system (~/.claude/skills/ + project-level)
-  - Provider configuration (Anthropic, OpenAI, DeepSeek, etc.)
+  - Engine configuration reuses ~/.claude/settings.json with a
+    ~/.autoagent/settings.json fallback

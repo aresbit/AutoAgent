@@ -1,12 +1,14 @@
 import { ApiError } from "./errors";
 import type {
   ArtifactCreateInput,
+  ArtifactVersionView,
   ArtifactView,
   BootstrapView,
   EngineConfigPatch,
   EngineConfigView,
   EngineStatusView,
   FileDiffView,
+  FrameTokenView,
   McpDiscoverResponse,
   McpServerInput,
   McpServerView,
@@ -207,6 +209,16 @@ const artifactBodies: Record<string, string> = {
   ].join(""),
 };
 
+const artifactVersionShas: Record<string, string[]> = {
+  "artifact-release": [
+    "9f2c1d7a4b8e6053c1a94f2d7e6b0a3c5d8f1e2a4b6c7d9e0f1a2b3c4d5e6f70",
+    "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809",
+  ],
+  "artifact-dashboard": [
+    "c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2",
+  ],
+};
+
 const artifacts: ArtifactView[] = [
   {
     id: "artifact-release",
@@ -218,6 +230,8 @@ const artifacts: ArtifactView[] = [
     versions: [now() - 1000 * 60 * 60 * 26, now() - 1000 * 60 * 90],
     contentUrl: "/api/artifacts/artifact-release/content",
     thumbnailUrl: null,
+    revision: "v2",
+    versionCount: 2,
   },
   {
     id: "artifact-dashboard",
@@ -229,6 +243,8 @@ const artifacts: ArtifactView[] = [
     versions: [now() - 1000 * 60 * 60 * 50],
     contentUrl: "/api/artifacts/artifact-dashboard/content",
     thumbnailUrl: null,
+    revision: "v1",
+    versionCount: 1,
   },
 ];
 
@@ -401,9 +417,9 @@ const sessions: SessionView[] = [
         id: "seed-m6",
         role: "assistant",
         text: [
-          "Here is a self-contained page. Preview it inside a sandbox without scripts or same-origin access.",
+          "Here is a self-contained page. Preview it inside a sandbox that allows scripts but blocks same-origin access and network requests.",
           "",
-          "```html",
+          "```artifact-html",
           "<!doctype html>",
           "<html>",
           "  <body style=\"font-family: sans-serif; padding: 24px\">",
@@ -801,6 +817,56 @@ export const mockApi = {
     return artifactBodies[id] ?? "<!doctype html><title>Artifact</title><p>No content.</p>";
   },
 
+  async artifactVersions(id: string): Promise<ArtifactVersionView[]> {
+    await sleep(90);
+    const artifact = findArtifact(id);
+    const shas = artifactVersionShas[id] ?? [];
+    return [...artifact.versions]
+      .sort((a, b) => b - a)
+      .map((createdAt, index) => ({
+        versionId: `v${artifact.versions.length - index}`,
+        createdAt,
+        sha256: shas[index] ?? "",
+        sizeBytes: (artifactBodies[id] ?? "").length,
+        source: index === 0 ? "turn" : "update",
+        immutable: true,
+        current: `v${artifact.versions.length - index}` === artifact.revision,
+      }));
+  },
+
+  async artifactFrameToken(_id: string, _version?: string): Promise<FrameTokenView> {
+    await sleep(60);
+    // The static mock has no backend frame endpoint; callers fall back to srcDoc.
+    throw new ApiError({
+      status: 404,
+      code: "FRAME_TOKEN_UNAVAILABLE",
+      message: "The interactive frame endpoint is unavailable.",
+      retryable: false,
+    });
+  },
+
+  async restoreArtifactVersion(id: string, versionId: string): Promise<ArtifactView> {
+    await sleep(220);
+    const artifact = findArtifact(id);
+    const valid = new Set(
+      artifact.versions.map((_, index) => `v${artifact.versions.length - index}`),
+    );
+    if (!valid.has(versionId)) {
+      throw new ApiError({
+        status: 404,
+        code: "VERSION_NOT_FOUND",
+        message: "That artifact version no longer exists.",
+        retryable: false,
+      });
+    }
+    const timestamp = now();
+    artifact.versions = [...artifact.versions, timestamp];
+    artifact.updatedAt = timestamp;
+    artifact.revision = `v${artifact.versions.length}`;
+    artifact.versionCount = artifact.versions.length;
+    return structuredClone(artifact);
+  },
+
   async createArtifact(input: ArtifactCreateInput): Promise<ArtifactView> {
     await sleep(180);
     const timestamp = now();
@@ -815,6 +881,8 @@ export const mockApi = {
       versions: [timestamp],
       contentUrl: `/api/artifacts/${id}/content`,
       thumbnailUrl: null,
+      revision: "v1",
+      versionCount: 1,
     };
     artifactBodies[id] = input.html;
     artifacts.unshift(view);
