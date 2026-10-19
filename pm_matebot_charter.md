@@ -33,8 +33,9 @@
 | T23 | M5.2 前端：artifact JSON-RPC 桥/consent + 版本 diff/split UI | complete | T21 | exists:frontend/src/features/artifacts/bridge.ts |
 | T24 | M5.2 桌面：autoagent-artifact 自定义协议 + 专用 preload/partition 子窗口 | complete | T21 | exists:desktop/src/artifact-preload.ts |
 | T25 | M5.2 独立安全评估：工具桥 consent/配额/审计、diff、协议子窗口隔离 | in_progress | T22, T23, T24 | exists:docs/matebot-modernization/evaluation.md |
-| T26 | M5.2 收尾前端：Open in window 接线 + artifact capabilities 编辑器 | pending | T24 | exists:frontend/src/features/artifacts/CapabilitiesEditor.tsx |
-| T27 | M5.2 收尾桌面：native bridge 签名对齐与协议资产打包验证 | pending | T24 | exists:desktop/dist/artifact-protocol.js |
+| T26 | M5.2 收尾前端：Open in window 接线 + artifact capabilities 编辑器 | complete | T24 | exists:frontend/src/features/artifacts/CapabilitiesEditor.tsx |
+| T27 | M5.2 收尾桌面：native bridge 签名对齐与协议资产打包验证 | complete | T24 | exists:desktop/dist/artifact-protocol.js |
+| T28 | Terminal T0：stdlib PTY manager + WebSocket + xterm 面板 | complete | T27 | exists:backend/src/autoagent_backend/adapters/terminal/manager.py |
 
 ## Anti-Trap Control Checklist
 - [ ] Vibe coding constrained: no long unreviewed AI coding streaks
