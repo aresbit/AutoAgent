@@ -25,8 +25,8 @@ with a reinstall instruction.
 
 ```
 release/autoagent_0.8.0_amd64.deb
-135,456,008 bytes
-sha256 5802e841e40fab4008b28af32c955f3220ac0cdc7fba08d72c4550df80832923
+135,480,488 bytes
+sha256 6df3f550fb918ac010fd57c0a387091a9cfe7b07bc3abad549a950a7ee518638
 ```
 
 Self-contained layout:
@@ -189,7 +189,8 @@ The Settings panel is the single place for runtime selection:
 - Packaged: hash reproduced exactly; one setuid `chrome-sandbox` 4755; vendor
   file 644; `--runtime-check` reports `engineMode=matebot`,
   `matebotVendorExists=true`; CSP and immutable asset caching; fake SSE turn;
-  clean shutdown/no orphan.
+  file API (list/read/write/CAS); persistent MCP stdio session with status and
+  invoke; clean shutdown/no orphan.
 - Ubuntu 22.04 compatibility: the packaged ELF floor is **GLIBC_2.34** and the
   control declares `libc6 (>= 2.35)` (22.04 ships 2.35). The backend is the
   portable CPython 3.12 runtime (GLIBC_2.17), not a host-linked Nuitka binary.

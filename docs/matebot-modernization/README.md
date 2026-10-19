@@ -2,7 +2,7 @@
 
 Status as of 2026-10-19: **implemented, packaged, and independently verified.**
 The final artifact is `release/autoagent_0.8.0_amd64.deb` (SHA256
-`5802e841e40fab4008b28af32c955f3220ac0cdc7fba08d72c4550df80832923`). It
+`6df3f550fb918ac010fd57c0a387091a9cfe7b07bc3abad549a950a7ee518638`). It
 includes M5.1 artifacts, M5.2 tool bridge/diff/split/native window, the
 integrated terminal T0 (stdlib PTY + WebSocket + xterm), the workspace file
 browser T0 (`SafeFileService` + Files tab), the browser preview T0

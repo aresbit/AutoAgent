@@ -283,6 +283,78 @@ STALE_STATUS="$(
 grep -q '"code":"HASH_MISMATCH"' "$TMP/stale.json" || die "stale hash code missing"
 log "file API: ok"
 
+log "MCP runtime: persistent stdio session, status and invoke"
+cat >"$TMP/fake_mcp.py" <<'PY'
+import json
+import sys
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    request = json.loads(line)
+    method = request.get("method")
+    request_id = request.get("id")
+    if request_id is None:
+        continue
+    if method == "initialize":
+        result = {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "smoke", "version": "1"},
+        }
+    elif method == "tools/list":
+        result = {"tools": [{
+            "name": "echo",
+            "description": "Echo",
+            "inputSchema": {"type": "object"},
+            "annotations": {"readOnlyHint": True},
+        }]}
+    elif method == "tools/call":
+        result = {"content": [{"type": "text", "text": "pong"}], "isError": False}
+    else:
+        result = {}
+    sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": request_id, "result": result}) + "\n")
+    sys.stdout.flush()
+PY
+curl -fsS --max-time 5 -X PUT \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "{\"name\":\"smoke\",\"transport\":\"stdio\",\"command\":\"python3\",\"args\":[\"$TMP/fake_mcp.py\"]}" \
+  "http://127.0.0.1:$PORT/api/mcp/servers/smoke" -o "$TMP/mcp-put.json"
+curl -fsS --max-time 10 -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"smoke"}' \
+  "http://127.0.0.1:$PORT/api/mcp/discover" -o "$TMP/mcp-discover.json"
+python3 - "$TMP/mcp-discover.json" <<'PY'
+import json, sys
+payload = json.load(open(sys.argv[1]))
+result = payload["results"][0]
+assert result["status"] == "connected", result
+assert result["tools"][0]["name"] == "echo", result
+PY
+curl -fsS --max-time 5 \
+  -H "Authorization: Bearer $TOKEN" \
+  "http://127.0.0.1:$PORT/api/mcp/servers/smoke/status" -o "$TMP/mcp-status.json"
+python3 - "$TMP/mcp-status.json" <<'PY'
+import json, sys
+status = json.load(open(sys.argv[1]))
+assert status["state"] == "connected", status
+assert status["toolCount"] == 1, status
+assert status["pid"], status
+PY
+curl -fsS --max-time 10 -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"server":"smoke","tool":"echo","args":{}}' \
+  "http://127.0.0.1:$PORT/api/tools/invoke" -o "$TMP/mcp-invoke.json"
+grep -q 'pong' "$TMP/mcp-invoke.json" || die "MCP invoke did not return the tool result"
+curl -fsS --max-time 5 -X DELETE \
+  -H "Authorization: Bearer $TOKEN" \
+  "http://127.0.0.1:$PORT/api/mcp/servers/smoke" >/dev/null
+log "MCP runtime: ok"
+
 log "fake turn over SSE"
 SESSION_ID="$(
   curl -fsS -X POST \
