@@ -31,6 +31,7 @@ full subprocess PTY replacement (fork-in-uvicorn risk) remain open.
 | [browser/](browser/HANDOFF.md) | Claude Desktop preview recon and the applied T0 reference |
 | [terminal/](terminal/HANDOFF.md) | Claude Desktop terminal recon and the applied T0 reference (stdlib PTY + xterm) |
 | [mcp/](mcp/HANDOFF.md) | Claude Desktop MCP recon, mcp-fs comparison, and the AutoAgent persistent-MCP reference |
+| [highlights/](highlights/OVERVIEW.md) | Cross-cutting Claude Desktop design highlights: security, observability, orchestration, UX, with borrow ratings |
 
 ## Decisions at a glance
 
