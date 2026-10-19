@@ -249,6 +249,7 @@ PY
     --output-filename="$ENTRY_NAME" \
     --include-package=autoagent_backend \
     --include-package=uvicorn \
+    --include-package=websockets \
     --include-package=fastapi \
     --include-package=pydantic \
     --include-package=pydantic_core \

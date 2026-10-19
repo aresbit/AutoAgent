@@ -5,7 +5,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, Depends, Query
 
 from ...application.session_service import SessionService
-from ..deps import get_session_service
+from ...composition import Container
+from ..deps import get_container, get_session_service
 from ..schemas import (
     BranchSessionRequest,
     CreateSessionRequest,
@@ -57,11 +58,13 @@ def rename_session(
 
 
 @router.delete("/api/sessions/{session_id}", response_model=DeleteResponse)
-def delete_session(
+async def delete_session(
     session_id: str,
     service: SessionService = Depends(get_session_service),
+    container: Container = Depends(get_container),
 ) -> DeleteResponse:
     service.delete(session_id)
+    await container.terminal_manager.destroy_owner(session_id)
     return DeleteResponse(deleted=True)
 
 

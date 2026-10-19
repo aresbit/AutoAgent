@@ -6,6 +6,7 @@ import {
   FolderGit2,
   Puzzle,
   Settings2,
+  Terminal as TerminalIcon,
   X,
 } from "lucide-react";
 import {
@@ -44,6 +45,7 @@ import { SkillsPanel } from "@/features/skills/SkillsPanel";
 import { McpPanel } from "@/features/mcp/McpPanel";
 import { WorkspacePanel } from "@/features/workspace/WorkspacePanel";
 import { ArtifactsPanel } from "@/features/artifacts/ArtifactsPanel";
+import { TerminalPanel } from "@/features/terminal/TerminalPanel";
 import type { ChatArtifact } from "@/features/artifacts/logic";
 import { SessionsPanel } from "@/features/sessions/SessionsPanel";
 import { ChatPanel } from "@/features/chat/ChatPanel";
@@ -258,6 +260,7 @@ export function Shell({
           >
             <RightPanel
               tab={tab}
+              sessionId={activeId}
               onTabChange={setTab}
               settings={settings}
               providers={providers}
@@ -334,6 +337,7 @@ export function Shell({
           >
             <RightPanel
               tab={tab}
+              sessionId={activeId}
               onTabChange={setTab}
               settings={settings}
               providers={providers}
@@ -358,6 +362,7 @@ export function Shell({
 
 function RightPanel({
   tab,
+  sessionId,
   onTabChange,
   settings,
   providers,
@@ -374,6 +379,7 @@ function RightPanel({
   onArtifactRequestHandled,
 }: {
   tab: string;
+  sessionId: string | null;
   onTabChange: (value: string) => void;
   settings: SettingsView;
   providers: ProviderCatalogView;
@@ -394,7 +400,7 @@ function RightPanel({
       <div className="flex items-start gap-2 px-3 py-2.5 hairline-b">
         <TabsList
           label="Control panels"
-          className="grid flex-1 grid-cols-3 gap-0.5 rounded-card p-0.5"
+          className="grid flex-1 grid-cols-4 gap-0.5 rounded-card p-0.5"
         >
           <TabsTrigger value="settings" className="justify-center px-1">
             <Settings2 size={12.5} strokeWidth={2} />
@@ -419,6 +425,10 @@ function RightPanel({
           <TabsTrigger value="artifacts" className="justify-center px-1">
             <Boxes size={12.5} strokeWidth={2} />
             Artifacts
+          </TabsTrigger>
+          <TabsTrigger value="terminal" className="justify-center px-1">
+            <TerminalIcon size={12.5} strokeWidth={2} />
+            Terminal
           </TabsTrigger>
         </TabsList>
         <Tooltip content="Hide controls">
@@ -470,6 +480,12 @@ function RightPanel({
           request={artifactRequest}
           onRequestHandled={onArtifactRequestHandled}
         />
+      </TabsContent>
+      <TabsContent
+        value="terminal"
+        className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden"
+      >
+        <TerminalPanel sessionId={sessionId} />
       </TabsContent>
     </Tabs>
   );

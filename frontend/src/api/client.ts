@@ -65,6 +65,45 @@ export function hasLaunchToken(): boolean {
   return launchToken !== null || useMock;
 }
 
+export function getLaunchToken(): string | null {
+  return launchToken;
+}
+
+export function isMockMode(): boolean {
+  return useMock;
+}
+
+/**
+ * Exchange the launch token for the HttpOnly cookie used by WebSocket
+ * upgrades. The WS handshake cannot set an Authorization header, so the cookie
+ * is the preferred auth path; the query-token fallback exists for tests.
+ */
+export async function ensureSessionCookie(): Promise<void> {
+  if (!launchToken) return;
+  await request<{ ok: boolean; apiVersion: string }>("/api/auth/session", {
+    method: "POST",
+  });
+}
+
+export interface TerminalView {
+  tabId: string;
+  sessionId: string;
+  shell: string;
+  cwd: string;
+  cols: number;
+  rows: number;
+  state: "starting" | "running" | "exited";
+  exitCode: number | null;
+  createdAt: number;
+}
+
+export interface TerminalCreateInput {
+  shell?: string;
+  cwd?: string;
+  cols?: number;
+  rows?: number;
+}
+
 function headersFor(init?: HeadersInit, body?: BodyInit | null): Headers {
   const headers = new Headers(init);
   if (!headers.has("accept")) headers.set("accept", "application/json");
@@ -570,6 +609,29 @@ export const api = {
       : request<ArtifactDiffView>(
           `/api/artifacts/${encodeURIComponent(id)}/diff${query({ from, to })}`,
         );
+  },
+
+  terminals(sessionId: string): Promise<TerminalView[]> {
+    return request<{ terminals: TerminalView[] }>(
+      `/api/sessions/${encodeURIComponent(sessionId)}/terminals`,
+    ).then((result) => result.terminals);
+  },
+
+  createTerminal(
+    sessionId: string,
+    input: TerminalCreateInput = {},
+  ): Promise<TerminalView> {
+    return request<TerminalView>(
+      `/api/sessions/${encodeURIComponent(sessionId)}/terminals`,
+      { method: "POST", body: JSON.stringify(input) },
+    );
+  },
+
+  deleteTerminal(sessionId: string, tabId: string): Promise<void> {
+    return request<{ deleted: boolean }>(
+      `/api/sessions/${encodeURIComponent(sessionId)}/terminals/${encodeURIComponent(tabId)}`,
+      { method: "DELETE" },
+    ).then(() => undefined);
   },
 
   streamEvents(

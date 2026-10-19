@@ -29,7 +29,7 @@ CONTENT_SECURITY_POLICY = (
     "style-src 'self' 'unsafe-inline'; "
     "img-src 'self' data: blob:; "
     "font-src 'self' data:; "
-    "connect-src 'self'; "
+    "connect-src 'self' ws://127.0.0.1:*; "
     "frame-src 'self' data:; "
     "object-src 'none'; "
     "base-uri 'self'; "

@@ -33,6 +33,7 @@ from .adapters.persistence.session_store import SqliteSessionStore
 from .adapters.persistence.settings_store import SqliteSettingsStore
 from .adapters.persistence.sqlite import SqliteDatabase
 from .adapters.skills.fs_catalog import FilesystemSkillCatalog
+from .adapters.terminal.manager import TerminalManager
 from .adapters.workspace.git_cli import GitCliWorkspace
 from .application.artifact_service import ArtifactService
 from .application.artifact_tool_service import ArtifactToolService
@@ -104,6 +105,7 @@ class Container:
     artifact_service: ArtifactService
     artifact_tool_service: ArtifactToolService
     bootstrap_service: BootstrapService
+    terminal_manager: TerminalManager
     closers: list[Callable[[], None]] = field(default_factory=list)
 
     def close(self) -> None:
@@ -154,6 +156,11 @@ def build_container(
     sessions = SqliteSessionStore(db, clock)
     settings_store = SqliteSettingsStore(
         db, clock, default_cwd=str(config.default_cwd)
+    )
+    terminal_manager = TerminalManager(
+        is_cwd_allowed=_terminal_cwd_guard(config, settings_store),
+        max_sessions=config.max_terminals,
+        default_cwd=str(config.default_cwd),
     )
     autoagent_config = AutoAgentConfigStore(config.paths.autoagent_config_path)
     claude_settings = ClaudeSettingsReader()
@@ -279,10 +286,36 @@ def build_container(
         artifact_service=artifact_service,
         artifact_tool_service=artifact_tool_service,
         bootstrap_service=bootstrap_service,
+        terminal_manager=terminal_manager,
     )
+
+    container.closers.append(terminal_manager.shutdown_now)
 
     _initialize(config, container)
     return container
+
+
+def _terminal_cwd_guard(
+    config: BootConfig, settings: SqliteSettingsStore
+) -> Callable[[str], bool]:
+    """Accept only the configured workspace, the default cwd and the data dir."""
+
+    roots = [config.default_cwd.resolve(), config.paths.data_dir.resolve()]
+    try:
+        configured = settings.read().cwd
+    except Exception:
+        configured = None
+    if configured:
+        roots.append(Path(configured).expanduser().resolve())
+
+    def allowed(candidate: str) -> bool:
+        try:
+            path = Path(candidate).resolve()
+        except OSError:
+            return False
+        return any(path == root or path.is_relative_to(root) for root in roots)
+
+    return allowed
 
 
 def _initialize(config: BootConfig, container: Container) -> None:

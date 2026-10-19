@@ -25,8 +25,8 @@ with a reinstall instruction.
 
 ```
 release/autoagent_0.8.0_amd64.deb
-133,336,468 bytes
-sha256 b0933a6b402d973bbaa16c78fe4532681b4522e8aa0384e9719f9bb2479a3a35
+134,860,224 bytes
+sha256 9ff5311e8043e5a58b233afe13ad64ac37eb5e5fe60128fe3619c15160ec49b1
 ```
 
 Self-contained layout:
@@ -65,6 +65,25 @@ Self-contained layout:
   `turn.started → message.delta → tool.start/result → usage →
   message.completed → turn.completed`.
 - `SubprocessEngine` remains as a fallback; `FakeEngine` is test/demo only.
+
+## Integrated terminal (T0)
+
+- Backend: `adapters/terminal/manager.py` (stdlib PTY, shell/cwd allowlist,
+  process-group kill, PDEATHSIG, 1 MiB replay ring) and
+  `api/routes/terminals.py` (REST + WebSocket, cookie/token/Origin gate,
+  per-session tabs). `websockets` is a backend dependency and a Nuitka include.
+- Frontend: `features/terminal/` (`TerminalPane`, `terminalClient`,
+  `useTerminalTabs`, `TerminalPanel`); a Terminal tab in the right panel.
+  xterm is lazy-loaded; the panel authenticates the WS with the HttpOnly cookie.
+- CSP: `connect-src 'self' ws://127.0.0.1:*`; deleting a session destroys its
+  PTYs.
+- Verified: 263 backend tests (17 manager + 2 integration), frontend
+  typecheck/build, live WS (`printf hello` → output, `exit` code 0), packaged
+  backend WS, and a GUI end-to-end screenshot
+  (`frontend/screenshots/m5-terminal.png`).
+- Limitation: `fork()` in multi-threaded uvicorn is the top architectural risk;
+  T1 should move to a subprocess PTY broker. T0 has no bottom dock, search,
+  OSC 133, or disk logs.
 
 ## Configuration
 

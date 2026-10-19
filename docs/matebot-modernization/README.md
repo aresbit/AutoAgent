@@ -1,11 +1,13 @@
 # MateBot Modernization — Documentation Index
 
-Status as of 2026-10-17: **implemented, packaged, and independently verified.**
+Status as of 2026-10-19: **implemented, packaged, and independently verified.**
 The final artifact is `release/autoagent_0.8.0_amd64.deb` (SHA256
-`b0933a6b402d973bbaa16c78fe4532681b4522e8aa0384e9719f9bb2479a3a35`). The
-independent evaluation passes all P0 gates with no P0/P1; the packaged legacy
-entry now fails fast with a reinstall instruction instead of hanging. Root-only
-install/upgrade/remove and a real-model soak remain unverified.
+`9ff5311e8043e5a58b233afe13ad64ac37eb5e5fe60128fe3619c15160ec49b1`). It
+includes M5.1 artifacts, M5.2 tool bridge/diff/split/native window, and the
+integrated terminal T0 (stdlib PTY + WebSocket + xterm). The packaged legacy
+entry fails fast with a reinstall instruction. Root-only install/upgrade/remove,
+a real-model soak, and the full subprocess PTY replacement (fork-in-uvicorn
+risk) remain open.
 
 ## Read in this order
 
@@ -77,6 +79,9 @@ install/upgrade/remove and a real-model soak remain unverified.
 | M5 | Parity panels (skills/MCP/workspace/artifacts) | done |
 | M6 | Nuitka `.deb`, X11/Wayland | done; backend binary non-deterministic |
 | M7 | Independent evaluation | done; P0 pass, P1 rollback, unverified root install/soak |
+| M5.1 | Artifacts: materialization, immutable versions, safe frame | done |
+| M5.2 | Artifact tool bridge/consent, diff/split, native window | done |
+| T0 | Integrated terminal: stdlib PTY + WebSocket + xterm | done; fork-in-uvicorn risk noted |
 
 ## First commands
 

@@ -69,6 +69,8 @@ class BootConfig:
     frontend_dist: Path = field(default_factory=default_frontend_dist)
     default_cwd: Path = field(default_factory=lambda: Path.home().resolve())
     matebot_vendor: Path = field(default_factory=default_matebot_vendor_path)
+    terminals_enabled: bool = True
+    max_terminals: int = 12
 
     @property
     def origin(self) -> str:
@@ -168,4 +170,6 @@ def config_from_env(
         frontend_dist=paths.frontend_dist,
         default_cwd=default_cwd,
         matebot_vendor=matebot_vendor,
+        terminals_enabled=_parse_bool(env.get("AUTOAGENT_TERMINALS", "1")),
+        max_terminals=_parse_int(env.get("AUTOAGENT_MAX_TERMINALS"), 12),
     )
