@@ -126,7 +126,7 @@ async function main(): Promise<void> {
     ) {
         // MACRO.VERSION is inlined at build time
         // biome-ignore lint/suspicious/noConsole:: intentional console output
-        console.log(`${MACRO.VERSION} (Claude Code)`);
+        console.log(`${MACRO.VERSION} (opencc)`);
         return;
     }
 
@@ -157,6 +157,13 @@ async function main(): Promise<void> {
         const prompt = await getSystemPrompt([], model);
         // biome-ignore lint/suspicious/noConsole:: intentional console output
         console.log(prompt.join("\n"));
+        return;
+    }
+    // `opencc actord`: the wrapper puts flags first, so match the first
+    // positional argument rather than argv[2].
+    if (args.find(arg => !arg.startsWith("-")) === "actord") {
+        const { runActord } = await import("../actor/net/actord.js");
+        await runActord();
         return;
     }
     if (process.argv[2] === "--claude-in-chrome-mcp") {

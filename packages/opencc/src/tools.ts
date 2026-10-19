@@ -15,11 +15,21 @@ import { BriefTool } from './tools/BriefTool/BriefTool.js'
 import { AutoresearchTool } from './tools/AutoresearchTool/AutoresearchTool.js'
 import { MemoryTool } from './tools/MemoryTool/MemoryTool.js'
 import { Paper2CodeTool } from './tools/Paper2CodeTool/Paper2CodeTool.js'
+import { RepoToSkillTool } from './tools/RepoToSkillTool/RepoToSkillTool.js'
+import { DiscoverSkillsTool } from './tools/DiscoverSkillsTool/DiscoverSkillsTool.js'
+import { ProbeTool } from './tools/ProbeTool/ProbeTool.js'
+import { RedTeamLoopTool } from './tools/RedTeamLoopTool/RedTeamLoopTool.js'
+import { SreTool } from './tools/SreTool/SreTool.js'
+import { ProtocolReTool } from './tools/ProtocolReTool/ProtocolReTool.js'
+import { ApiReTool } from './tools/ApiReTool/ApiReTool.js'
+import { EvolveTool } from './tools/EvolveTool/EvolveTool.js'
+import { ShowMeTool } from './tools/ShowMeTool/ShowMeTool.js'
 import { QuantVerifyTool } from './tools/QuantVerifyTool/QuantVerifyTool.js'
 import { SoftwareAnalysisTool } from './tools/SoftwareAnalysisTool/SoftwareAnalysisTool.js'
 import { QuantOrientTool } from './tools/QuantOrientTool/QuantOrientTool.js'
 import { ManuscriptCheckTool } from './tools/ManuscriptCheckTool/ManuscriptCheckTool.js'
 import { WideResearchTool } from './tools/WideResearchTool/WideResearchTool.js'
+import { AstGrepTool } from './tools/AstGrepTool/AstGrepTool.js'
 import { SelfImproveTool } from './tools/SelfImproveTool/SelfImproveTool.js'
 import { WikiTool } from './tools/WikiTool/WikiTool.js'
 import { KimiTool } from './tools/KimiTool/KimiTool.js'
@@ -37,6 +47,10 @@ import { AwrStRunTool } from './tools/AwrStRunTool/AwrStRunTool.js'
 import { EvalApplyTool } from './tools/EvalApplyTool/EvalApplyTool.js'
 import { ActorTool } from './tools/ActorTool/ActorTool.js'
 import { SSHRemoteTool } from './tools/SSHRemoteTool/SSHRemoteTool.js'
+import { CodeRunTool } from './tools/CodeRunTool/CodeRunTool.js'
+import { DerefTool } from './tools/DerefTool/DerefTool.js'
+import { Prove2MeTool } from './tools/Prove2MeTool/Prove2MeTool.js'
+import { getSyntheticTools } from './services/functionHooks/plugins/jitSynthesisHook.js'
 // Dead code elimination: conditional import for ant-only tools
 /* eslint-disable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 const REPLTool =
@@ -112,12 +126,13 @@ import { GoalCreateTool } from './tools/GoalTool/GoalCreateTool.js'
 import { GoalGetTool } from './tools/GoalTool/GoalGetTool.js'
 import { GoalUpdateTool } from './tools/GoalTool/GoalUpdateTool.js'
 import { GoalClearTool } from './tools/GoalTool/GoalClearTool.js'
-import { McpFsTool } from './tools/McpFsTool/McpFsTool.js'
-import { McpFsDiscoverTool } from './tools/McpFsTool/McpFsDiscoverTool.js'
-import { McpFsReadTool } from './tools/McpFsTool/McpFsReadTool.js'
-import { McpFsExecTool } from './tools/McpFsTool/McpFsExecTool.js'
 import { CodeActTool } from './tools/CodeActTool/CodeActTool.js'
 import { ActionTool } from './tools/ActionTool/ActionTool.js'
+import { NumberTheoryMasterTool } from './tools/NumberTheoryMasterTool/NumberTheoryMasterTool.js'
+import { CombinatoricsMasterTool } from './tools/CombinatoricsMasterTool/CombinatoricsMasterTool.js'
+import { AnalysisMasterTool } from './tools/AnalysisMasterTool/AnalysisMasterTool.js'
+import { AlgebraMasterTool } from './tools/AlgebraMasterTool/AlgebraMasterTool.js'
+import { FFramesTool } from './tools/FFramesTool/FFramesTool.js'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { isToolSearchEnabledOptimistic } from './utils/toolSearch.js'
 import { isTodoV2Enabled } from './utils/tasks.js'
@@ -232,6 +247,9 @@ export function getAllBaseTools(): Tools {
     // trick as ripgrep). When available, find/grep in Claude's shell are aliased
     // to these fast tools, so the dedicated Glob/Grep tools are unnecessary.
     ...(hasEmbeddedSearchTools() ? [] : [GlobTool, GrepTool]),
+    // Structural search sits next to the textual one: same file enumeration,
+    // different question. Grep finds a string, this finds a shape.
+    AstGrepTool,
     ExitPlanModeV2Tool,
     FileReadTool,
     FileEditTool,
@@ -247,6 +265,15 @@ export function getAllBaseTools(): Tools {
     AutoresearchTool,
     MemoryTool,
     Paper2CodeTool,
+    RepoToSkillTool,
+    DiscoverSkillsTool,
+    ProbeTool,
+    RedTeamLoopTool,
+    SreTool,
+    ProtocolReTool,
+    ApiReTool,
+    EvolveTool,
+    ShowMeTool,
     QuantVerifyTool,
     SoftwareAnalysisTool,
     QuantOrientTool,
@@ -266,6 +293,11 @@ export function getAllBaseTools(): Tools {
     LearnTool,
     AwrOpsTool,
     AwrStRunTool,
+    NumberTheoryMasterTool,
+    CombinatoricsMasterTool,
+    AnalysisMasterTool,
+    AlgebraMasterTool,
+    FFramesTool,
     EvalApplyTool,
     ActorTool,
     SSHRemoteTool,
@@ -281,11 +313,14 @@ export function getAllBaseTools(): Tools {
     GoalGetTool,
     GoalUpdateTool,
     GoalClearTool,
-    McpFsTool,
-    McpFsDiscoverTool,
-    McpFsReadTool,
-    McpFsExecTool,
     CodeActTool,
+    CodeRunTool,
+    // The recovery path for handle-ized tool results. contextHandleHook and
+    // contextShuntHook both point the model at it by name on every large
+    // result, so it has to be registered unconditionally or those results are
+    // narrowed with nothing to narrow back from.
+    DerefTool,
+    Prove2MeTool,
     ActionTool,
     ...(OverflowTestTool ? [OverflowTestTool] : []),
     ...(CtxInspectTool ? [CtxInspectTool] : []),
@@ -318,6 +353,8 @@ export function getAllBaseTools(): Tools {
     // Include ToolSearchTool when tool search might be enabled (optimistic check)
     // The actual decision to defer tools happens at request time in claude.ts
     ...(isToolSearchEnabledOptimistic() ? [ToolSearchTool] : []),
+    // JIT-synthesized tools: detected from repeated tool-call patterns
+    ...getSyntheticTools(),
   ]
 }
 

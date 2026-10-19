@@ -86,6 +86,7 @@ import {
   stripAdvisorBlocks,
   stripCallerFieldFromAssistantMessage,
   stripToolReferenceBlocksFromUserMessage,
+  toolReferencesToText,
 } from '../../utils/messages.js'
 import {
   getDefaultOpusModel,
@@ -170,6 +171,7 @@ import { CLAUDE_IN_CHROME_MCP_SERVER_NAME } from 'src/utils/claudeInChrome/commo
 import { CHROME_TOOL_SEARCH_INSTRUCTIONS } from 'src/utils/claudeInChrome/prompt.js'
 import { getMaxThinkingTokensForModel } from 'src/utils/context.js'
 import { logForDebugging } from 'src/utils/debug.js'
+import { API_TOOL_NAME_LIMIT } from 'src/utils/toolName.js'
 import { logForDiagnosticsNoPII } from 'src/utils/diagLogs.js'
 import { type EffortValue, modelSupportsEffort } from 'src/utils/effort.js'
 import {
@@ -190,6 +192,7 @@ import {
 } from 'src/utils/thinking.js'
 import {
   extractDiscoveredToolNames,
+  isClientSideToolSearch,
   isDeferredToolsDeltaEnabled,
   isToolSearchEnabled,
 } from 'src/utils/toolSearch.js'
@@ -859,6 +862,24 @@ export async function* executeNonStreamingRequest(
         MAX_NON_STREAMING_TOKENS,
       )
 
+      // The SDK's own `timeout` option only covers fetch() up to the response
+      // headers: it clears its timer as soon as fetch() resolves, so a backend
+      // that returns headers and then stalls the body would hang this attempt
+      // forever — the same gap the streaming idle watchdog exists to close.
+      // Arm our own timer, released only when the attempt actually settles, and
+      // compose it with the caller's signal. setTimeout rather than
+      // AbortSignal.timeout() so the timer can be cleared on completion:
+      // AbortSignal.timeout's internal timer is only released on GC, which in
+      // Bun is lazy (see the same pattern in services/mcp/client.ts).
+      const timeoutController = new AbortController()
+      const bodyTimer = setTimeout(
+        c =>
+          c.abort(new DOMException('The operation timed out.', 'TimeoutError')),
+        fallbackTimeoutMs,
+        timeoutController,
+      )
+      bodyTimer.unref?.()
+
       try {
         // biome-ignore lint/plugin: non-streaming API call
         return await anthropic.beta.messages.create(
@@ -867,13 +888,25 @@ export async function* executeNonStreamingRequest(
             model: normalizeModelStringForAPI(adjustedParams.model),
           },
           {
-            signal: retryOptions.signal,
+            signal: AbortSignal.any([
+              retryOptions.signal,
+              timeoutController.signal,
+            ]),
+            // Covers the header phase; the body phase is covered by
+            // timeoutController above.
             timeout: fallbackTimeoutMs,
           },
         )
       } catch (err) {
-        // User aborts are not errors — re-throw immediately without logging
-        if (err instanceof APIUserAbortError) throw err
+        // User aborts are not errors — re-throw immediately without logging.
+        // Only a genuine user abort qualifies: an abort raised by our own
+        // body-phase timer is a timeout, handled after the instrumentation.
+        if (
+          err instanceof APIUserAbortError &&
+          !timeoutController.signal.aborted
+        ) {
+          throw err
+        }
 
         // Instrumentation: record when the non-streaming request errors (including
         // timeouts). Lets us distinguish "fallback hung past container kill"
@@ -891,7 +924,16 @@ export async function* executeNonStreamingRequest(
           request_id: (originatingRequestId ??
             'unknown') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         })
+
+        // If our own body-phase timer fired, surface a clean timeout rather
+        // than letting it look like a user abort (mirrors the streaming path,
+        // which throws APIConnectionTimeoutError in the same situation).
+        if (timeoutController.signal.aborted && !retryOptions.signal.aborted) {
+          throw new APIConnectionTimeoutError({ message: 'Request timed out' })
+        }
         throw err
+      } finally {
+        clearTimeout(bodyTimer)
       }
     },
     {
@@ -1147,6 +1189,10 @@ async function* queryModel(
     useToolSearch = false
   }
 
+  // Client-side tool search (non-Anthropic endpoint): same filtering, but no
+  // defer_loading, no beta header, and tool_reference reaches the API as text.
+  const clientToolSearch = useToolSearch && isClientSideToolSearch()
+
   // Filter out ToolSearchTool if tool search is not enabled for this model
   // ToolSearchTool returns tool_reference blocks which unsupported models can't handle
   let filteredTools: Tools
@@ -1174,7 +1220,8 @@ async function* queryModel(
   // Add tool search beta header if enabled - required for defer_loading to be accepted
   // Header differs by provider: 1P/Foundry use advanced-tool-use, Vertex/Bedrock use tool-search-tool
   // For Bedrock, this header must go in extraBodyParams, not the betas array
-  const toolSearchHeader = useToolSearch ? getToolSearchBetaHeader() : null
+  const toolSearchHeader =
+    useToolSearch && !clientToolSearch ? getToolSearchBetaHeader() : null
   if (toolSearchHeader && getAPIProvider() !== 'bedrock') {
     if (!betas.includes(toolSearchHeader)) {
       betas.push(toolSearchHeader)
@@ -1206,7 +1253,9 @@ async function* queryModel(
 
   const useGlobalCacheFeature = shouldUseGlobalCacheScope()
   const willDefer = (t: Tool) =>
-    useToolSearch && (deferredToolNames.has(t.name) || shouldDeferLspTool(t))
+    useToolSearch &&
+    !clientToolSearch &&
+    (deferredToolNames.has(t.name) || shouldDeferLspTool(t))
   // MCP tools are per-user → dynamic tool section → can't globally cache.
   // Only gate when an MCP tool will actually render (not defer_loading).
   const needsToolBasedCacheMarker =
@@ -1280,12 +1329,15 @@ async function* queryModel(
   // Note: For assistant messages, normalizeMessagesForAPI already normalized the
   // tool inputs, so stripCallerFieldFromAssistantMessage only needs to remove the
   // 'caller' field (not re-normalize inputs).
-  if (!useToolSearch) {
+  if (!useToolSearch || clientToolSearch) {
     messagesForAPI = messagesForAPI.map(msg => {
       switch (msg.type) {
         case 'user':
-          // Strip tool_reference blocks from tool_result content
-          return stripToolReferenceBlocksFromUserMessage(msg)
+          // Client-side: keep the discovery visible as text. Otherwise strip
+          // tool_reference blocks from tool_result content.
+          return clientToolSearch
+            ? toolReferencesToText(msg)
+            : stripToolReferenceBlocksFromUserMessage(msg)
         case 'assistant':
           // Strip 'caller' field from tool_use blocks
           return stripCallerFieldFromAssistantMessage(msg)
@@ -1393,7 +1445,27 @@ async function* queryModel(
       model: advisorModel,
     } as unknown as BetaToolUnion)
   }
-  const allTools = [...toolSchemas, ...extraToolSchemas]
+  // Safety net for the tool-name cap. An over-long name does not degrade — the
+  // provider rejects the entire request with a 400 the model never sees
+  // ("Invalid 'tools[N].name': string too long"), which reads as a dead
+  // session. Runtime-generated names go through clampToolName() at their
+  // source; this catches any that reach the request another way. Dropping only
+  // removes the tool from the model's view — local name lookup still uses the
+  // unfiltered list, so an existing tool_use still resolves.
+  const allToolSchemas = [...toolSchemas, ...extraToolSchemas]
+  const overlongTools = allToolSchemas.filter(
+    t => t.name.length > API_TOOL_NAME_LIMIT,
+  )
+  if (overlongTools.length > 0) {
+    logForDebugging(
+      `Dropped ${overlongTools.length} tool(s) over the ${API_TOOL_NAME_LIMIT}-char API tool-name limit: ` +
+        overlongTools.map(t => `${t.name} (${t.name.length})`).join(', '),
+    )
+  }
+  const allTools =
+    overlongTools.length === 0
+      ? allToolSchemas
+      : allToolSchemas.filter(t => t.name.length <= API_TOOL_NAME_LIMIT)
 
   // DeepSeek: sync tool schemas into optimizer for byte-level prefix tracking.
   // Synchronous — must complete before paramsFromContext runs analyze() below.
@@ -1897,8 +1969,16 @@ async function* queryModel(
     // kill hung streams. Without this, a silently dropped connection can hang
     // the session indefinitely since the SDK's request timeout only covers the
     // initial fetch(), not the streaming body.
-    const streamWatchdogEnabled = isEnvTruthy(
-      process.env.CLAUDE_ENABLE_STREAM_WATCHDOG,
+    //
+    // ON by default. This previously required CLAUDE_ENABLE_STREAM_WATCHDOG to
+    // be set, which meant the default configuration had no protection at all:
+    // a proxy that drops the stream mid-response (observed with non-Anthropic
+    // backends behind a local proxy) left the turn awaiting a message_stop that
+    // never arrived, hanging the agent forever with no error. Opt out with
+    // CLAUDE_DISABLE_STREAM_WATCHDOG=1 if a backend legitimately keeps a stream
+    // open with no chunks for longer than the timeout.
+    const streamWatchdogEnabled = !isEnvTruthy(
+      process.env.CLAUDE_DISABLE_STREAM_WATCHDOG,
     )
     const STREAM_IDLE_TIMEOUT_MS =
       parseInt(process.env.CLAUDE_STREAM_IDLE_TIMEOUT_MS || '', 10) || 90_000

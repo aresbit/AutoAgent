@@ -21,6 +21,10 @@ const inputSchema = lazySchema(() =>
       'type',
       'loadall',
       'evalraw',
+      'rec',
+      'rec-auto',
+      'rec-stop',
+      'shots',
       'stop',
     ]).describe('The CDP command to execute'),
     target: z.string().optional().describe('Target ID prefix (required for most commands except list and stop)'),
@@ -108,6 +112,10 @@ export const ChromeCDPTool = buildTool({
     if (command === 'type') return `Typing text${target ? ` on ${target}` : ''}`
     if (command === 'html') return `Getting HTML${target ? ` from ${target}` : ''}`
     if (command === 'net') return `Getting network entries${target ? ` from ${target}` : ''}`
+    if (command === 'rec') return `Recording${target ? ` ${target}` : ''}`
+    if (command === 'rec-auto') return 'Toggling session recording'
+    if (command === 'rec-stop') return `Stopping recording${target ? ` of ${target}` : ' of every page'}`
+    if (command === 'shots') return 'Toggling automatic screenshots'
     return `Running Chrome CDP ${command}`
   },
   get inputSchema(): InputSchema {
@@ -122,7 +130,10 @@ export const ChromeCDPTool = buildTool({
   isReadOnly(input) {
     const { command } = input || {}
     // These commands don't modify the page
-    return ['list', 'snap', 'shot', 'html', 'net'].includes(command || '')
+    // Recording and the capture toggle observe the page; they never drive it.
+    return [
+      'list', 'snap', 'shot', 'html', 'net', 'rec', 'rec-auto', 'rec-stop', 'shots',
+    ].includes(command || '')
   },
   isDestructive(input) {
     const { command } = input || {}
@@ -156,14 +167,42 @@ Use this tool to:
 - Click elements: command 'click' with args ['selector'] or 'clickxy' with args ['x', 'y']
 - Type text: command 'type' with args ['selector', 'text']
 - Get network entries: command 'net'
+- Record the page: command 'rec', then command 'rec-stop' to finish
+- Record the whole session: command 'rec-auto' with args ['on']
 - Stop CDP session: command 'stop'
+
+AUTOMATIC SCREENSHOTS
+'nav', 'click', 'clickxy' and 'type' capture the page before and after the
+action and append both file paths to the result. Read those images when the
+result text alone does not say whether the action did what you meant — what a
+selector returned and what the page did are different questions. Command
+'shots' with args ['off'] turns the capture off for noisy loops, ['on'] back on.
+
+RECORDING
+Command 'rec' starts a screencast and returns immediately; drive the page, then
+command 'rec-stop' to collect the frames and compose a video. Chrome emits a
+frame only when the page changes, so a page that never repaints records nothing
+— that is not a failure. If the machine has no usable ffmpeg the frames are
+kept as stills and the result says so.
+
+Command 'rec-auto' with args ['on'] records the whole session instead of one
+bracket: every page the browser daemon touches is recorded from the moment it
+is attached, and each video is composed when that page closes, on 'rec-auto'
+with args ['off'], on 'rec-stop' with no target, or when the daemon stops. Use
+it when you do not yet know which step will be the one worth watching. Frames
+come on repaint rather than on a clock, so the video is a time-lapse and the
+result says by how much it is compressed.
 
 Most commands require a target ID prefix. Use 'list' first to get available targets.
 This local tool is auto-allowed and does not require per-use approval.`
   },
   async validateInput(input) {
     const { command, target } = input
-    const needsTarget = !['list', 'stop'].includes(command)
+    // 'shots' and 'rec-auto' toggle daemon-wide state rather than acting on a
+    // page, and 'rec-stop' without one finishes every recording of the session.
+    const needsTarget = !['list', 'stop', 'shots', 'rec-auto', 'rec-stop'].includes(
+      command,
+    )
     if (needsTarget && !target) {
       return {
         result: false,

@@ -1,0 +1,499 @@
+/**
+ * select() — Multiplexed Event Waiting.
+ *
+ * The agent today is a blocking single-threaded program: while waiting
+ * for user input it cannot watch subagents, and while waiting for a
+ * subagent it cannot handle timers. select() is async I/O multiplexing
+ * — the dividing line between batch processing and an interactive OS.
+ *
+ * select({ user_input, subagent_done, timeout_5min }) returns whichever
+ * fires first. "Wait for human approval while running background tests,
+ * handle whoever comes back first" becomes expressible.
+ *
+ * Modeled after POSIX select/poll/epoll: register interest in multiple
+ * event sources, block until one fires, return the ready set.
+ *
+ * Ring placement: ring 1 (manager plugin) — multiplexing is a scheduler
+ * primitive, not a user-space concern.
+ */
+
+import type { OnRegistrar } from '../types.js'
+
+// ── Types ───────────────────────────────────────────────────────
+
+export type EventSourceKind =
+  | 'timer'
+  | 'subagent'
+  | 'user_input'
+  | 'file_change'
+  | 'tool_complete'
+  | 'actor_rx'
+  | 'custom'
+
+export interface EventSource {
+  kind: EventSourceKind
+  id: string
+  label?: string
+  /** For timer: milliseconds. */
+  timeout?: number
+  /** For subagent: agent ID to watch. */
+  agentId?: string
+  /** For file_change: glob pattern. */
+  pattern?: string
+  /** For custom: predicate checked each poll cycle. */
+  predicate?: () => boolean | Promise<boolean>
+}
+
+export interface SelectResult {
+  /** The source that fired. */
+  source: EventSource
+  /** When it fired. */
+  firedAt: number
+  /** Payload from the event (tool result, agent output, etc.). */
+  payload?: unknown
+  /** How long select() waited. */
+  waited: number
+}
+
+export interface SelectOptions {
+  /** Event sources to multiplex. At least 1 required. */
+  sources: EventSource[]
+  /** Overall timeout in ms. 0 = no timeout (dangerous). */
+  timeout?: number
+  /** Return all ready sources, not just the first. */
+  returnAll?: boolean
+}
+
+export interface PollEntry {
+  id: string
+  source: EventSource
+  ready: boolean
+  payload?: unknown
+  registeredAt: number
+}
+
+// ── State ───────────────────────────────────────────────────────
+
+const activeSelects = new Map<string, {
+  options: SelectOptions
+  entries: PollEntry[]
+  resolve: (result: SelectResult | SelectResult[]) => void
+  reject: (error: Error) => void
+  startedAt: number
+  timeoutHandle?: ReturnType<typeof setTimeout>
+  /**
+   * Handles for this select's own source timers/pollers. Cleared when the
+   * select settles so a source that never fired cannot fire into the void
+   * afterwards and be buffered as a stale event for a later select with the
+   * same kind+id — a stale buffered timer wakes that select instantly for no
+   * reason.
+   */
+  cleanups: Array<() => void>
+}>()
+
+const eventBuffer = new Map<string, { payload: unknown; firedAt: number }>()
+let selectCounter = 0
+
+const MAX_ACTIVE_SELECTS = 10
+const MAX_SOURCES_PER_SELECT = 20
+const DEFAULT_POLL_INTERVAL = 100 // ms
+const DEFAULT_TIMEOUT = 600_000 // 10 minutes
+/** Delay before rejecting an over-cap select, so a retry loop cannot spin. */
+const OVERLOAD_BACKPRESSURE_MS = 50
+
+// ── Helpers ─────────────────────────────────────────────────────
+
+function generateSelectId(): string {
+  selectCounter++
+  return `sel_${selectCounter.toString(16).padStart(4, '0')}`
+}
+
+function matchesSource(event: { kind: EventSourceKind; id?: string; agentId?: string }, source: EventSource): boolean {
+  if (event.kind !== source.kind) return false
+
+  switch (source.kind) {
+    case 'subagent':
+      return !source.agentId || event.agentId === source.agentId
+    case 'timer':
+      return event.id === source.id
+    case 'user_input':
+      return true
+    case 'file_change':
+      return true
+    case 'tool_complete':
+      return !source.id || event.id === source.id
+    case 'actor_rx':
+      return !source.id || event.id === source.id
+    case 'custom':
+      return event.id === source.id
+    default:
+      return false
+  }
+}
+
+// ── Core Operations ─────────────────────────────────────────────
+
+function setupTimerSource(
+  state: { cleanups: Array<() => void> },
+  source: EventSource,
+): void {
+  if (source.kind !== 'timer' || !source.timeout) return
+
+  const handle = setTimeout(() => {
+    fireEvent({
+      kind: 'timer',
+      id: source.id,
+      payload: { elapsed: source.timeout },
+      firedAt: Date.now(),
+    })
+  }, source.timeout)
+  state.cleanups.push(() => clearTimeout(handle))
+}
+
+function fireEvent(event: {
+  kind: EventSourceKind
+  id: string
+  agentId?: string
+  payload?: unknown
+  firedAt: number
+}): void {
+  // Check all active selects for matching sources
+  for (const [selectId, state] of activeSelects) {
+    for (const entry of state.entries) {
+      if (!entry.ready && matchesSource(event, entry.source)) {
+        entry.ready = true
+        entry.payload = event.payload
+
+        // Check if we should resolve
+        if (state.options.returnAll) {
+          const allReady = state.entries.every(e => e.ready)
+          if (allReady) {
+            resolveSelect(selectId, state.entries.map(e => ({
+              source: e.source,
+              firedAt: event.firedAt,
+              payload: e.payload,
+              waited: event.firedAt - state.startedAt,
+            })))
+          }
+        } else {
+          resolveSelect(selectId, {
+            source: entry.source,
+            firedAt: event.firedAt,
+            payload: event.payload,
+            waited: event.firedAt - state.startedAt,
+          })
+        }
+        return
+      }
+    }
+  }
+
+  // Buffer the event for future selects
+  eventBuffer.set(`${event.kind}:${event.id}`, {
+    payload: event.payload,
+    firedAt: event.firedAt,
+  })
+
+  // Keep buffer bounded
+  if (eventBuffer.size > 1000) {
+    const oldest = eventBuffer.keys().next().value
+    if (oldest) eventBuffer.delete(oldest)
+  }
+}
+
+function releaseSelectHandles(state: {
+  timeoutHandle?: ReturnType<typeof setTimeout>
+  cleanups: Array<() => void>
+}): void {
+  if (state.timeoutHandle) clearTimeout(state.timeoutHandle)
+  for (const cleanup of state.cleanups) cleanup()
+}
+
+function resolveSelect(
+  selectId: string,
+  result: SelectResult | SelectResult[],
+): void {
+  const state = activeSelects.get(selectId)
+  if (!state) return
+
+  releaseSelectHandles(state)
+  activeSelects.delete(selectId)
+  state.resolve(result)
+}
+
+function rejectSelect(selectId: string, error: Error): void {
+  const state = activeSelects.get(selectId)
+  if (!state) return
+
+  releaseSelectHandles(state)
+  activeSelects.delete(selectId)
+  state.reject(error)
+}
+
+async function runSelect(options: SelectOptions): Promise<SelectResult | SelectResult[]> {
+  if (activeSelects.size >= MAX_ACTIVE_SELECTS) {
+    // Backpressure, not just a diagnostic. This rejection is a resource cap,
+    // and the natural way to consume select() is a loop that catches and
+    // retries — so an immediate synchronous throw hands that caller an
+    // infinite loop made entirely of microtasks, which starves the macrotask
+    // queue and takes stdin, timers and rendering down with it. That is
+    // exactly how a session came up unable to accept input. Yielding a real
+    // tick first cannot fix a caller that ignores backpressure, but it does
+    // mean the cap degrades into slowness rather than a frozen process.
+    await new Promise<void>(resolve => setTimeout(resolve, OVERLOAD_BACKPRESSURE_MS))
+    throw new Error(
+      `Too many active selects (max ${MAX_ACTIVE_SELECTS}). ` +
+        'A caller is starting selects faster than they resolve — check that ' +
+        'the loop owning them is not being recreated on every render.',
+    )
+  }
+
+  if (options.sources.length === 0) {
+    throw new Error('select() requires at least 1 event source')
+  }
+
+  if (options.sources.length > MAX_SOURCES_PER_SELECT) {
+    throw new Error(`Too many sources (max ${MAX_SOURCES_PER_SELECT})`)
+  }
+
+  const selectId = generateSelectId()
+  const entries: PollEntry[] = options.sources.map(source => ({
+    id: source.id,
+    source,
+    ready: false,
+    registeredAt: Date.now(),
+  }))
+
+  // Check buffered events for immediate matches
+  for (const entry of entries) {
+    const bufKey = `${entry.source.kind}:${entry.source.id}`
+    const buffered = eventBuffer.get(bufKey)
+    if (buffered) {
+      entry.ready = true
+      entry.payload = buffered.payload
+      eventBuffer.delete(bufKey)
+    }
+  }
+
+  // If any source is already ready, return immediately
+  const readyEntries = entries.filter(e => e.ready)
+  if (readyEntries.length > 0) {
+    if (options.returnAll && readyEntries.length === entries.length) {
+      return entries.map(e => ({
+        source: e.source,
+        firedAt: Date.now(),
+        payload: e.payload,
+        waited: 0,
+      }))
+    } else if (!options.returnAll) {
+      const first = readyEntries[0]
+      return {
+        source: first.source,
+        firedAt: Date.now(),
+        payload: first.payload,
+        waited: 0,
+      }
+    }
+  }
+
+  return new Promise<SelectResult | SelectResult[]>((resolve, reject) => {
+    const startedAt = Date.now()
+    const timeout = options.timeout ?? DEFAULT_TIMEOUT
+
+    const state = {
+      options,
+      entries,
+      resolve,
+      reject,
+      startedAt,
+      timeoutHandle: undefined as ReturnType<typeof setTimeout> | undefined,
+      cleanups: [] as Array<() => void>,
+    }
+
+    // Set up timeout
+    if (timeout > 0) {
+      state.timeoutHandle = setTimeout(() => {
+        rejectSelect(selectId, new Error(
+          `select() timed out after ${timeout}ms. ` +
+          `Sources: ${options.sources.map(s => `${s.kind}:${s.id}`).join(', ')}`,
+        ))
+      }, timeout)
+    }
+
+    activeSelects.set(selectId, state)
+
+    // Set up timer sources
+    for (const source of options.sources) {
+      if (source.kind === 'timer') {
+        setupTimerSource(state, source)
+      }
+    }
+
+    // Set up custom predicate polling
+    const customSources = options.sources.filter(s => s.kind === 'custom' && s.predicate)
+    if (customSources.length > 0) {
+      const pollInterval = setInterval(async () => {
+        if (!activeSelects.has(selectId)) {
+          clearInterval(pollInterval)
+          return
+        }
+
+        for (const source of customSources) {
+          try {
+            const ready = await source.predicate!()
+            if (ready) {
+              fireEvent({
+                kind: 'custom',
+                id: source.id,
+                payload: { predicateSatisfied: true },
+                firedAt: Date.now(),
+              })
+              clearInterval(pollInterval)
+              return
+            }
+          } catch { /* predicate failed, keep polling */ }
+        }
+      }, DEFAULT_POLL_INTERVAL)
+      state.cleanups.push(() => clearInterval(pollInterval))
+    }
+  })
+}
+
+// ── Hook Registration ───────────────────────────────────────────
+
+export function register(on: OnRegistrar): void {
+  // Feed subagent completion events into select
+  on('subagent.stop', async ($, e: any, next) => {
+    const result = await next(e)
+
+    fireEvent({
+      kind: 'subagent',
+      id: e.agent_id ?? 'unknown',
+      agentId: e.agent_id,
+      payload: result,
+      firedAt: Date.now(),
+    })
+
+    return result
+  })
+
+  // Feed user input events into select
+  on('prompt.submit', async ($, e: any, next) => {
+    fireEvent({
+      kind: 'user_input',
+      id: 'stdin',
+      // `prompt`, not `text` — the event never carried `text`, so every
+      // wait({ source: 'user_input' }) was handed undefined.
+      payload: { text: e.prompt },
+      firedAt: Date.now(),
+    })
+
+    return next(e)
+  })
+
+  // Feed file change events into select
+  on('file.changed', async ($, e: any, next) => {
+    const result = await next(e)
+
+    fireEvent({
+      kind: 'file_change',
+      id: e.path ?? 'unknown',
+      payload: e,
+      firedAt: Date.now(),
+    })
+
+    return result
+  })
+
+  // Feed actor tx events into select so local actor_rx selects wake
+  // instantly instead of waiting for the next poll cycle.
+  on('actor.tx', async ($, e: any, next) => {
+    const envelope = await next(e)
+
+    // The destination address is the select source id. Any select
+    // waiting on {kind: "actor_rx", id: toAddress} wakes immediately.
+    if (e.to || envelope?.to) {
+      fireEvent({
+        kind: 'actor_rx' as EventSourceKind,
+        id: e.to ?? envelope.to,
+        payload: envelope,
+        firedAt: Date.now(),
+      })
+    }
+
+    return envelope
+  })
+
+  // Feed tool completion events into select
+  // 'tool.content', not 'tool.result'. The wake-up fired correctly on
+  // tool.result, but `payload: result` was the input EVENT OBJECT rather
+  // than the tool's output, so anything selecting on tool_complete and
+  // reading the payload got the request back instead of the response.
+  on('tool.content', async ($, e: any, next) => {
+    const event = await next(e)
+    const payload =
+      typeof event === 'string' ? event : (event?.content as string | undefined)
+
+    fireEvent({
+      kind: 'tool_complete',
+      id: e.tool_name ?? e.tool ?? 'unknown',
+      payload,
+      firedAt: Date.now(),
+    })
+
+    return event
+  })
+}
+
+// ── Public API ──────────────────────────────────────────────────
+
+export async function select(options: SelectOptions): Promise<SelectResult | SelectResult[]> {
+  return runSelect(options)
+}
+
+export function notify(kind: EventSourceKind, id: string, payload?: unknown): void {
+  fireEvent({ kind, id, payload, firedAt: Date.now() })
+}
+
+export function getActiveSelects(): Array<{
+  id: string
+  sourceCount: number
+  readyCount: number
+  age: number
+}> {
+  const now = Date.now()
+  return [...activeSelects.entries()].map(([id, state]) => ({
+    id,
+    sourceCount: state.entries.length,
+    readyCount: state.entries.filter(e => e.ready).length,
+    age: now - state.startedAt,
+  }))
+}
+
+export function cancelSelect(selectId: string): void {
+  rejectSelect(selectId, new Error('select() cancelled'))
+}
+
+export function cancelAll(): void {
+  for (const id of [...activeSelects.keys()]) {
+    cancelSelect(id)
+  }
+}
+
+export function getStats(): {
+  activeSelects: number
+  totalSelects: number
+  bufferedEvents: number
+} {
+  return {
+    activeSelects: activeSelects.size,
+    totalSelects: selectCounter,
+    bufferedEvents: eventBuffer.size,
+  }
+}
+
+export function clearSelect(): void {
+  cancelAll()
+  eventBuffer.clear()
+  selectCounter = 0
+}

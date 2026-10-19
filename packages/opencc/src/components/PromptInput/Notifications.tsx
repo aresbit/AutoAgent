@@ -13,7 +13,10 @@ import { useMainLoopModel } from '../../hooks/useMainLoopModel.js';
 import { useVoiceEnabled } from '../../hooks/useVoiceEnabled.js';
 import { Box, Text } from '../../ink.js';
 import { useClaudeAiLimits } from '../../services/claudeAiLimitsHook.js';
-import { calculateTokenWarningState } from '../../services/compact/autoCompact.js';
+import type { ContextGaugeProps } from '../../services/functionHooks/plugins/uiContextGaugeHook.js';
+import { calculateTokenWarningState, getAutoCompactThreshold } from '../../services/compact/autoCompact.js';
+import { getTotalCostUSD } from '../../bootstrap/state.js';
+import { HookSlot } from '../UIHookSlot.js';
 import type { MCPServerConnection } from '../../services/mcp/types.js';
 import type { Message } from '../../types/message.js';
 import { getApiKeyHelperElapsedMs, getConfiguredApiKeyHelper, getSubscriptionType } from '../../utils/auth.js';
@@ -91,6 +94,16 @@ export function Notifications(t0) {
     t4 = $[4];
   }
   const isShowingCompactMessage = t4.isAboveWarningThreshold;
+  // Captured into a stably-named local rather than referenced from t4 at the
+  // render call site below — this file's React-compiler output reuses tN
+  // identifiers per position, not per logical value, so t4 is not safe to
+  // read again later in the function.
+  const contextGaugeProps = {
+    tokenUsage,
+    threshold: getAutoCompactThreshold(mainLoopModel),
+    percentLeft: t4.percentLeft,
+    costUSD: getTotalCostUSD(),
+  };
   const {
     status: ideStatus
   } = useIdeConnectionStatus(mcpClients);
@@ -175,8 +188,8 @@ export function Notifications(t0) {
   const t11 = isNarrow ? "flex-start" : "flex-end";
   const t12 = isInOverageMode ?? false;
   let t13;
-  if ($[15] !== apiKeyStatus || $[16] !== autoUpdaterResult || $[17] !== debug || $[18] !== ideSelection || $[19] !== isAutoUpdating || $[20] !== isShowingCompactMessage || $[21] !== mainLoopModel || $[22] !== mcpClients || $[23] !== notifications || $[24] !== onAutoUpdaterResult || $[25] !== onChangeIsUpdating || $[26] !== shouldShowAutoUpdater || $[27] !== t12 || $[28] !== tokenUsage || $[29] !== verbose) {
-    t13 = <NotificationContent ideSelection={ideSelection} mcpClients={mcpClients} notifications={notifications} isInOverageMode={t12} isTeamOrEnterprise={isTeamOrEnterprise} apiKeyStatus={apiKeyStatus} debug={debug} verbose={verbose} tokenUsage={tokenUsage} mainLoopModel={mainLoopModel} shouldShowAutoUpdater={shouldShowAutoUpdater} autoUpdaterResult={autoUpdaterResult} isAutoUpdating={isAutoUpdating} isShowingCompactMessage={isShowingCompactMessage} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={onChangeIsUpdating} />;
+  if ($[15] !== apiKeyStatus || $[16] !== autoUpdaterResult || $[17] !== debug || $[18] !== ideSelection || $[19] !== isAutoUpdating || $[20] !== isShowingCompactMessage || $[21] !== mainLoopModel || $[22] !== mcpClients || $[23] !== notifications || $[24] !== onAutoUpdaterResult || $[25] !== onChangeIsUpdating || $[26] !== shouldShowAutoUpdater || $[27] !== t12 || $[28] !== tokenUsage || $[29] !== verbose || $[34] !== contextGaugeProps) {
+    t13 = <NotificationContent ideSelection={ideSelection} mcpClients={mcpClients} notifications={notifications} isInOverageMode={t12} isTeamOrEnterprise={isTeamOrEnterprise} apiKeyStatus={apiKeyStatus} debug={debug} verbose={verbose} tokenUsage={tokenUsage} mainLoopModel={mainLoopModel} shouldShowAutoUpdater={shouldShowAutoUpdater} autoUpdaterResult={autoUpdaterResult} isAutoUpdating={isAutoUpdating} isShowingCompactMessage={isShowingCompactMessage} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={onChangeIsUpdating} contextGaugeProps={contextGaugeProps} />;
     $[15] = apiKeyStatus;
     $[16] = autoUpdaterResult;
     $[17] = debug;
@@ -192,6 +205,7 @@ export function Notifications(t0) {
     $[27] = t12;
     $[28] = tokenUsage;
     $[29] = verbose;
+    $[34] = contextGaugeProps;
     $[30] = t13;
   } else {
     t13 = $[30];
@@ -229,7 +243,8 @@ function NotificationContent({
   isAutoUpdating,
   isShowingCompactMessage,
   onAutoUpdaterResult,
-  onChangeIsUpdating
+  onChangeIsUpdating,
+  contextGaugeProps
 }: {
   ideSelection: IDESelection | undefined;
   mcpClients?: MCPServerConnection[];
@@ -250,6 +265,13 @@ function NotificationContent({
   isShowingCompactMessage: boolean;
   onAutoUpdaterResult: (result: AutoUpdaterResult) => void;
   onChangeIsUpdating: (isUpdating: boolean) => void;
+  // Computed by the parent (Notifications) from tokenUsage/mainLoopModel; it is
+  // passed down rather than referenced from the parent's scope. React-compiler
+  // output hoists per-position temporaries, so a free reference here resolved
+  // to nothing and threw `ReferenceError: contextGaugeProps is not defined` on
+  // every render — which the footer's SentryErrorBoundary swallowed, blanking
+  // the whole NotificationContent subtree (context-gauge slot included).
+  contextGaugeProps: ContextGaugeProps;
 }): ReactNode {
   // Poll apiKeyHelper inflight state to show slow-helper notice.
   // Gated on configuration — most users never set apiKeyHelper, so the
@@ -319,6 +341,7 @@ function NotificationContent({
           </Text>
         </Box>}
       {!isBriefOnly && <TokenWarning tokenUsage={tokenUsage} model={mainLoopModel} />}
+      {!isBriefOnly && <HookSlot id="context-gauge" props={contextGaugeProps}>{null}</HookSlot>}
       {shouldShowAutoUpdater && <AutoUpdaterWrapper verbose={verbose} onAutoUpdaterResult={onAutoUpdaterResult} autoUpdaterResult={autoUpdaterResult} isUpdating={isAutoUpdating} onChangeIsUpdating={onChangeIsUpdating} showSuccessMessage={!isShowingCompactMessage} />}
       {feature('VOICE_MODE') ? voiceEnabled && voiceError && <Box>
               <Text color="error" wrap="truncate">

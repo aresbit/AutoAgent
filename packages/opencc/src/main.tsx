@@ -968,7 +968,7 @@ async function run(): Promise<CommanderCommand> {
     }
     profileCheckpoint('preAction_after_settings_sync');
   });
-  program.name('claude').description(`Claude Code - starts an interactive session by default, use -p/--print for non-interactive output`).argument('[prompt]', 'Your prompt', String)
+  program.name('claude').description(`opencc - starts an interactive session by default, use -p/--print for non-interactive output`).argument('[prompt]', 'Your prompt', String)
   // Subcommands inherit helpOption via commander's copyInheritedSettings —
   // setting it once here covers mcp, plugin, auth, and all other subcommands.
   .helpOption('-h, --help', 'Display help for command').option('-d, --debug [filter]', 'Enable debug mode with optional category filtering (e.g., "api,hooks" or "!1p,!file")', (_value: string | true) => {
@@ -1022,7 +1022,7 @@ async function run(): Promise<CommanderCommand> {
     if (prompt === 'code') {
       logEvent('tengu_code_prompt_ignored', {});
       // biome-ignore lint/suspicious/noConsole:: intentional console output
-      console.warn(chalk.yellow('Tip: You can launch Claude Code with just `claude`'));
+      console.warn(chalk.yellow('Tip: You can launch opencc with just `claude`'));
       prompt = undefined;
     }
 
@@ -3794,7 +3794,7 @@ async function run(): Promise<CommanderCommand> {
         pendingHookMessages
       }, renderAndRun);
     }
-  }).version(`${MACRO.VERSION} (Claude Code)`, '-v, --version', 'Output the version number');
+  }).version(`${MACRO.VERSION} (opencc)`, '-v, --version', 'Output the version number');
 
   // Worktree flags
   program.option('-w, --worktree [name]', 'Create a new git worktree for this session (optionally specify a name)');

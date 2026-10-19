@@ -3,6 +3,7 @@ import addDir from './commands/add-dir/index.js'
 import autofixPr from './commands/autofix-pr/index.js'
 import backfillSessions from './commands/backfill-sessions/index.js'
 import btw from './commands/btw/index.js'
+import practice from './commands/practice/index.js'
 import goodClaude from './commands/good-claude/index.js'
 import issue from './commands/issue/index.js'
 import feedback from './commands/feedback/index.js'
@@ -94,11 +95,13 @@ const webCmd = feature('CCR_REMOTE_SETUP')
       require('./commands/remote-setup/index.js') as typeof import('./commands/remote-setup/index.js')
     ).default
   : null
-const clearSkillIndexCache = feature('EXPERIMENTAL_SKILL_SEARCH')
-  ? (
-      require('./services/skillSearch/localSearch.js') as typeof import('./services/skillSearch/localSearch.js')
-    ).clearSkillIndexCache
-  : null
+// Not gated on EXPERIMENTAL_SKILL_SEARCH: the local BM25 index backs the
+// discover_skills tool, which is registered unconditionally, so its cache must
+// be clearable regardless of the flag. It is a layer on top of
+// getSkillToolCommands, and clearing only the inner memo would leave it stale.
+const clearSkillIndexCache = (
+  require('./services/skillSearch/localSearch.js') as typeof import('./services/skillSearch/localSearch.js')
+).clearSkillIndexCache
 const subscribePr = feature('KAIROS_GITHUB_WEBHOOKS')
   ? require('./commands/subscribe-pr.js').default
   : null
@@ -337,6 +340,7 @@ const COMMANDS = memoize((): Command[] => [
   plan,
   privacySettings,
   hooks,
+  practice,
   exportCommand,
   sandboxToggle,
   ...(!isUsing3PServices() ? [logout, login()] : []),

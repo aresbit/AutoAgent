@@ -10,6 +10,10 @@ import { tmpdir } from 'os';
 import figures from 'figures';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- / n N Esc [ v are bare letters in transcript modal context, same class as g/G/j/k in ScrollKeybindingHandler
 import { useInput } from '../ink.js';
+import { HookSlot } from '../components/UIHookSlot.js';
+import { UIPressBridge } from '../components/UIPressBridge.js';
+import { ToastBridge } from '../components/UIToastBridge.js';
+import { isBackgroundTask } from '../tasks/types.js';
 import { useSearchInput } from '../hooks/useSearchInput.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import { useSearchHighlight } from '../ink/hooks/use-search-highlight.js';
@@ -220,6 +224,7 @@ import { SessionBackgroundHint } from '../components/SessionBackgroundHint.js';
 import { startBackgroundSession } from '../tasks/LocalMainSessionTask.js';
 import { useSessionBackgrounding } from '../hooks/useSessionBackgrounding.js';
 import { diagnosticTracker } from '../services/diagnosticTracking.js';
+import { registerPromptInserter, registerPromptReader } from '../services/promptInputSink.js';
 import { handleSpeculationAccept, type ActiveSpeculationState } from '../services/PromptSuggestion/speculation.js';
 import { IdeOnboardingDialog } from '../components/IdeOnboardingDialog.js';
 import { EffortCallout, shouldShowEffortCallout } from '../components/EffortCallout.js';
@@ -1145,7 +1150,7 @@ export function REPL({
   // session from mid-conversation context.
   const haikuTitleAttemptedRef = useRef((initialMessages?.length ?? 0) > 0);
   const agentTitle = mainThreadAgentDefinition?.agentType;
-  const terminalTitle = sessionTitle ?? agentTitle ?? haikuTitle ?? 'Claude Code';
+  const terminalTitle = sessionTitle ?? agentTitle ?? haikuTitle ?? 'opencc';
   const isWaitingForApproval = toolUseConfirmQueue.length > 0 || promptQueue.length > 0 || pendingWorkerRequest || pendingSandboxRequest;
   // Local-jsx commands (like /plugin, /config) show user-facing dialogs that
   // wait for input. Require jsx != null — if the flag is stuck true but jsx
@@ -4114,6 +4119,21 @@ export function REPL({
     return true;
   }, [onQuery, mainLoopModel, store]);
 
+  // Publish a live prompt inserter for non-React callers — the local STT hook
+  // plugin splices transcripts here at the cursor. Not gated on VOICE_MODE:
+  // it resolves insertTextRef.current at call time because PromptInput
+  // re-assigns it every render (PromptInput.tsx:269-288).
+  useEffect(() => {
+    const disposeInserter = registerPromptInserter(
+      () => insertTextRef.current?.insert,
+    );
+    const disposeReader = registerPromptReader(() => inputValueRef.current ?? '');
+    return () => {
+      disposeInserter();
+      disposeReader();
+    };
+  }, []);
+
   // Voice input integration (VOICE_MODE builds only)
   const voice = feature('VOICE_MODE') ?
   // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
@@ -4642,6 +4662,8 @@ export function REPL({
   // the 30-cap dump branch stays unwrapped for native terminal scrollback.
   const mainReturn = <KeybindingSetup>
       <AnimatedTerminalTitle isAnimating={titleIsAnimating} title={terminalTitle} disabled={titleDisabled} noPrefix={showStatusInTerminalTab} />
+      <UIPressBridge />
+      <ToastBridge />
       <GlobalKeybindingHandlers {...globalKeybindingProps} />
       {feature('VOICE_MODE') ? <VoiceKeybindingHandler voiceHandleKeyEvent={voice.handleKeyEvent} stripTrailing={voice.stripTrailing} resetAnchor={voice.resetAnchor} isActive={!toolJSX?.isLocalJSXCommand} /> : null}
       <CommandKeybindingHandlers onSubmit={onSubmit} isActive={!toolJSX?.isLocalJSXCommand} />
@@ -4678,6 +4700,15 @@ export function REPL({
                   </Box>}
               {("external" as string) === 'ant' && <TungstenLiveMonitor />}
               {feature('WEB_BROWSER_TOOL') ? WebBrowserPanelModule && <WebBrowserPanelModule.WebBrowserPanel /> : null}
+              {/* A region a mod can own outright. Renders nothing until one
+                  returns a node, exactly like the two slots below it — but
+                  unnamed by any built-in, so a mod is not competing with one
+                  for it. With ui.press able to consume a key, this plus the
+                  press chain is a rectangle and a keyboard: enough to build
+                  something interactive that costs no tokens. */}
+              <HookSlot id="overlay" props={{ isLoading, hasModal: centeredModal != null }}>{null}</HookSlot>
+              <HookSlot id="subagent-dashboard" props={{ tasks }}>{null}</HookSlot>
+              <HookSlot id="git-status" props={{ backgroundTaskCount: count(Object.values(tasks), t => isBackgroundTask(t)) }}>{null}</HookSlot>
               <Box flexGrow={1} />
               {showSpinner && <SpinnerWithVerb mode={streamMode} spinnerTip={spinnerTip} responseLengthRef={responseLengthRef} apiMetricsRef={apiMetricsRef} overrideMessage={spinnerMessage} spinnerSuffix={stopHookSpinnerSuffix} verbose={verbose} loadingStartTimeRef={loadingStartTimeRef} totalPausedMsRef={totalPausedMsRef} pauseStartTimeRef={pauseStartTimeRef} overrideColor={spinnerColor} overrideShimmerColor={spinnerShimmerColor} hasActiveTools={inProgressToolUseIDs.size > 0} leaderIsIdle={!isLoading} />}
               {!showSpinner && !isLoading && !userInputOnProcessing && !hasRunningTeammates && isBriefOnly && !viewedAgentTask && <BriefIdleStatus />}

@@ -8,6 +8,8 @@ import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
 } from 'src/services/analytics/index.js'
+import { applyToolContentHooks } from '../functionHooks/toolContent.js'
+import { invokeToolThroughHooks } from '../functionHooks/toolInvoke.js'
 import {
   extractMcpToolDetails,
   extractSkillName,
@@ -1205,21 +1207,34 @@ async function checkPermissionsAndCallTool(
     callInput = processedInput
   }
   try {
-    const result = await tool.call(
-      callInput,
+    // Routed through the `tool.invoke` chain so a hook can replace the
+    // computation (cache hit, retry, synthesized substitute) instead of only
+    // allowing/denying it. With no such hook registered this is exactly the
+    // original call — the chain's ⊥ is this same invocation.
+    const result = await invokeToolThroughHooks(
       {
-        ...toolUseContext,
-        toolUseId: toolUseID,
-        userModified: permissionDecision.userModified ?? false,
+        tool_name: tool.name,
+        tool_input: (callInput ?? {}) as Record<string, unknown>,
+        tool_use_id: toolUseID,
+        agent_id: toolUseContext.agentId,
       },
-      canUseTool,
-      assistantMessage,
-      progress => {
-        onToolProgress({
-          toolUseID: progress.toolUseID,
-          data: progress.data,
-        })
-      },
+      (amendedInput) =>
+        tool.call(
+          (amendedInput ?? callInput) as typeof callInput,
+          {
+            ...toolUseContext,
+            toolUseId: toolUseID,
+            userModified: permissionDecision.userModified ?? false,
+          },
+          canUseTool,
+          assistantMessage,
+          progress => {
+            onToolProgress({
+              toolUseID: progress.toolUseID,
+              data: progress.data,
+            })
+          },
+        ),
     )
     const durationMs = Date.now() - startTime
     addToToolDuration(durationMs)
@@ -1416,8 +1431,24 @@ async function checkPermissionsAndCallTool(
           )
         : await processToolResultBlock(tool, toolUseResult, toolUseID)
 
+      // Let `tool.content` hooks narrow what actually reaches the model.
+      // This is the one chokepoint every tool's output passes through (MCP
+      // and non-MCP alike) while it is still rewritable — PostToolUse runs
+      // after the message below is already built, so it cannot do this.
+      // Fail-open: applyToolContentHooks returns the original block on any
+      // error, so a tool result can never be lost to an optimization.
+      const shuntedToolResultBlock = await applyToolContentHooks(
+        toolResultBlock,
+        {
+          tool_name: tool.name,
+          tool_input: (processedInput ?? {}) as Record<string, unknown>,
+          tool_use_id: toolUseID,
+          agent_id: toolUseContext.agentId,
+        },
+      )
+
       // Build content blocks - tool result first, then optional feedback
-      const contentBlocks: ContentBlockParam[] = [toolResultBlock]
+      const contentBlocks: ContentBlockParam[] = [shuntedToolResultBlock]
       // Add accept feedback if user provided feedback when approving
       // (acceptFeedback only exists on PermissionAllowDecision, which is guaranteed here)
       if (

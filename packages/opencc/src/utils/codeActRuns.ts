@@ -94,6 +94,8 @@ function evictFinished(): void {
 
 export interface StartOptions extends Omit<CodeActOptions, 'signal'> {
   language?: CodeActOptions['language']
+  /** Called once the run has ended, however it ended. */
+  onSettled?: () => void
 }
 
 /** Start a run and return immediately with a handle to it. */
@@ -171,6 +173,7 @@ export function startBackgroundRun(
       current.error = error instanceof Error ? error.message : String(error)
       current.endedAt = Date.now()
     })
+    .finally(() => options.onSettled?.())
 
   return record
 }
@@ -217,6 +220,8 @@ export interface RunView {
   consumed: boolean
   exitCode?: number
   artifacts?: Artifact[]
+  /** Where the program was kept; set once the run finishes. */
+  sourcePath?: string
   error?: string
 }
 
@@ -257,6 +262,7 @@ export function viewRun(record: RunRecord, consume = true): RunView {
     consumed: consume,
     exitCode: record.result?.exitCode,
     artifacts: record.result?.artifacts,
+    sourcePath: record.result?.sourcePath,
     error: record.error,
   }
 }

@@ -11,6 +11,7 @@ import {
 } from '../utils/imagePaste.js'
 import type { ImageDimensions } from '../utils/imageResizer.js'
 import { getPlatform } from '../utils/platform.js'
+import { logForDebugging } from '../utils/debug.js'
 
 const CLIPBOARD_CHECK_DEBOUNCE_MS = 50
 const PASTE_COMPLETION_TIMEOUT_MS = 100
@@ -108,6 +109,9 @@ export function usePasteHandler({
         ) => {
           pastePendingRef.current = false
           setPasteState(({ chunks }) => {
+            logForDebugging(
+              `[Paste] flush timer fired: ${chunks.length} chunk(s), ${chunks.reduce((n, c) => n + c.length, 0)} chars`,
+            )
             // Join chunks and filter out orphaned focus sequences
             // These can appear when focus events split during paste
             const pastedText = chunks
@@ -176,9 +180,12 @@ export function usePasteHandler({
               return { chunks: [], timeoutId: null }
             }
 
-            // If paste is empty (common when trying to paste images with Cmd+V),
-            // check if clipboard has an image (macOS only)
-            if (isMacOS && onImagePaste && pastedText.length === 0) {
+            // If paste is empty (common when trying to paste images), check
+            // if the clipboard has an image. Not mac-only: a terminal pasting
+            // an image-only clipboard emits an empty bracketed paste on Linux
+            // too, and getImageFromClipboard is a no-op null when there's no
+            // image, so the extra check costs nothing on a genuinely empty paste.
+            if (onImagePaste && pastedText.length === 0) {
               checkClipboardForImage()
               return { chunks: [], timeoutId: null }
             }
@@ -238,11 +245,11 @@ export function usePasteHandler({
       .flatMap(part => part.split('\n'))
       .some(line => isImageFilePath(line.trim()))
 
-    // Handle empty paste (clipboard image on macOS)
-    // When the user pastes an image with Cmd+V, the terminal sends an empty
-    // bracketed paste sequence. The keypress parser emits this as isPasted=true
-    // with empty input.
-    if (isFromPaste && input.length === 0 && isMacOS && onImagePaste) {
+    // Handle empty paste (clipboard image). When the user pastes an image the
+    // terminal sends an empty bracketed paste sequence, emitted here as
+    // isPasted=true with empty input. Applies on Linux too — see the flush
+    // timer above.
+    if (isFromPaste && input.length === 0 && onImagePaste) {
       checkClipboardForImage()
       // Reset isPasting since there's no text content to process
       setIsPasting(false)
@@ -250,6 +257,16 @@ export function usePasteHandler({
     }
 
     // Check if we should handle as paste (from bracketed paste, large input, or continuation)
+    // Paste with no onPaste handler falls through to onInput as one giant
+    // keystroke. Worth saying out loud: it is the difference between "paste
+    // did nothing" and "paste went somewhere unexpected", and the two look
+    // identical from the outside.
+    if (!onPaste && (isFromPaste || input.length > PASTE_THRESHOLD)) {
+      logForDebugging(
+        `[Paste] no onPaste handler; ${input.length} chars routed to onInput instead`,
+      )
+    }
+
     const shouldHandleAsPaste =
       onPaste &&
       (input.length > PASTE_THRESHOLD ||
@@ -258,6 +275,10 @@ export function usePasteHandler({
         isFromPaste)
 
     if (shouldHandleAsPaste) {
+      logForDebugging(
+        `[Paste] buffering chunk: len=${input.length} isPasted=${isFromPaste} ` +
+          `pending=${pastePendingRef.current} imagePath=${hasImageFilePath}`,
+      )
       pastePendingRef.current = true
       setPasteState(({ chunks, timeoutId }) => {
         return {

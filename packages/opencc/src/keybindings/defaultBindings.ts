@@ -88,12 +88,22 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       ...(feature('MESSAGE_ACTIONS')
         ? { 'shift+up': 'chat:messageActions' as const }
         : {}),
-      // Voice activation (hold-to-talk). Registered so getShortcutDisplay
-      // finds it without hitting the fallback analytics log. To rebind,
-      // add a voice:pushToTalk entry (last wins); to disable, use /voice
-      // — null-unbinding space hits a pre-existing useKeybinding.ts trap
-      // where 'unbound' swallows the event (space dead for typing).
-      ...(feature('VOICE_MODE') ? { space: 'voice:pushToTalk' } : {}),
+      // Voice push-to-talk (hold-to-talk). Bound to alt+k, NOT bare space:
+      // a CJK IME commits its candidate with Space (and may deliver it as
+      // U+0020 or U+3000), and a terminal cannot be asked whether an IME is
+      // composing — so any bare-Space binding races every Chinese/Japanese/
+      // Korean keystroke and eats the commit. The non-ASCII refusal in
+      // handleKeyDown (useVoiceIntegration.tsx:502) only covers an *explicit*
+      // bare-char rebind of this action; the default never reaches it, so it
+      // cannot make a bare Space safe. A modifier combo activates on the first
+      // press, so it needs none of the hold/warmup machinery and cannot
+      // swallow a typed character. ctrl+space is taken by the IME switcher
+      // (Linux/Windows) and alt+space is swallowed by some window managers
+      // before the terminal sees it, so alt+k is the least contested chord.
+      // /voice remains the on/off switch. Registered so getShortcutDisplay
+      // finds it without hitting the fallback analytics log; to rebind, add a
+      // voice:pushToTalk entry (last wins).
+      ...(feature('VOICE_MODE') ? { 'alt+k': 'voice:pushToTalk' } : {}),
     },
   },
   {

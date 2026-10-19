@@ -10,6 +10,7 @@ import { deleteClassifierApproval, getClassifierApproval, getYoloClassifierAppro
 import type { buildMessageLookups } from '../../../utils/messages.js';
 import { MessageResponse } from '../../MessageResponse.js';
 import { HookProgressMessage } from '../HookProgressMessage.js';
+import { HookSlot } from '../../UIHookSlot.js';
 type Props = {
   message: NormalizedUserMessage;
   lookups: ReturnType<typeof buildMessageLookups>;
@@ -77,14 +78,24 @@ export function UserToolSuccessMessage({
     return null;
   }
 
+  // Ink requires all text to live inside <Text>. Tools that return a bare
+  // string (ActorTool, EvalApplyTool, SyntheticOutputTool) would crash the
+  // reconciler without this guard.
+  const safeRenderedMessage =
+    typeof renderedMessage === 'string' ? <Text>{renderedMessage}</Text> : renderedMessage;
+
   // Tools that return '' from userFacingName opt out of tool chrome and
   // render like plain assistant text. Skip the tool-result width constraint
   // so MarkdownTable's SAFETY_MARGIN=4 (tuned for the assistant-text 2-col
   // dot gutter) holds — otherwise tables wrap their box-drawing chars.
   const rendersAsAssistantText = tool.userFacingName(undefined) === '';
+  // contentLength is a cheap proxy for "how much text is this" — Ink gives
+  // no pre-render line count for arbitrary JSX and tool-result shapes vary
+  // too much to parse generically, so the fold hook decides purely off size.
+  const contentLength = JSON.stringify(toolResult).length;
   return <Box flexDirection="column">
       <Box flexDirection="column" width={rendersAsAssistantText ? undefined : width}>
-        {renderedMessage}
+        <HookSlot id="tool-result" props={{ toolUseID, contentLength }}>{safeRenderedMessage}</HookSlot>
         {feature('BASH_CLASSIFIER') ? classifierRule && <MessageResponse height={1}>
                 <Text dimColor>
                   <Text color="success">{figures.tick}</Text>
@@ -96,7 +107,7 @@ export function UserToolSuccessMessage({
                 <Text dimColor>Allowed by auto mode classifier</Text>
               </MessageResponse> : null}
       </Box>
-      <SentryErrorBoundary>
+      <SentryErrorBoundary resetKey={toolUseID}>
         <HookProgressMessage hookEvent="PostToolUse" lookups={lookups} toolUseID={toolUseID} verbose={verbose} isTranscriptMode={isTranscriptMode} />
       </SentryErrorBoundary>
     </Box>;

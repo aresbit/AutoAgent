@@ -2,9 +2,11 @@
 
 Status as of 2026-10-19: **implemented, packaged, and independently verified.**
 The final artifact is `release/autoagent_0.8.0_amd64.deb` (SHA256
-`9ff5311e8043e5a58b233afe13ad64ac37eb5e5fe60128fe3619c15160ec49b1`). It
-includes M5.1 artifacts, M5.2 tool bridge/diff/split/native window, and the
-integrated terminal T0 (stdlib PTY + WebSocket + xterm). The packaged legacy
+`5802e841e40fab4008b28af32c955f3220ac0cdc7fba08d72c4550df80832923`). It
+includes M5.1 artifacts, M5.2 tool bridge/diff/split/native window, the
+integrated terminal T0 (stdlib PTY + WebSocket + xterm), the workspace file
+browser T0 (`SafeFileService` + Files tab), and the browser preview T0
+(`WebContentsView` + fixed IPC + Preview tab). The packaged legacy
 entry fails fast with a reinstall instruction. Root-only install/upgrade/remove,
 a real-model soak, and the full subprocess PTY replacement (fork-in-uvicorn
 risk) remain open.
@@ -19,10 +21,15 @@ risk) remain open.
 | [evaluation.md](evaluation.md) | M7 independent evaluation: P0 pass table, P1/P2 findings, unverified gates |
 | [api-contract-v1.md](api-contract-v1.md) | Frozen HTTP/SSE surface and DTOs |
 | [recon-matebot.md](recon-matebot.md) | Evidence for `--matebot`, argv, persistent child, stream-json, resume |
-| [opencc-delta.md](opencc-delta.md) | Provenance of the vendored opencc and the selective three-way merge procedure |
+| [opencc-update/REPORT.md](opencc-update/REPORT.md) | Current vendored-opencc update (2.1.888, MateBot HEAD `0ed706d`), local deviations, build/test evidence |
+| [opencc-delta.md](opencc-delta.md) | Historical provenance and the original selective three-way merge procedure (stale base) |
 | [legacy-inventory.md](legacy-inventory.md) | Legacy IPC/feature inventory and migration boundary |
 | [maxwire-model.md](maxwire-model.md) | Reference desktop/backend patterns extracted from MaxWire |
 | [pm-ledger-note.md](pm-ledger-note.md) | One-page stack decision for the PM ledger |
+| [filesystem/](filesystem/HANDOFF.md) | Claude Desktop file-system recon and the applied T0 reference |
+| [browser/](browser/HANDOFF.md) | Claude Desktop preview recon and the applied T0 reference |
+| [terminal/](terminal/HANDOFF.md) | Claude Desktop terminal recon and the applied T0 reference (stdlib PTY + xterm) |
+| [mcp/](mcp/HANDOFF.md) | Claude Desktop MCP recon, mcp-fs comparison, and the AutoAgent persistent-MCP reference |
 
 ## Decisions at a glance
 
@@ -36,8 +43,9 @@ risk) remain open.
 - **Vendoring:** `vendor/matebot/` at upstream `c0deb163` (core code only);
   `vendor/opencc -> packages/opencc`; built CLI at
   `packages/opencc/dist/cli.js`. Update MateBot with the rsync in
-  `vendor/README.md`; update opencc with the three-way merge in
-  `opencc-delta.md`.
+  `vendor/README.md`; update opencc with the procedure and evidence in
+  `opencc-update/REPORT.md` (current: 2.1.888, MateBot HEAD `0ed706d`; the
+  older `opencc-delta.md` has a stale base).
 - **Paths:** data/state stay XDG (`${XDG_CONFIG_HOME:-~/.config}/autoagent`);
   the engine fallback config is independent at `~/.autoagent/settings.json`
   (`AUTOAGENT_CONFIG_DIR` override).
@@ -53,6 +61,14 @@ risk) remain open.
 - **Packaging:** `/opt/autoagent/{desktop,backend,engine,frontend,vendor/matebot}`;
   the launcher exports `AUTOAGENT_MATEBOT_VENDOR_DIR`; the backend defaults to
   `matebot`; `--runtime-check` reports `matebotVendorExists`.
+- **Workspace files:** `SafeFileService` is the only filesystem adapter; the
+  SPA sends a root id plus a relative path and never sees an absolute path.
+  Writes are atomic with SHA-256 CAS; symlinks are refused; limits are 2 MiB
+  read / 1 MiB write by default. `AUTOAGENT_FILES=0` omits the routes.
+- **Preview:** `PreviewManager` owns one `WebContentsView` per tab in a
+  dedicated partition. The origin allowlist is empty by default
+  (`AUTOAGENT_PREVIEW_ORIGINS`), local roots are opt-in
+  (`AUTOAGENT_PREVIEW_ROOT`), and `AUTOAGENT_PREVIEW=0` fails closed.
 - **Rollback:** `AUTOAGENT_LEGACY=1` in development. In the package it fails
   fast with a clear message; to roll back, reinstall the previous `.deb`.
 
@@ -82,6 +98,8 @@ risk) remain open.
 | M5.1 | Artifacts: materialization, immutable versions, safe frame | done |
 | M5.2 | Artifact tool bridge/consent, diff/split, native window | done |
 | T0 | Integrated terminal: stdlib PTY + WebSocket + xterm | done; fork-in-uvicorn risk noted |
+| F0 | Workspace files: root-scoped `SafeFileService`, atomic writes/CAS, Files tab | done; update/reveal routes retry |
+| P0 | Browser preview: `WebContentsView`, fixed IPC, `autoagent-preview://`, Preview tab | done; empty origin allowlist by default |
 
 ## First commands
 

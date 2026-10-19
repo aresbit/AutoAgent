@@ -9,6 +9,31 @@
 import { C0, ESC_TYPE, isEscFinal } from './ansi.js'
 import { isCSIFinal, isCSIIntermediate, isCSIParam } from './csi.js'
 
+/**
+ * Upper bound on the bytes an OSC/DCS/APC sequence may absorb before the
+ * tokenizer abandons it and re-reads the remainder as text. Real terminal
+ * replies are far shorter; a longer run means the introducer was spurious.
+ */
+const MAX_CONTROL_SEQUENCE_BYTES = 1024
+
+/**
+ * Whether a byte is implausible as the first content byte of an OSC/DCS/APC
+ * reply. Genuine replies start with a command byte (a digit, `?`, `>`, `!`,
+ * `;`, …; e.g. `OSC 11;rgb:…`, `DCS >|…`). A space, an ASCII letter, a
+ * non-ASCII byte, or a stray control byte means the introducer was really a
+ * lone ESC followed by the user's keystroke, not a control sequence.
+ */
+function isImplausibleControlStart(code: number): boolean {
+  if (code > 0x7f) return true // non-ASCII (CJK, emoji, …)
+  if (code === 0x20) return true // space
+  if (code === 0x7f) return true // DEL
+  if (code < 0x20 && code !== C0.ESC && code !== C0.BEL) return true // stray C0
+  if ((code >= 0x41 && code <= 0x5a) || (code >= 0x61 && code <= 0x7a)) {
+    return true // A-Z a-z
+  }
+  return false
+}
+
 export type Token =
   | { type: 'text'; value: string }
   | { type: 'sequence'; value: string }
@@ -225,22 +250,37 @@ function tokenize(
         // fails and the event buffers until the next keypress absorbs it.
         // Fixing this requires latin1 stdin; X10's 223-coord cap is exactly
         // why SGR was invented, and no-SGR terminals at 162+ cols are rare.
-        if (
-          x10Mouse &&
-          code === 0x4d /* M */ &&
-          i - seqStart === 2 &&
-          (i + 1 >= data.length || data.charCodeAt(i + 1) >= 0x20) &&
-          (i + 2 >= data.length || data.charCodeAt(i + 2) >= 0x20) &&
-          (i + 3 >= data.length || data.charCodeAt(i + 3) >= 0x20)
-        ) {
-          if (i + 4 <= data.length) {
+        if (x10Mouse && code === 0x4d /* M */ && i - seqStart === 2) {
+          // The three payload slots must each look like a genuine X10 byte:
+          // Cb/Cx/Cy are single bytes ≥ 0x20 and, after utf8 decoding, ASCII.
+          // A slot that is already non-ASCII means the `ESC [ M` was spurious
+          // — a stray ESC from an IME, or a mis-split chunk — and the bytes
+          // after it are the user's typing, not mouse payload. Treating CJK as
+          // a payload slot swallowed it: `ESC [ M` + one or two CJK chars
+          // latched (no InputEvent until the flush timer), and exactly three
+          // CJK chars were consumed as a bogus wheel event (their code points
+          // pass the old `≥ 0x20` test). Drop the 3-byte introducer and resume
+          // as text instead. A real payload byte ≥ 0x80 collapses under utf8
+          // stdin anyway (see the note above), so nothing genuine is lost.
+          const slots = [i + 1, i + 2, i + 3].map(j =>
+            j < data.length ? data.charCodeAt(j) : null,
+          )
+          if (slots.some(c => c !== null && (c < 0x20 || c >= 0x80))) {
+            // Spurious introducer: skip `ESC [ M`, re-tokenize the rest as text.
+            result.state = 'ground'
+            i += 1
+            textStart = i
+            break
+          }
+          if (slots.every(c => c !== null)) {
             i += 4
             emitSequence(data.slice(seqStart, i))
-          } else {
-            // Incomplete — exit loop; end-of-input buffers from seqStart.
-            // Re-entry re-tokenizes from ground via the invalid-CSI fallthrough.
-            i = data.length
+            break
           }
+          // Payload incomplete — wait for the next chunk. If the trailing bytes
+          // are text, re-entry drops the introducer via the check above rather
+          // than buffering it forever.
+          i = data.length
           break
         }
         if (isCSIFinal(code)) {
@@ -249,9 +289,20 @@ function tokenize(
         } else if (isCSIParam(code) || isCSIIntermediate(code)) {
           i++
         } else {
-          // Invalid CSI - abort, treat as text
+          // Invalid CSI — abort. A byte that is neither a final (0x40-0x7E), a
+          // parameter (0x30-0x3F) nor an intermediate (0x20-0x2F) cannot belong
+          // to any CSI, so the introducer in front of it was spurious: a lone
+          // ESC from an IME, or a mis-split chunk. That is exactly the case the
+          // X10 branch above and the OSC/DCS/APC latch already handle, and they
+          // resume text *after* the introducer for the same reason.
+          //
+          // Only this branch needed the fix: an ASCII letter is a valid final
+          // byte, so `ESC [ z` completes as a sequence and the letter is
+          // recovered downstream — while `ESC [ 中` aborted here and leaked the
+          // introducer, arriving in the prompt as `[中`. CJK typed after a
+          // stray introducer therefore came in with a literal `[` glued to it.
           result.state = 'ground'
-          textStart = seqStart
+          textStart = code >= 0x80 || code < 0x20 ? i : seqStart
         }
         break
 
@@ -261,30 +312,35 @@ function tokenize(
           i++
           emitSequence(data.slice(seqStart, i))
         } else {
-          // Invalid - treat as text
+          // Invalid — treat as text. Same rule as the CSI abort above: the
+          // introducer was spurious, so it must not be delivered as text.
           result.state = 'ground'
-          textStart = seqStart
+          textStart = code >= 0x80 || code < 0x20 ? i : seqStart
         }
         break
 
       case 'osc':
-        if (code === C0.BEL) {
-          i++
-          emitSequence(data.slice(seqStart, i))
-        } else if (
-          code === C0.ESC &&
-          i + 1 < data.length &&
-          data.charCodeAt(i + 1) === ESC_TYPE.ST
-        ) {
-          i += 2
-          emitSequence(data.slice(seqStart, i))
-        } else {
-          i++
-        }
-        break
-
       case 'dcs':
-      case 'apc':
+      case 'apc': {
+        // These three states have no length or content limit: every byte
+        // between the introducer and the BEL/ST terminator is absorbed into
+        // the sequence. A *spurious* introducer — a stray ESC followed by
+        // `]`, `P`, or `_`, e.g. from an IME or a mis-split chunk — therefore
+        // latches the tokenizer: no token is emitted, so no useInput listener
+        // (including the prompt's text input) sees a single keystroke, and the
+        // App keeps re-arming its flush timer while typing continues. Typing
+        // stops working until the user pauses long enough for the flush.
+        //
+        // A genuine terminal reply never opens an OSC/DCS/APC with a space, an
+        // ASCII letter, or a non-ASCII byte — those begin with a command
+        // (a digit, `?`, `>`, `!`, …; e.g. OSC 11;rgb:…, DCS >|…). So on the
+        // first content byte, bail out if it is implausible, and drop the
+        // 2-byte introducer while keeping the rest: what follows is the user's
+        // typing, not sequence payload. The length cap is a backstop for a
+        // genuinely unterminated sequence.
+        const contentStart = seqStart + 2 // ESC + introducer byte
+        const isFirstContentByte = i === contentStart
+        const contentLength = i - contentStart
         if (code === C0.BEL) {
           i++
           emitSequence(data.slice(seqStart, i))
@@ -295,10 +351,20 @@ function tokenize(
         ) {
           i += 2
           emitSequence(data.slice(seqStart, i))
+        } else if (
+          (isFirstContentByte && isImplausibleControlStart(code)) ||
+          contentLength >= MAX_CONTROL_SEQUENCE_BYTES
+        ) {
+          // Spurious introducer (or an over-long one): resume as ground text.
+          // textStart skips only the 2-byte introducer, so everything after it
+          // — the user's typing — is re-tokenized as text rather than dropped.
+          result.state = 'ground'
+          textStart = contentStart
         } else {
           i++
         }
         break
+      }
     }
   }
 

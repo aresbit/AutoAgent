@@ -8,60 +8,64 @@ import { Buffer } from 'buffer'
 import { PASTE_END, PASTE_START } from './termio/csi.js'
 import { createTokenizer, type Tokenizer } from './termio/tokenize.js'
 
-// eslint-disable-next-line no-control-regex
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ESC/BEL are the bytes this parser exists to read
 const META_KEY_CODE_RE = /^(?:\x1b)([a-zA-Z0-9])$/
 
 // eslint-disable-next-line no-control-regex
 const FN_KEY_RE =
-  // eslint-disable-next-line no-control-regex
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ESC/BEL are the bytes this parser exists to read
   /^(?:\x1b+)(O|N|\[|\[\[)(?:(\d+)(?:;(\d+))?([~^$])|(?:1;)?(\d+)?([a-zA-Z]))/
 
-// CSI u (kitty keyboard protocol): ESC [ codepoint [; modifier] u
+// CSI u (kitty keyboard protocol): ESC [ codepoint [; modifier] [; text] u
 // Example: ESC[13;2u = Shift+Enter, ESC[27u = Escape (no modifiers)
-// Modifier is optional - when absent, defaults to 1 (no modifiers)
-// eslint-disable-next-line no-control-regex
-const CSI_U_RE = /^\x1b\[(\d+)(?:;(\d+))?u/
+// Modifier is optional - when absent, defaults to 1 (no modifiers).
+// The optional third parameter is text-as-codepoints: a `:`-separated list
+// of code points to insert (e.g. ESC[122;1;122:104u = "zh"). The modifier
+// field may itself carry an `:event-type` suffix (press/repeat/release); we
+// only need the modifier before the colon.
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ESC/BEL are the bytes this parser exists to read
+const CSI_U_RE = /^\x1b\[(\d+)(?:;([\d:]+))?(?:;([\d:]+))?u/
 
 // xterm modifyOtherKeys: ESC [ 27 ; modifier ; keycode ~
 // Example: ESC[27;2;13~ = Shift+Enter. Emitted by Ghostty/tmux/xterm when
 // modifyOtherKeys=2 is active or via user keybinds, typically over SSH where
 // TERM sniffing misses Ghostty and we never push Kitty keyboard mode.
 // Note param order is reversed vs CSI u (modifier first, keycode second).
-// eslint-disable-next-line no-control-regex
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ESC/BEL are the bytes this parser exists to read
 const MODIFY_OTHER_KEYS_RE = /^\x1b\[27;(\d+);(\d+)~/
 
 // -- Terminal response patterns (inbound sequences from the terminal itself) --
 // DECRPM: CSI ? Ps ; Pm $ y  — response to DECRQM (request mode)
-// eslint-disable-next-line no-control-regex
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ESC/BEL are the bytes this parser exists to read
 const DECRPM_RE = /^\x1b\[\?(\d+);(\d+)\$y$/
 // DA1: CSI ? Ps ; ... c  — primary device attributes response
-// eslint-disable-next-line no-control-regex
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ESC/BEL are the bytes this parser exists to read
 const DA1_RE = /^\x1b\[\?([\d;]*)c$/
 // DA2: CSI > Ps ; ... c  — secondary device attributes response
-// eslint-disable-next-line no-control-regex
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ESC/BEL are the bytes this parser exists to read
 const DA2_RE = /^\x1b\[>([\d;]*)c$/
 // Kitty keyboard flags: CSI ? flags u  — response to CSI ? u query
 // (private ? marker distinguishes from CSI u key events)
-// eslint-disable-next-line no-control-regex
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ESC/BEL are the bytes this parser exists to read
 const KITTY_FLAGS_RE = /^\x1b\[\?(\d+)u$/
 // DECXCPR cursor position: CSI ? row ; col R
 // The ? marker disambiguates from modified F3 keys (Shift+F3 = CSI 1;2 R,
 // Ctrl+F3 = CSI 1;5 R, etc.) — plain CSI row;col R is genuinely ambiguous.
-// eslint-disable-next-line no-control-regex
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ESC/BEL are the bytes this parser exists to read
 const CURSOR_POSITION_RE = /^\x1b\[\?(\d+);(\d+)R$/
 // OSC response: OSC code ; data (BEL|ST)
-// eslint-disable-next-line no-control-regex
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ESC/BEL are the bytes this parser exists to read
 const OSC_RESPONSE_RE = /^\x1b\](\d+);(.*?)(?:\x07|\x1b\\)$/s
 // XTVERSION: DCS > | name ST  — terminal name/version string (answer to CSI > 0 q).
 // xterm.js replies "xterm.js(X.Y.Z)"; Ghostty, kitty, iTerm2, etc. reply with
 // their own name. Unlike TERM_PROGRAM, this survives SSH since the query/reply
 // goes through the pty, not the environment.
-// eslint-disable-next-line no-control-regex
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ESC/BEL are the bytes this parser exists to read
 const XTVERSION_RE = /^\x1bP>\|(.*?)(?:\x07|\x1b\\)$/s
 // SGR mouse event: CSI < button ; col ; row M (press) or m (release)
 // Button codes: 64=wheel-up, 65=wheel-down (0x40 | wheel-bit).
 // Button 32=left-drag (0x20 | motion-bit). Plain 0/1/2 = left/mid/right click.
-// eslint-disable-next-line no-control-regex
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ESC/BEL are the bytes this parser exists to read
 const SGR_MOUSE_RE = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/
 
 function createPasteKey(content: string): ParsedKey {
@@ -183,6 +187,14 @@ export type KeyParseState = {
   mode: 'NORMAL' | 'IN_PASTE'
   incomplete: string
   pasteBuffer: string
+  /**
+   * Whether the open paste has already delivered content. Only decides what a
+   * closing `PASTE_END` means: with nothing delivered yet, an empty buffer is a
+   * genuine empty paste (downstream reads that as "an image was pasted"); after
+   * a partial delivery it is just the tail of a paste we already handed over, so
+   * it must emit nothing.
+   */
+  pasteDelivered: boolean
   // Internal tokenizer instance
   _tokenizer?: Tokenizer
 }
@@ -191,6 +203,136 @@ export const INITIAL_STATE: KeyParseState = {
   mode: 'NORMAL',
   incomplete: '',
   pasteBuffer: '',
+  pasteDelivered: false,
+}
+
+/**
+ * Whether the parse state is holding bytes that have not been emitted as keys
+ * yet. Two independent things can hold input:
+ *
+ * - `incomplete` — the tokenizer has a partially buffered escape sequence.
+ * - a non-empty `pasteBuffer` — an open bracketed paste with content waiting.
+ *   Note this is invisible in `incomplete`: the tokenizer sits at ground state
+ *   while pasting (the content arrives as ordinary text tokens), so an orphan
+ *   `PASTE_START` with no matching `PASTE_END` leaves `incomplete` empty.
+ *
+ * An open paste with an *empty* buffer is deliberately not pending: there is
+ * nothing owed to the consumer, and treating it as pending would make App re-arm
+ * the flush timer forever while the paste waits for content or its terminator.
+ * Content makes it pending again the moment it arrives.
+ *
+ * App arms its flush timer off this predicate; a state that holds content but
+ * reports "nothing pending" is never flushed and swallows keystrokes forever.
+ */
+export function hasPendingInput(state: KeyParseState): boolean {
+  return (
+    state.incomplete !== '' ||
+    (state.mode === 'IN_PASTE' && state.pasteBuffer !== '')
+  )
+}
+
+/**
+ * Timing policy for flushing input the parser is holding. `phase` is how long
+ * with no new bytes we wait before flushing a lone sequence; `budget` is the
+ * hard ceiling on how long a hold may defer delivery *in total*, no matter how
+ * often new bytes arrive.
+ *
+ * The budget is what makes delivery bounded. Re-arming on every chunk is
+ * correct while a real sequence is still streaming in, but a latch (a stray
+ * introducer, or an IME's ESC) under a steady stream of keystrokes would
+ * otherwise push the deadline out forever: with a 50 ms phase and a byte every
+ * 20 ms the timer is reset before it can fire, so it never runs at all.
+ *
+ * What the budget does *not* do is end a bracketed paste — see
+ * `parseMultipleKeypresses`: for IN_PASTE it delivers the buffered content as
+ * paste and keeps the paste open, because closing it mid-stream would silently
+ * reinterpret the remainder (newlines become submits) and turn the real
+ * terminator into an empty paste, which downstream reads as a pasted image.
+ *
+ * `pasteQuiet` is how the paste does end, and it is the one thing a timer can
+ * decide that the bytes cannot: after a delivery, silence. See
+ * `closeQuietPaste`.
+ */
+export const FLUSH_TIMEOUTS = {
+  normal: 50,
+  paste: 500,
+  normalBudget: 200,
+  pasteBudget: 2000,
+  pasteQuiet: 4000,
+} as const
+
+export type FlushPlan =
+  | { kind: 'idle' }
+  | { kind: 'flush' }
+  | { kind: 'wait'; delayMs: number }
+
+/**
+ * Decide what to do about held input, given when the current hold began.
+ * Pure, so App and the tests drive identical policy: App calls this on every
+ * chunk and on every timer fire, and the test harness replays it against a
+ * virtual clock.
+ *
+ * - `idle`  — nothing held; clear the hold and stop.
+ * - `flush` — the budget is spent; flush now even if bytes are still arriving.
+ * - `wait`  — arm a timer for `delayMs` (never past the budget).
+ */
+export function planFlush(
+  state: KeyParseState,
+  holdStartedAt: number | null,
+  now: number,
+  t: typeof FLUSH_TIMEOUTS = FLUSH_TIMEOUTS,
+): FlushPlan {
+  if (!hasPendingInput(state)) return { kind: 'idle' }
+  const paste = state.mode === 'IN_PASTE'
+  const phase = paste ? t.paste : t.normal
+  const budget = paste ? t.pasteBudget : t.normalBudget
+  // First observation of this hold: the budget cannot be spent yet.
+  if (holdStartedAt === null) {
+    return { kind: 'wait', delayMs: Math.min(phase, budget) }
+  }
+  const remaining = holdStartedAt + budget - now
+  if (remaining <= 0) return { kind: 'flush' }
+  return { kind: 'wait', delayMs: Math.min(phase, remaining) }
+}
+
+/**
+ * Whether App should keep a quiet-close timer armed for this state. Only a
+ * *delivered* paste is ever closed on silence: one that has delivered nothing
+ * is a paste in progress whose terminator we have not seen, and closing it
+ * early would reinterpret the content still on its way — exactly the failure
+ * the flush refuses to risk.
+ */
+export function shouldArmQuietClose(state: KeyParseState): boolean {
+  return state.mode === 'IN_PASTE' && state.pasteDelivered
+}
+
+/**
+ * Close an open paste that has gone quiet, or leave it alone.
+ *
+ * The flush never closes a paste (see `parseMultipleKeypresses`): at that
+ * moment a slow paste and a stray introducer are byte-for-byte identical, and
+ * closing is irreversible. Silence is what separates them, and only App can
+ * observe it — so after a delivery, when nothing else has arrived for
+ * `pasteQuiet`, the paste is over and is closed here.
+ *
+ * It matters because an introducer that never gets a terminator — a stray
+ * `CSI 200~` — would otherwise stay open for the rest of the session, and every
+ * later keystroke is delivered as paste content while it is open: Enter arrives
+ * as a newline instead of submitting, Ctrl+C as text. Closing does not drop
+ * anything, because everything the paste held was already delivered.
+ *
+ * The state is returned unchanged unless the paste is open with an empty
+ * buffer: content still accumulating is a paste in progress, not a quiet one.
+ */
+export function closeQuietPaste(state: KeyParseState): KeyParseState {
+  if (
+    state.mode !== 'IN_PASTE' ||
+    state.pasteBuffer !== '' ||
+    !state.pasteDelivered
+  ) {
+    return state
+  }
+  return { ...state, mode: 'NORMAL', pasteDelivered: false }
 }
 
 function inputToString(input: Buffer | string): string {
@@ -227,19 +369,32 @@ export function parseMultipleKeypresses(
   const keys: ParsedInput[] = []
   let inPaste = prevState.mode === 'IN_PASTE'
   let pasteBuffer = prevState.pasteBuffer
+  let pasteDelivered = prevState.pasteDelivered
 
   for (const token of tokens) {
     if (token.type === 'sequence') {
       if (token.value === PASTE_START) {
         inPaste = true
         pasteBuffer = ''
+        pasteDelivered = false
       } else if (token.value === PASTE_END) {
-        // Always emit a paste key, even for empty pastes. This allows
-        // downstream handlers to detect empty pastes (e.g., for clipboard
-        // image handling on macOS). The paste content may be empty string.
-        keys.push(createPasteKey(pasteBuffer))
-        inPaste = false
-        pasteBuffer = ''
+        // Only a terminator that closes a paste we are actually in means
+        // anything. A standalone `ESC[201~` (no START) is a stray — typically
+        // the tail of a paste whose START was consumed by a flush — and must be
+        // ignored: emitting an empty paste for it would read downstream as "the
+        // user pasted an image".
+        if (inPaste) {
+          // An empty buffer here is a genuine empty paste (the user pasted an
+          // image; downstream prompts for a clipboard image) only if nothing
+          // was delivered for this paste yet. After an interim delivery it is
+          // just the tail of a paste already handed over.
+          if (pasteBuffer !== '' || !pasteDelivered) {
+            keys.push(createPasteKey(pasteBuffer))
+          }
+          inPaste = false
+          pasteBuffer = ''
+          pasteDelivered = false
+        }
       } else if (inPaste) {
         // Sequences inside paste are treated as literal text
         pasteBuffer += token.value
@@ -283,11 +438,21 @@ export function parseMultipleKeypresses(
     }
   }
 
-  // If flushing and still in paste mode, emit what we have
-  if (isFlush && inPaste && pasteBuffer) {
+  // If flushing while a paste is open, deliver what accumulated — but do NOT
+  // close the paste. The flush fires on a budget that cannot know whether the
+  // real PASTE_END is still coming (a paste over a slow link looks exactly like
+  // a stray introducer followed by typing), and closing it is irreversible:
+  // everything after this point would be delivered as ordinary keys, so a
+  // newline in the paste would submit the prompt, and the real terminator would
+  // arrive with an empty buffer and read downstream as a pasted image.
+  // Delivering as paste and staying open keeps both properties: content reaches
+  // the prompt within the budget, and a genuine long paste is still one paste
+  // in effect — the consumer already stitches paste pieces together, because
+  // the OS splits large pastes across reads anyway.
+  if (isFlush && inPaste && pasteBuffer !== '') {
     keys.push(createPasteKey(pasteBuffer))
-    inPaste = false
     pasteBuffer = ''
+    pasteDelivered = true
   }
 
   // Build new state
@@ -295,6 +460,7 @@ export function parseMultipleKeypresses(
     mode: inPaste ? 'IN_PASTE' : 'NORMAL',
     incomplete: tokenizer.buffer(),
     pasteBuffer,
+    pasteDelivered,
     _tokenizer: tokenizer,
   }
 
@@ -478,6 +644,56 @@ function decodeModifier(modifier: number): {
 }
 
 /**
+ * Decode the Kitty keyboard protocol's third CSI-u parameter: text as a
+ * `:`-separated list of Unicode code points to insert (e.g. `122:104` → "zh",
+ * `20013` → "中"). Returns undefined when the field is absent/empty or
+ * unparseable, so callers fall back to synthesizing from the key code.
+ */
+function decodeKittyText(field: string | undefined): string | undefined {
+  if (!field) return undefined
+  const codes: number[] = []
+  for (const part of field.split(':')) {
+    const n = parseInt(part, 10)
+    if (Number.isFinite(n) && n >= 0) codes.push(n)
+  }
+  if (codes.length === 0) return undefined
+  try {
+    return String.fromCodePoint(...codes)
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Synthesize the printable text a CSI-u / modifyOtherKeys key code stands for
+ * when the terminal did not supply a text field. Kitty sends the *unshifted*
+ * code point plus a separate Shift modifier, so apply Shift to the case.
+ *
+ * Returns undefined — i.e. "this key is not text" — for ctrl/meta/super (those
+ * are commands, not characters) and for control/functional keys (Enter 13,
+ * Tab 9, Escape 27, Backspace 8/127, …) and the Kitty numpad private-use
+ * range, so those keep their existing name/flag behavior.
+ */
+function synthesizeText(
+  codepoint: number,
+  mods: { ctrl: boolean; meta: boolean; super: boolean; shift: boolean },
+): string | undefined {
+  if (mods.ctrl || mods.meta || mods.super) return undefined
+  // Control characters and DEL are keys, never text.
+  if (codepoint < 32 || codepoint === 127) return undefined
+  // Kitty functional keys (numpad 57399+) live in the private-use area;
+  // keycodeToName already names them and they are not text.
+  if (codepoint >= 0xe000 && codepoint <= 0xf8ff) return undefined
+  let ch: string
+  try {
+    ch = String.fromCodePoint(codepoint)
+  } catch {
+    return undefined
+  }
+  return mods.shift ? ch.toUpperCase() : ch
+}
+
+/**
  * Map keycode to key name for modifyOtherKeys/CSI u sequences.
  * Handles both ASCII keycodes and Kitty keyboard protocol functional keys.
  *
@@ -552,6 +768,15 @@ export type ParsedKey = {
   sequence: string | undefined
   raw: string | undefined
   code?: string
+  /**
+   * Printable text this key inserts, when it differs from (or is missing in)
+   * `sequence`. Set for extended encodings the app itself enables — Kitty CSI
+   * u and xterm modifyOtherKeys — whose `sequence` is an escape, not a
+   * character. Consumers that build the text-input string must prefer it over
+   * `sequence`, which is still needed verbatim for focus/paste/mouse matching.
+   * Absent (not '') for non-text keys (Enter, Tab, Escape, ctrl/meta chords).
+   */
+  text?: string
   isPasted: boolean
 }
 
@@ -632,10 +857,14 @@ function parseKeypress(s: string = ''): ParsedKey {
   let match: RegExpExecArray | null
   if ((match = CSI_U_RE.exec(s))) {
     const codepoint = parseInt(match[1]!, 10)
-    // Modifier defaults to 1 (no modifiers) when not present
-    const modifier = match[2] ? parseInt(match[2], 10) : 1
+    // Modifier defaults to 1 (no modifiers) when not present. The field may
+    // carry an `:event-type` suffix; keep only the modifier part.
+    const modifier = match[2] ? parseInt(match[2].split(':')[0]!, 10) : 1
     const mods = decodeModifier(modifier)
     const name = keycodeToName(codepoint)
+    // Prefer the terminal-supplied text field; otherwise synthesize it from
+    // the code point so a key the app itself asked to receive is not lost.
+    const text = decodeKittyText(match[3]) ?? synthesizeText(codepoint, mods)
     return {
       kind: 'key',
       name,
@@ -647,6 +876,7 @@ function parseKeypress(s: string = ''): ParsedKey {
       super: mods.super,
       sequence: s,
       raw: s,
+      text,
       isPasted: false,
     }
   }
@@ -656,7 +886,9 @@ function parseKeypress(s: string = ''): ParsedKey {
   // would leave the tail as garbage if it partially matched.
   if ((match = MODIFY_OTHER_KEYS_RE.exec(s))) {
     const mods = decodeModifier(parseInt(match[1]!, 10))
-    const name = keycodeToName(parseInt(match[2]!, 10))
+    const keycode = parseInt(match[2]!, 10)
+    const name = keycodeToName(keycode)
+    const text = synthesizeText(keycode, mods)
     return {
       kind: 'key',
       name,
@@ -668,6 +900,7 @@ function parseKeypress(s: string = ''): ParsedKey {
       super: mods.super,
       sequence: s,
       raw: s,
+      text,
       isPasted: false,
     }
   }
@@ -750,11 +983,42 @@ function parseKeypress(s: string = ''): ParsedKey {
     key.meta = !!(modifier & 2)
     key.super = !!(modifier & 8)
     key.shift = !!(modifier & 1)
-    key.code = code
 
     key.name = keyName[code]
     key.shift = isShiftKey(code) || key.shift
     key.ctrl = isCtrlKey(code) || key.ctrl
+
+    // A param-free `ESC [ x` / `ESC O x` whose trailing byte is an unmapped
+    // *lowercase* letter is not a keypress: it is a spurious introducer (a
+    // stray ESC from the IME, or a mis-split chunk) followed by the user's own
+    // keystroke. `ESC [ z` is "z", not an escape. Re-key it as literal text;
+    // setting the code without a name instead would make input-event.ts blank
+    // the input and delete the character (the F13-suppression guard).
+    //
+    // Why only lowercase, and only without parameters:
+    //
+    // - Uppercase finals are ECMA-48 control functions (`ESC[J` erase display,
+    //   `ESC[K` erase line, `ESC[G` cursor-absolute, `ESC[P` delete-char,
+    //   `ESC[S`/`ESC[T` scroll, `ESC[X` erase-chars, `ESC[L` insert-lines) or
+    //   the mapped cursor/function keys (`[A`–`[H`, `[Z`, and the focus
+    //   events `ESC[I`/`ESC[O`). A terminal never sends them as keystrokes, so
+    //   the previous swallow-stay-swallowed is correct; recovering them leaked
+    //   one letter each and was the over-correction this narrows.
+    // - Parameters mean the two-byte introducer was NOT bare: `ESC[1z` is a
+    //   parameterised sequence, not the user typing 'z', and the old code
+    //   collapsed it to `[z` and dropped the `1`.
+    //
+    // `[a`–`[e` and `Oa`–`Oe` (rxvt) and `Op`–`Oy` (keypad) are in keyName, so
+    // they never reach here. At the byte level this is still an ambiguity the
+    // tokenizer cannot resolve — `ESC [ z` is a syntactically valid CSI — so
+    // the decision belongs at the key map, not in tokenize.ts.
+    const parameterless =
+      parts[2] === undefined && parts[4] === undefined && parts[5] === undefined
+    if (!key.name && parameterless && /^(?:\[|O)[a-z]$/.test(code)) {
+      key.text = code.charAt(1)
+    } else {
+      key.code = code
+    }
   }
 
   // iTerm in natural text editing mode

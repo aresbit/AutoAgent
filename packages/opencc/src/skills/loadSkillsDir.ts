@@ -205,6 +205,7 @@ export function parseSkillFrontmatterFields(
   agent: string | undefined
   effort: EffortValue | undefined
   shell: FrontmatterShell | undefined
+  unverified: boolean
 } {
   const validatedDescription = coerceDescriptionToString(
     frontmatter.description,
@@ -262,6 +263,10 @@ export function parseSkillFrontmatterFields(
     agent: frontmatter.agent as string | undefined,
     effort,
     shell: parseShellFrontmatter(frontmatter.shell, resolvedName),
+    // A repo-distilled skill carries this when its verifier did not reach a
+    // `verified` verdict. Read as a plain boolean so any other value (absent,
+    // 'false', a description) leaves the skill unmarked rather than flagged.
+    unverified: parseBooleanFrontmatter(frontmatter['unverified']),
   }
 }
 
@@ -291,6 +296,7 @@ export function createSkillCommand({
   paths,
   effort,
   shell,
+  unverified,
 }: {
   skillName: string
   displayName: string | undefined
@@ -314,6 +320,7 @@ export function createSkillCommand({
   paths: string[] | undefined
   effort: EffortValue | undefined
   shell: FrontmatterShell | undefined
+  unverified: boolean
 }): Command {
   return {
     type: 'prompt',
@@ -342,6 +349,8 @@ export function createSkillCommand({
     loadedFrom,
     hooks,
     skillRoot: baseDir,
+    // Only carried when true, so an ordinary skill's Command stays unchanged.
+    unverified: unverified || undefined,
     async getPromptForCommand(args, toolUseContext) {
       let finalContent = baseDir
         ? `Base directory for this skill: ${baseDir}\n\n${markdownContent}`

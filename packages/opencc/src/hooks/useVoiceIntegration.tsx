@@ -10,8 +10,8 @@ import { useInput } from '../ink.js';
 import { useOptionalKeybindingContext } from '../keybindings/KeybindingContext.js';
 import { keystrokesEqual } from '../keybindings/resolver.js';
 import type { ParsedKeystroke } from '../keybindings/types.js';
-import { normalizeFullWidthSpace } from '../utils/stringUtils.js';
 import { useVoiceEnabled } from './useVoiceEnabled.js';
+import { readPromptText } from '../services/promptInputSink.js';
 
 // Dead code elimination: conditional import for voice input hook.
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -73,13 +73,15 @@ function matchesKeyboardEvent(e: KeyboardEvent, target: ParsedKeystroke): boolea
 }
 
 // Hardcoded default for when there's no KeybindingProvider at all (e.g.
-// headless/test contexts). NOT used when the provider exists and the
-// lookup returns null — that means the user null-unbound or reassigned
-// space, and falling back to space would pick a dead or conflicting key.
+// headless/test contexts). Mirrors the Chat default in defaultBindings.ts
+// (alt+k — a modifier combo, never bare space, which a CJK IME commits with).
+// NOT used when the provider exists and the lookup returns null — that means
+// the user null-unbound or reassigned the chord, and falling back would pick a
+// dead or conflicting key.
 const DEFAULT_VOICE_KEYSTROKE: ParsedKeystroke = {
-  key: ' ',
+  key: 'k',
   ctrl: false,
-  alt: false,
+  alt: true,
   shift: false,
   meta: false,
   super: false
@@ -158,10 +160,10 @@ export function useVoiceIntegration({
     const offset = insertTextRef.current?.cursorOffset ?? prev.length;
     const beforeCursor = prev.slice(0, offset);
     const afterCursor = prev.slice(offset);
-    // When the hold key is space, also count full-width spaces (U+3000)
-    // that a CJK IME may have inserted for the same physical key.
-    // U+3000 is BMP single-code-unit so indices align with beforeCursor.
-    const scan = char === ' ' ? normalizeFullWidthSpace(beforeCursor) : beforeCursor;
+    // Only the literal hold key counts as a trailing warmup char. Full-width
+    // space (U+3000) is deliberately NOT counted: it is the CJK IME's Space
+    // arriving, and stripping it would delete a character the user typed.
+    const scan = beforeCursor;
     let trailing = 0;
     while (trailing < scan.length && scan[scan.length - 1 - trailing] === char) {
       trailing++;
@@ -367,8 +369,11 @@ export function useVoiceIntegration({
  * untypable — normal typing (>120ms between keystrokes) flows through;
  * only rapid auto-repeat from a held key triggers activation.
  *
- * Known broken: modifier+space (NUL → parsed as ctrl+backtick), chords
- * (discrete sequences, no hold). Validation warns on these.
+ * Known broken: modifier+space (ctrl+space sends NUL → parsed as
+ * ctrl+backtick; alt+space is ESC-prefixed yet some window managers swallow
+ * it before the terminal sees it), and chords (discrete sequences, no hold).
+ * The default is therefore bare space, guarded against the CJK IME by the
+ * non-ASCII refusal in handleKeyDown. Validation warns on the broken ones.
  */
 export function useVoiceKeybindingHandler({
   voiceHandleKeyEvent,
@@ -490,9 +495,16 @@ export function useVoiceKeybindingHandler({
     let repeatCount: number;
     if (bareChar !== null) {
       if (e.ctrl || e.meta || e.shift) return;
-      // When bound to space, also accept U+3000 (full-width space) —
-      // CJK IMEs emit it for the same physical key.
-      const normalized = bareChar === ' ' ? normalizeFullWidthSpace(e.key) : e.key;
+      // A terminal app cannot query the OS input method, so "is a CJK IME
+      // active?" has to be inferred. The practical proxy: if the prompt
+      // already holds non-ASCII text the user is composing CJK, and Space
+      // belongs to the IME (candidate commit / word break), not to
+      // push-to-talk. Refuse to arm — Space then types a real space.
+      if (/\P{ASCII}/u.test(readPromptText())) return;
+      // Never fold full-width space (U+3000) onto the hold key: that IS the
+      // IME's Space arriving, and treating it as a hold both arms recording
+      // and later strips characters the user actually typed.
+      const normalized = e.key;
       // Fast-path: normal typing (any char that isn't the bound one)
       // bails here without allocating. The repeat() check only matters
       // for batched auto-repeat (input.length > 1) which is rare.

@@ -366,7 +366,7 @@ class ThreadManager {
       const { QueryEngine } = await import('../QueryEngine.js');
       const { createAppState, createCanUseTool } = await import('./server/headlessState.js');
 
-      const { appState, setAppStateFn } = createAppState({
+      const { appState, setAppStateFn, tools, readFileCache } = createAppState({
         cwd: thread.config.cwd,
         permissionMode: thread.config.permissionMode as any,
         allowedTools: thread.config.allowedTools,
@@ -379,7 +379,7 @@ class ThreadManager {
 
       const engine = new QueryEngine({
         cwd: thread.config.cwd,
-        tools: appState.tools,
+        tools,
         commands: [],
         mcpClients: [],
         agents: [],
@@ -387,7 +387,7 @@ class ThreadManager {
         getAppState: () => appState,
         setAppState: setAppStateFn,
         initialMessages: [],
-        readFileCache: appState.readFileCache || {},
+        readFileCache,
         customSystemPrompt: undefined,
         appendSystemPrompt: thread.config.appendSystemPrompt,
         userSpecifiedModel: thread.config.model,

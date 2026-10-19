@@ -14,6 +14,11 @@ import type { CanUseToolFn } from '../../hooks/useCanUseTool.js';
 import type { ToolPermissionContext } from '../../types/permissions.js';
 import type { Tools } from '../../Tool.js';
 import { getTools } from '../../tools.js';
+import {
+  createFileStateCacheWithSizeLimit,
+  READ_FILE_STATE_CACHE_SIZE,
+  type FileStateCache,
+} from '../../utils/fileStateCache.js';
 
 interface HeadlessStateOptions {
   cwd: string;
@@ -27,6 +32,8 @@ interface HeadlessStateOptions {
 interface HeadlessStateResult {
   appState: AppState;
   setAppStateFn: (f: (prev: AppState) => AppState) => void;
+  tools: Tools;
+  readFileCache: FileStateCache;
 }
 
 /**
@@ -50,28 +57,33 @@ export function createAppState(opts: HeadlessStateOptions): HeadlessStateResult 
     isBypassPermissionsModeAvailable: true,
   } as any;
 
-  // Reuse CLI's getTools() — this imports the full tool registry
+  // Reuse CLI's getTools() — this imports the full tool registry.
+  // AppState and getTools each use their own ToolPermissionContext type
+  // (types/permissions vs Tool.ts DeepImmutable); their runtime shape matches.
   let tools: Tools;
   try {
-    tools = getTools(permissionContext);
+    tools = getTools(permissionContext as any);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Failed to load CLI tool registry for desktop server: ${message}`);
   }
 
-  let current: AppState = buildDefaultAppState(opts, permissionContext, tools);
+  const readFileCache = createFileStateCacheWithSizeLimit(
+    READ_FILE_STATE_CACHE_SIZE,
+  );
+
+  let current: AppState = buildDefaultAppState(opts, permissionContext);
 
   function setAppStateFn(f: (prev: AppState) => AppState): void {
     current = f(current);
   }
 
-  return { appState: current, setAppStateFn };
+  return { appState: current, setAppStateFn, tools, readFileCache };
 }
 
 function buildDefaultAppState(
   opts: HeadlessStateOptions,
   permissionContext: ToolPermissionContext,
-  tools: Tools,
 ): AppState {
   return {
     // Core fields used by QueryEngine
@@ -82,12 +94,6 @@ function buildDefaultAppState(
 
     // Tool permission context — must match CLI structure
     toolPermissionContext: permissionContext,
-
-    // Tools — real tool array from getTools()
-    tools,
-
-    // File state cache
-    readFileCache: {} as Record<string, unknown>,
 
     // Settings stub
     settings: {
