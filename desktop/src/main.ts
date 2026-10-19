@@ -33,6 +33,10 @@ import {
   QuitTimeline,
   StartupTimeline,
 } from './observability.js'
+import {
+  startStallMonitor,
+  type StallMonitorHandle,
+} from './stall-monitor.js'
 import { repoRoot, resolveAppPaths } from './paths.js'
 import { createMainWindow, registerWindowIpc } from './window.js'
 
@@ -72,6 +76,7 @@ let manager: BackendManager | null = null
 let artifactRegistry: ArtifactRegistry | null = null
 let previewManager: PreviewManager | null = null
 let previewIpc: PreviewIpcRegistration | null = null
+let stallMonitor: StallMonitorHandle | null = null
 let shuttingDown = false
 let shutdownPromise: Promise<void> | null = null
 
@@ -236,6 +241,8 @@ async function boot(): Promise<void> {
         getWindow: () => mainWindow,
         allowedOrigins: origins,
         allowInsecureHttp: false,
+        allowPrivateOrigins:
+          process.env.AUTOAGENT_PREVIEW_ALLOW_PRIVATE === '1',
         protocolHandler: createPreviewProtocolHandler({
           registry,
           onError: (event, detail) => logger.warn(event, { detail }),
@@ -269,6 +276,24 @@ async function boot(): Promise<void> {
     backendPid: handle.pid,
     bootId: handle.bootId,
   })
+
+  if (process.env.AUTOAGENT_STALL_SAMPLER !== '0') {
+    stallMonitor = startStallMonitor({
+      intervalMs: Number(process.env.AUTOAGENT_STALL_INTERVAL_MS) || 200,
+      thresholdMs: Number(process.env.AUTOAGENT_STALL_MS) || 1500,
+      onSample: (sample) => {
+        if (sample.suspended) return
+        const memory = process.memoryUsage()
+        logger.warn('desktop_main_event_loop_stall', {
+          durationMs: sample.durationMs,
+          wallJumpMs: sample.wallJumpMs,
+          focused: Boolean(BrowserWindow.getFocusedWindow()),
+          rss: memory.rss,
+          heapUsed: memory.heapUsed,
+        })
+      },
+    })
+  }
 }
 
 async function readWorkspaceRoot(port: number, token: string): Promise<string | null> {
@@ -293,6 +318,12 @@ async function shutdown(code: number, reason = 'requested'): Promise<void> {
   shutdownPromise = (async () => {
     const quit = new QuitTimeline()
     logger.info('app.shutdown.begin', { code, reason })
+    try {
+      stallMonitor?.stop()
+      stallMonitor = null
+    } catch {
+      // best effort
+    }
     await quit.phase('preview', async () => {
       try {
         previewIpc?.unregister()

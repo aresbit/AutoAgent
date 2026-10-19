@@ -1023,8 +1023,10 @@ preview IPC surface (`window.autoagentPreview`) backed by one
   `persist:autoagent-preview` partition. They never see the launch token or the
   AutoAgent bridge.
 - Navigation is allowlisted by exact `https:` origin from
-  `AUTOAGENT_PREVIEW_ORIGINS`; the allowlist is empty by default. Window-open,
-  permissions and downloads are denied. `autoagent-preview://` serves only
+  `AUTOAGENT_PREVIEW_ORIGINS`; the allowlist is empty by default. Private,
+  loopback, CGNAT, IPv6 ULA/link-local and `.local` hosts are rejected unless
+  `AUTOAGENT_PREVIEW_ALLOW_PRIVATE=1`; the navigation and redirect guards
+  re-check every URL. Window-open, permissions and downloads are denied. `autoagent-preview://` serves only
   explicitly registered roots with `realpath` containment, hidden-segment
   denial, MIME restrictions, 64 MiB cap and a restrictive CSP.
 - Every IPC payload is revalidated in the main process and the sender must be
@@ -1074,7 +1076,9 @@ emits `app.quit_summary` and persists the previous summary for the next boot.
 `GET /api/support/bundle` builds a redacted zip (manifest, health, settings,
 aggregate counts, MCP metadata, log tails); message bodies, API keys,
 environment values and MCP headers are excluded and the launch token is
-registered as a redaction secret.
+registered as a redaction secret. A simplified stall sampler monitors the main
+loop timer and logs `desktop_main_event_loop_stall` with duration, focus and
+memory; wall-clock jumps are classified as OS suspend.
 
 ---
 

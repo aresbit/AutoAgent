@@ -37,6 +37,10 @@ import {
   type PreviewTabState,
 } from './preview-contract.js';
 import { parsePreviewUrl } from './preview-protocol.js';
+import {
+  isPrivateHostname,
+  normalizePreviewOrigin,
+} from './preview-policy.js';
 
 /** Structured logger hook; never pass URLs with credentials or page content. */
 export type PreviewLogDetail = Readonly<
@@ -60,6 +64,8 @@ export interface PreviewManagerOptions {
   allowedOrigins?: readonly string[];
   /** Test/dev only: permit `http:` loopback origins. Default false. */
   allowInsecureHttp?: boolean;
+  /** Permit private/loopback hosts in the https allowlist. Default false. */
+  allowPrivateOrigins?: boolean;
   /** Permit `autoagent-preview://` URLs. Default true. */
   allowPreviewScheme?: boolean;
   /**
@@ -105,46 +111,22 @@ interface TabRecord {
   lastScreenshotHash: string | null;
 }
 
-function isLoopbackHost(hostname: string): boolean {
-  return (
-    hostname === 'localhost' ||
-    hostname === '127.0.0.1' ||
-    hostname === '[::1]' ||
-    hostname === '::1'
-  );
-}
-
 /**
- * Parse an origin allowlist at startup.  Anything that is not a bare https
- * origin is a configuration error, not a runtime surprise.
+ * Parse an origin allowlist at startup. Anything that is not a bare https
+ * origin (or an explicitly allowed loopback http origin) is a configuration
+ * error, not a runtime surprise. Private/loopback addresses are rejected
+ * unless `allowPrivate` is set.
  */
 export function normalizeAllowedOrigins(
   raw: readonly string[],
   allowInsecureHttp = false,
+  allowPrivate = false,
 ): ReadonlySet<string> {
   const origins = new Set<string>();
   for (const value of raw) {
-    let url: URL;
-    try {
-      url = new URL(value);
-    } catch {
-      throw new Error('preview allowlist entry is not a URL');
-    }
-    if (url.username !== '' || url.password !== '') {
-      throw new Error('preview allowlist entry must not contain credentials');
-    }
-    if (url.pathname !== '/' || url.search !== '' || url.hash !== '') {
-      throw new Error('preview allowlist entries must be origins without a path');
-    }
-    if (url.protocol === 'https:') {
-      origins.add(url.origin);
-      continue;
-    }
-    if (allowInsecureHttp && url.protocol === 'http:' && isLoopbackHost(url.hostname)) {
-      origins.add(url.origin);
-      continue;
-    }
-    throw new Error('preview allowlist entries must use https');
+    origins.add(
+      normalizePreviewOrigin(value, { allowInsecureHttp, allowPrivate }),
+    );
   }
   return origins;
 }
@@ -154,6 +136,7 @@ export function checkNavigation(
   raw: string,
   allowedOrigins: ReadonlySet<string>,
   allowPreviewScheme: boolean,
+  allowPrivate = false,
 ): NavigationCheck {
   if (typeof raw !== 'string' || raw.length === 0 || raw.length > PREVIEW_LIMITS.maxUrlLength) {
     return { allowed: false, reason: 'shape' };
@@ -168,6 +151,9 @@ export function checkNavigation(
     return { allowed: false, reason: 'shape' };
   }
   if (url.protocol === 'https:') {
+    if (!allowPrivate && isPrivateHostname(url.hostname)) {
+      return { allowed: false, reason: 'origin' };
+    }
     return allowedOrigins.has(url.origin)
       ? { allowed: true }
       : { allowed: false, reason: 'origin' };
@@ -206,6 +192,7 @@ export class PreviewManager {
   private readonly partition: string;
   private readonly allowedOrigins: ReadonlySet<string>;
   private readonly allowPreviewScheme: boolean;
+  private readonly allowPrivateOrigins: boolean;
   private readonly allowedPermissions: ReadonlySet<string>;
   private readonly allowDownloads: boolean;
   private readonly downloadsDir: string | null;
@@ -227,9 +214,11 @@ export class PreviewManager {
     }
     this.options = options;
     this.partition = options.partition ?? PREVIEW_PARTITION;
+    this.allowPrivateOrigins = options.allowPrivateOrigins === true;
     this.allowedOrigins = normalizeAllowedOrigins(
       options.allowedOrigins ?? [],
       options.allowInsecureHttp === true,
+      this.allowPrivateOrigins,
     );
     this.allowPreviewScheme = options.allowPreviewScheme !== false;
     this.allowedPermissions = new Set(options.allowedPermissions ?? []);
@@ -571,7 +560,7 @@ export class PreviewManager {
     if (!this.wcToTab.has(webContents.id)) return false;
     if (!this.allowedPermissions.has(permission)) return false;
     if (!requestingUrl) return false;
-    return checkNavigation(requestingUrl, this.allowedOrigins, this.allowPreviewScheme).allowed;
+    return checkNavigation(requestingUrl, this.allowedOrigins, this.allowPreviewScheme, this.allowPrivateOrigins).allowed;
   }
 
   private handleDownload(
@@ -602,7 +591,7 @@ export class PreviewManager {
 
     let allowed = false;
     try {
-      allowed = checkNavigation(item.getURL(), this.allowedOrigins, this.allowPreviewScheme).allowed;
+      allowed = checkNavigation(item.getURL(), this.allowedOrigins, this.allowPreviewScheme, this.allowPrivateOrigins).allowed;
     } catch {
       allowed = false;
     }
@@ -680,7 +669,7 @@ export class PreviewManager {
 
     const onWillNavigate = (details: Electron.Event<Electron.WebContentsWillNavigateEventParams>): void => {
       if (!details.isMainFrame) return;
-      if (checkNavigation(details.url, this.allowedOrigins, this.allowPreviewScheme).allowed) {
+      if (checkNavigation(details.url, this.allowedOrigins, this.allowPreviewScheme, this.allowPrivateOrigins).allowed) {
         return;
       }
       details.preventDefault();
@@ -691,7 +680,7 @@ export class PreviewManager {
 
     const onWillRedirect = (details: Electron.Event<Electron.WebContentsWillRedirectEventParams>): void => {
       if (!details.isMainFrame) return;
-      if (checkNavigation(details.url, this.allowedOrigins, this.allowPreviewScheme).allowed) {
+      if (checkNavigation(details.url, this.allowedOrigins, this.allowPreviewScheme, this.allowPrivateOrigins).allowed) {
         return;
       }
       details.preventDefault();
@@ -859,13 +848,13 @@ export class PreviewManager {
   }
 
   private assertNavigable(rawUrl: string): string {
-    const check = checkNavigation(rawUrl, this.allowedOrigins, this.allowPreviewScheme);
+    const check = checkNavigation(rawUrl, this.allowedOrigins, this.allowPreviewScheme, this.allowPrivateOrigins);
     if (!check.allowed) throw new PreviewError(`blocked-${check.reason}`);
     return new URL(rawUrl).href;
   }
 
   private emitBlocked(record: TabRecord, url: string): void {
-    const check = checkNavigation(url, this.allowedOrigins, this.allowPreviewScheme);
+    const check = checkNavigation(url, this.allowedOrigins, this.allowPreviewScheme, this.allowPrivateOrigins);
     this.emit({
       type: 'blocked-navigation',
       tabId: record.id,

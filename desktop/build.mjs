@@ -78,6 +78,23 @@ function buildArtifactProtocolForTests() {
   ])
 }
 
+function buildPolicyAndMonitorForTests() {
+  run([
+    'build',
+    join(src, 'native', 'preview-policy.ts'),
+    '--outfile', join(dist, 'preview-policy.js'),
+    '--target', 'node',
+    '--format', 'esm',
+  ])
+  run([
+    'build',
+    join(src, 'stall-monitor.ts'),
+    '--outfile', join(dist, 'stall-monitor.js'),
+    '--target', 'node',
+    '--format', 'esm',
+  ])
+}
+
 function buildPreviewProtocolForTests() {
   run([
     'build',
@@ -137,6 +154,8 @@ function verify() {
     'preload.cjs',
     'artifact-preload.cjs',
     'artifact-protocol.js',
+    'preview-policy.js',
+    'stall-monitor.js',
     'preview-protocol.js',
     'backend-manager.js',
     'logging.js',
@@ -156,6 +175,7 @@ buildMain()
 buildPreload()
 buildArtifactPreload()
 buildArtifactProtocolForTests()
+buildPolicyAndMonitorForTests()
 buildPreviewProtocolForTests()
 buildEntry()
 buildBackendManagerForTests()

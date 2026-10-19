@@ -10,7 +10,9 @@ browser T0 (`SafeFileService` + Files tab), the browser preview T0
 T0 (one session per server, status/logs/resources/prompts, approval policy),
 and the first highlights tranche (versioned event envelope + delivery gate,
 startup/quit timelines, support bundle, boot placeholder), followed by the PTY
-host (fork moved out of uvicorn) and the turn-level persistent outbox.
+host (fork moved out of uvicorn) and the turn-level persistent outbox, plus a
+P1 hardening tranche (main-loop stall sampler, private-network preview policy,
+mcpfs projection fingerprint).
 The packaged legacy entry fails fast with a reinstall instruction. Root-only
 install/upgrade/remove, a real-model soak, engine-owned MCP turns (T2), and the
 remaining worktree/context-autocompact P1 items remain open.
@@ -73,7 +75,9 @@ remaining worktree/context-autocompact P1 items remain open.
 - **Preview:** `PreviewManager` owns one `WebContentsView` per tab in a
   dedicated partition. The origin allowlist is empty by default
   (`AUTOAGENT_PREVIEW_ORIGINS`), local roots are opt-in
-  (`AUTOAGENT_PREVIEW_ROOT`), and `AUTOAGENT_PREVIEW=0` fails closed.
+  (`AUTOAGENT_PREVIEW_ROOT`), and `AUTOAGENT_PREVIEW=0` fails closed. Private,
+  loopback and `.local` hosts are rejected unless
+  `AUTOAGENT_PREVIEW_ALLOW_PRIVATE=1`.
 - **MCP:** `McpConnectionManager` owns one persistent session per server over
   stdio / Streamable HTTP / legacy SSE. `SqliteMcpRegistry` keeps SQLite as the
   source of truth; `AUTOAGENT_MCP_PERSISTENT=0` restores the short-lived client.
@@ -116,7 +120,8 @@ remaining worktree/context-autocompact P1 items remain open.
 | P0 | Browser preview: `WebContentsView`, fixed IPC, `autoagent-preview://`, Preview tab | done; empty origin allowlist by default |
 | M0 | Persistent MCP runtime: one session per server, status/logs/resources/prompts, approval | done; engine-owned turns are T2 |
 | O0 | Highlights tranche 1: event envelope/gate, startup/quit timelines, support bundle, boot placeholder | done |
-| O1 | PTY host (fork moved out of uvicorn) + turn-level persistent outbox | done; health loop and worktree pool remain P1 |
+| O1 | PTY host (fork moved out of uvicorn) + turn-level persistent outbox | done |
+| O2 | P1 hardening: main-loop stall sampler, private-network preview policy, mcpfs fingerprint | done; worktree pool/context compact remain |
 
 ## First commands
 

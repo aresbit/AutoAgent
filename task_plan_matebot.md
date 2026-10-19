@@ -42,6 +42,7 @@
 | T33 | MCP T0：持久连接管理器 + 状态/日志/重连 + resources/prompts + 审批策略与状态面板 | complete | T32 | exists:backend/src/autoagent_backend/adapters/mcp/connection_manager.py |
 | T34 | Highlights P0 第一批：事件信封+闸门、启动/退出时间线、Support Bundle、boot placeholder | complete | T33 | exists:backend/src/autoagent_backend/application/support_bundle.py |
 | T35 | Highlights P0 第二批：专用 PTY host（SCM_RIGHTS/监督/回退）+ turn 级持久 outbox | complete | T34 | exists:backend/src/autoagent_backend/adapters/terminal/spawner.py |
+| T36 | P1：主循环 stall sampler + 预览私网/DNS 防护 + mcpfs 投影指纹（description/annotations/outputSchema） | complete | T35 | exists:desktop/src/stall-monitor.ts |
 
 ## Notes
 -

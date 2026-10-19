@@ -200,6 +200,27 @@ Verified: 343 backend tests (PTY host + fork fallback, child parentage, exit
 codes, no orphan), 112 frontend tests (outbox persistence/replay rules), 22
 desktop Node tests, ruff, mypy, import-linter and `tsc`.
 
+## P1 hardening tranche
+
+- **Stall sampler.** `desktop/src/stall-monitor.ts` watches the 200 ms main-loop
+  timer; a late tick logs `desktop_main_event_loop_stall` with duration, wall
+  jump, focus and memory. A wall-clock jump much larger than the monotonic gap
+  is treated as OS suspend and not reported. `AUTOAGENT_STALL_SAMPLER=0`
+  disables it; thresholds are configurable.
+- **Preview private-network fail-closed.** `native/preview-policy.ts` rejects
+  loopback, RFC1918, link-local, CGNAT, IPv6 ULA/link-local and `.local`
+  hostnames in the https allowlist unless
+  `AUTOAGENT_PREVIEW_ALLOW_PRIVATE=1`; the navigation/redirect guard re-checks
+  the host on every URL. Public-origin DNS rebinding remains a documented
+  residual risk (redirects are blocked and the partition has no credentials).
+- **mcpfs projection fingerprint.** The vendored projector now fingerprints
+  `description`, `outputSchema` and the full annotation set, so a server-side
+  `readOnlyHint`/`destructiveHint` change rewrites the typed projection instead
+  of leaving stale approval hints.
+
+Verified: 8 new desktop Node tests (stall monitor + preview policy), 30 desktop
+tests total, `tsc`/build; opencc build plus 13 mcpfs tests.
+
 ## Configuration
 
 See `config-precedence.md`. Summary:
