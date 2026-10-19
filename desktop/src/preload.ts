@@ -88,6 +88,11 @@ const navigation = Object.freeze({
   canGoForward: (): Promise<boolean> => ipcRenderer.invoke('native:navigation:can-go-forward'),
 })
 
+const renderer = Object.freeze({
+  // One-way startup checkpoint; carries no payload.
+  ready: (): void => ipcRenderer.send('native:renderer:ready'),
+})
+
 const api = Object.freeze({
   window: windowControls,
   dialogs,
@@ -97,6 +102,7 @@ const api = Object.freeze({
   theme,
   artifact,
   navigation,
+  renderer,
   onFocusRequested: (handler: () => void): (() => void) =>
     subscribe('native:single-instance:focus', handler),
 })

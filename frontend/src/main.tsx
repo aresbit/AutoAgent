@@ -4,6 +4,7 @@ import { ensureSessionCookie, getLaunchToken, initLaunchToken } from "./api/clie
 import { setFileAuthToken } from "./features/files/fileClient";
 import { App } from "./app/App";
 import { Providers } from "./app/providers";
+import { signalRendererReady } from "./lib/native";
 import "./styles/index.css";
 
 initLaunchToken();
@@ -14,6 +15,7 @@ void ensureSessionCookie().catch(() => undefined);
 
 const root = document.getElementById("root");
 if (!root) throw new Error("Root element not found");
+document.getElementById("boot-placeholder")?.remove();
 
 createRoot(root).render(
   <StrictMode>
@@ -22,3 +24,6 @@ createRoot(root).render(
     </Providers>
   </StrictMode>,
 );
+
+// First-paint checkpoint for the desktop startup timeline.
+requestAnimationFrame(() => signalRendererReady());

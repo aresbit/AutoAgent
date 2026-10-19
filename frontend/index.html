@@ -18,7 +18,64 @@
     </script>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <!-- First-paint placeholder: mirrors the three-pane shell so the window
+           never flashes empty while the SPA bundle loads. React replaces it on
+           the first render. -->
+      <style>
+        html, body, #root { height: 100%; margin: 0; }
+        .boot {
+          display: grid;
+          grid-template-columns: 288px minmax(0, 1fr) 360px;
+          height: 100%;
+          background: #f5f5f3;
+        }
+        .boot-col { border-right: 1px solid #e5e5e1; padding: 14px 12px; display: flex; flex-direction: column; gap: 10px; }
+        .boot-col:last-child { border-right: 0; border-left: 1px solid #e5e5e1; }
+        .boot-main { padding: 18px 24px; display: flex; flex-direction: column; gap: 14px; }
+        .boot-line { height: 10px; border-radius: 6px; background: #e7e7e2; animation: boot-pulse 1.6s ease-in-out infinite; }
+        .boot-line.w70 { width: 70%; }
+        .boot-line.w45 { width: 45%; }
+        .boot-line.w90 { width: 90%; }
+        .boot-bubble { height: 46px; border-radius: 12px; background: #ecece7; animation: boot-pulse 1.6s ease-in-out infinite; }
+        .boot-composer { margin-top: auto; height: 54px; border-radius: 14px; background: #ecece7; animation: boot-pulse 1.6s ease-in-out infinite; }
+        @keyframes boot-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
+        @media (max-width: 1000px) { .boot { grid-template-columns: 240px minmax(0, 1fr); } .boot-col:last-child { display: none; } }
+        @media (max-width: 700px) { .boot { grid-template-columns: minmax(0, 1fr); } .boot-col:first-child { display: none; } }
+        @media (prefers-color-scheme: dark) {
+          .boot { background: #141517; }
+          .boot-col { border-color: #26282c; }
+          .boot-line, .boot-bubble, .boot-composer { background: #24262a; }
+        }
+        html.dark .boot { background: #141517; }
+        html.dark .boot-col { border-color: #26282c; }
+        html.dark .boot-line, html.dark .boot-bubble, html.dark .boot-composer { background: #24262a; }
+        @media (prefers-reduced-motion: reduce) { .boot-line, .boot-bubble, .boot-composer { animation: none; } }
+      </style>
+      <div id="boot-placeholder" class="boot" aria-hidden="true">
+        <div class="boot-col">
+          <div class="boot-line w70"></div>
+          <div class="boot-line w90"></div>
+          <div class="boot-line w90"></div>
+          <div class="boot-line w45"></div>
+          <div class="boot-line w90"></div>
+        </div>
+        <div class="boot-main">
+          <div class="boot-line w45"></div>
+          <div class="boot-bubble"></div>
+          <div class="boot-line w90"></div>
+          <div class="boot-line w70"></div>
+          <div class="boot-bubble"></div>
+          <div class="boot-composer"></div>
+        </div>
+        <div class="boot-col">
+          <div class="boot-line w45"></div>
+          <div class="boot-bubble"></div>
+          <div class="boot-line w90"></div>
+          <div class="boot-line w70"></div>
+        </div>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

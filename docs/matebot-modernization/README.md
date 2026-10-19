@@ -6,11 +6,14 @@ The final artifact is `release/autoagent_0.8.0_amd64.deb` (SHA256
 includes M5.1 artifacts, M5.2 tool bridge/diff/split/native window, the
 integrated terminal T0 (stdlib PTY + WebSocket + xterm), the workspace file
 browser T0 (`SafeFileService` + Files tab), the browser preview T0
-(`WebContentsView` + fixed IPC + Preview tab), and the persistent MCP runtime
-T0 (one session per server, status/logs/resources/prompts, approval policy).
+(`WebContentsView` + fixed IPC + Preview tab), the persistent MCP runtime
+T0 (one session per server, status/logs/resources/prompts, approval policy),
+and the first highlights tranche (versioned event envelope + delivery gate,
+startup/quit timelines, support bundle, boot placeholder).
 The packaged legacy entry fails fast with a reinstall instruction. Root-only
-install/upgrade/remove, a real-model soak, engine-owned MCP turns (T2), and the
-full subprocess PTY replacement (fork-in-uvicorn risk) remain open.
+install/upgrade/remove, a real-model soak, engine-owned MCP turns (T2), the
+PTY supervisor and turn-level outbox, and the full subprocess PTY replacement
+(fork-in-uvicorn risk) remain open.
 
 ## Read in this order
 
@@ -108,6 +111,7 @@ full subprocess PTY replacement (fork-in-uvicorn risk) remain open.
 | F0 | Workspace files: root-scoped `SafeFileService`, atomic writes/CAS, Files tab | done; update/reveal routes retry |
 | P0 | Browser preview: `WebContentsView`, fixed IPC, `autoagent-preview://`, Preview tab | done; empty origin allowlist by default |
 | M0 | Persistent MCP runtime: one session per server, status/logs/resources/prompts, approval | done; engine-owned turns are T2 |
+| O0 | Highlights tranche 1: event envelope/gate, startup/quit timelines, support bundle, boot placeholder | done; PTY supervisor and turn outbox remain |
 
 ## First commands
 

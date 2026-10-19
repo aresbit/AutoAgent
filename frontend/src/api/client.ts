@@ -535,6 +535,23 @@ export const api = {
         });
   },
 
+  async supportBundle(): Promise<Blob> {
+    if (useMock) {
+      return new Blob(["mock support bundle"], { type: "application/zip" });
+    }
+    let response: Response;
+    try {
+      response = await fetch(`${base}/api/support/bundle`, {
+        headers: headersFor({ accept: "application/zip" }),
+        credentials: "include",
+      });
+    } catch (error) {
+      throw networkError(error);
+    }
+    if (!response.ok) throw await errorFromResponse(response);
+    return await response.blob();
+  },
+
   workspaceStatus(workDir?: string, base?: string): Promise<WorkspaceStatusView> {
     return useMock
       ? mockApi.workspaceStatus(workDir)

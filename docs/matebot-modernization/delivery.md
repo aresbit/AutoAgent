@@ -149,6 +149,36 @@ Self-contained layout:
 - Not in T0: engine turns still do not consume these servers (T2), OAuth/DCR,
   MCP Apps `ui://`, secret keyring, and live log streaming into the drawer.
 
+## Observability and support (P0 tranche)
+
+Borrowed from the Claude Desktop highlights, without copying its vendor
+surface:
+
+- **Event envelope + gate.** `/api/events` now sends
+  `{v, seq, ts, essential, data}`. Essential invalidations evict the oldest
+  queued event; non-essential status/log chatter is dropped when a subscriber
+  falls behind; unknown event types default to essential.
+- **Startup checkpoints.** `desktop/src/observability.ts` records
+  module → backend spawn → backend ready → window → renderer first paint, and
+  logs one `app.startup` line with per-phase durations. The renderer signals
+  through a fixed preload channel; a 5 s timeout keeps a broken renderer
+  visible.
+- **Graceful quit summary.** Shutdown runs named phases (preview, artifacts,
+  windows, backend) under a 75 s budget, logs `app.quit_summary` with phase
+  durations and the slowest phase, writes `quit-summary.json`, and reports it
+  as `app.quit_summary.previous` on the next start.
+- **Support Bundle MVP.** `GET /api/support/bundle` returns a redacted zip:
+  manifest, health, effective settings (secrets omitted), aggregate counts,
+  MCP metadata (no env/headers) and bounded log tails. The Settings panel has
+  a download button; the launch token is a registered redaction secret.
+- **Boot placeholder.** `frontend/index.html` paints a three-pane skeleton
+  with the real column widths before the bundle loads; it follows the theme,
+  narrow breakpoints and reduced-motion.
+
+Verified: 341 backend tests (envelope/gate + support bundle unit and HTTP
+tests), 108 frontend tests, desktop typecheck/build plus 22 Node tests
+(protocol contracts and the startup/quit timelines).
+
 ## Configuration
 
 See `config-precedence.md`. Summary:
@@ -178,10 +208,10 @@ The Settings panel is the single place for runtime selection:
 
 ## Verification (independent)
 
-- Backend: **333 pytest**, ruff, mypy (89 files), import-linter (2 contracts).
+- Backend: **341 pytest**, ruff, mypy (91 files), import-linter (2 contracts).
 - Frontend: **108 Vitest**, `tsc --noEmit`, Vite build.
-- Desktop: 23 smoke checks (port/token/health/log/shutdown) plus 18 Node tests
-  (artifact and preview protocol contracts).
+- Desktop: 23 smoke checks (port/token/health/log/shutdown) plus 22 Node tests
+  (artifact/preview protocol contracts and the startup/quit timelines).
 - Files: 31 adapter tests + 8 HTTP integration tests (root containment,
   symlink refusal, CAS, 413, 206 Range, raw upload, mutations).
 - Preview: 6 protocol tests (scheme, URL grammar, MIME/CSP, symlink escape,

@@ -134,6 +134,9 @@ class SessionStorePort(Protocol):
 
     def list(self, limit: int | None = None) -> Sequence[Session]: ...
 
+    def counts(self) -> tuple[int, int, int]:
+        """Return ``(sessions, messages, turns)`` without exposing any content."""
+
     def get(self, session_id: str) -> Session: ...
 
     def create(self, title: str | None = None) -> Session: ...

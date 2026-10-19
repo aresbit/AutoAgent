@@ -26,6 +26,7 @@ from .api.routes import (
     sessions,
     settings,
     skills,
+    support,
     terminals,
     turns,
     workspace,
@@ -111,6 +112,7 @@ def create_app(
     app.include_router(artifact_frame.router)
     app.include_router(events.router)
     app.include_router(terminals.router)
+    app.include_router(support.router)
     # Last: the SPA catch-all must never shadow /api/*.
     app.include_router(static_api.router)
     return app

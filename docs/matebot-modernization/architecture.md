@@ -1051,6 +1051,23 @@ per registered server; the SQLite registry remains the user-facing source.
 - Engine turns do **not** yet consume these servers (T2); the backend manager
   is for UI/direct calls only.
 
+**Event envelope (P0).** `GET /api/events` keeps the SSE event name and wraps
+each payload as `{v, seq, ts, essential, data}`. `seq` is monotonic per
+response; `essential` classifies state invalidations and approvals as
+must-deliver. Each subscriber has a bounded queue: essential events evict the
+oldest entry, non-essential status/log chatter is dropped, and unknown types
+default to essential (fail-closed).
+
+**Startup, quit and support (P0).** The desktop records a startup timeline
+(module → backend spawn/ready → window → renderer first paint) and emits one
+`app.startup` line; the renderer signals via the fixed `native:renderer:ready`
+channel with a 5 s timeout. Shutdown runs named phases with a 75 s budget,
+emits `app.quit_summary` and persists the previous summary for the next boot.
+`GET /api/support/bundle` builds a redacted zip (manifest, health, settings,
+aggregate counts, MCP metadata, log tails); message bodies, API keys,
+environment values and MCP headers are excluded and the launch token is
+registered as a redaction secret.
+
 ---
 
 ## 9. Concurrency and threading model

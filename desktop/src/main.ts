@@ -1,5 +1,5 @@
-import { app, BrowserWindow, dialog, protocol } from 'electron'
-import { mkdir } from 'node:fs/promises'
+import { app, BrowserWindow, dialog, ipcMain, protocol } from 'electron'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { BackendManager, acquireSingleInstanceLock, generateToken } from './backend-manager.js'
 import { createLogger, type Logger } from './logging.js'
@@ -28,11 +28,18 @@ import {
 } from './native/preview-protocol.js'
 import { registerShell } from './native/shell.js'
 import { registerTheme } from './native/theme.js'
+import {
+  QUIT_BUDGET_MS,
+  QuitTimeline,
+  StartupTimeline,
+} from './observability.js'
 import { repoRoot, resolveAppPaths } from './paths.js'
 import { createMainWindow, registerWindowIpc } from './window.js'
 
 const STARTUP_ERROR_DIALOG_TIMEOUT_MS = 60_000
 const isWindows = process.platform === 'win32'
+const startup = new StartupTimeline()
+startup.mark('module')
 
 const paths = resolveAppPaths()
 app.setName('AutoAgent')
@@ -101,9 +108,12 @@ async function boot(): Promise<void> {
     stateDir: paths.stateDir,
     pid: process.pid,
   })
+  await reportPreviousQuit()
 
   const token = generateToken()
   logger.registerSecret(token)
+  // Lets an explicitly requested support bundle include the desktop log tail.
+  process.env.AUTOAGENT_DESKTOP_LOG_FILE = paths.desktopLogFile
 
   manager = new BackendManager({
     dataDir: paths.dataDir,
@@ -124,7 +134,9 @@ async function boot(): Promise<void> {
     },
   })
 
+  startup.mark('backend.spawn')
   const handle = await manager.start()
+  startup.mark('backend.ready')
 
   const artifactProtocolHandler = createArtifactProtocolHandler({
     getBackend: () => (manager ? { port: manager.port, token: manager.token } : null),
@@ -153,9 +165,32 @@ async function boot(): Promise<void> {
     logger,
     onFatal: (reason) => void shutdown(1, reason),
   })
+  startup.mark('window.created')
   mainWindow.on('closed', () => {
     mainWindow = null
   })
+
+  // The renderer signals after React has painted the first frame; a timeout
+  // keeps a broken renderer from hiding the startup summary forever.
+  let rendererMarked = false
+  const markRenderer = (source: string): void => {
+    if (rendererMarked) return
+    rendererMarked = true
+    startup.mark(`renderer.${source}`)
+    const summary = startup.summary()
+    const slowest = summary.marks.reduce<(typeof summary.marks)[number] | undefined>(
+      (best, mark) =>
+        !best || mark.sincePreviousMs > best.sincePreviousMs ? mark : best,
+      undefined,
+    )
+    logger.info('app.startup', {
+      totalMs: summary.totalMs,
+      marks: summary.marks.map((mark) => `${mark.name}=${mark.sinceStartMs}`).join(','),
+      slowest: slowest?.name ?? 'none',
+    })
+  }
+  ipcMain.once('native:renderer:ready', () => markRenderer('ready'))
+  setTimeout(() => markRenderer('timeout'), 5_000).unref?.()
 
   if (previewEnabled) {
     const registry = new PreviewRootRegistry()
@@ -228,6 +263,7 @@ async function boot(): Promise<void> {
     }
   }
 
+  startup.mark('app.ready')
   logger.info('app.ready', {
     port: handle.port,
     backendPid: handle.pid,
@@ -255,44 +291,80 @@ async function shutdown(code: number, reason = 'requested'): Promise<void> {
   if (shutdownPromise) return shutdownPromise
   shuttingDown = true
   shutdownPromise = (async () => {
+    const quit = new QuitTimeline()
     logger.info('app.shutdown.begin', { code, reason })
-    try {
-      previewIpc?.unregister()
-      previewIpc = null
-      previewManager?.dispose()
-      previewManager = null
-    } catch {
-      // best effort
-    }
-    try {
-      artifactRegistry?.close()
-      artifactRegistry = null
-    } catch {
-      // best effort
-    }
-    try {
-      if (artifactProtocolRegistered) {
-        protocol.unhandle(ARTIFACT_SCHEME)
-        artifactProtocolRegistered = false
+    await quit.phase('preview', async () => {
+      try {
+        previewIpc?.unregister()
+        previewIpc = null
+        previewManager?.dispose()
+        previewManager = null
+      } catch {
+        // best effort
       }
-    } catch {
-      // best effort
-    }
-    try {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.destroy()
+    })
+    await quit.phase('artifacts', async () => {
+      try {
+        artifactRegistry?.close()
+        artifactRegistry = null
+      } catch {
+        // best effort
       }
-      mainWindow = null
-      for (const window of BrowserWindow.getAllWindows()) {
-        if (!window.isDestroyed()) window.destroy()
+      try {
+        if (artifactProtocolRegistered) {
+          protocol.unhandle(ARTIFACT_SCHEME)
+          artifactProtocolRegistered = false
+        }
+      } catch {
+        // best effort
       }
-    } catch {
-      // best effort
-    }
+    })
+    await quit.phase('windows', async () => {
+      try {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.destroy()
+        }
+        mainWindow = null
+        for (const window of BrowserWindow.getAllWindows()) {
+          if (!window.isDestroyed()) window.destroy()
+        }
+      } catch {
+        // best effort
+      }
+    })
+    await quit.phase('backend', async () => {
+      try {
+        await manager?.shutdown(reason)
+      } catch (error) {
+        logger.error('app.shutdown.backend-error', {
+          message: error instanceof Error ? error.message : String(error),
+        })
+      }
+    })
+    const summary = quit.summary()
+    logger.info('app.quit_summary', {
+      code,
+      reason,
+      durationMs: summary.durationMs,
+      phases: summary.phases.map((phase) => `${phase.name}=${phase.durationMs}`).join(','),
+      slowest: summary.slowest?.name ?? 'none',
+      overBudget: summary.durationMs > QUIT_BUDGET_MS,
+    })
     try {
-      await manager?.shutdown(reason)
+      await mkdir(paths.stateDir, { recursive: true })
+      await writeFile(
+        join(paths.stateDir, 'quit-summary.json'),
+        JSON.stringify({
+          code,
+          reason,
+          durationMs: summary.durationMs,
+          phases: summary.phases,
+          at: Date.now(),
+        }),
+        { mode: 0o600 },
+      )
     } catch (error) {
-      logger.error('app.shutdown.backend-error', {
+      logger.warn('app.quit_summary.write-failed', {
         message: error instanceof Error ? error.message : String(error),
       })
     }
@@ -301,6 +373,28 @@ async function shutdown(code: number, reason = 'requested'): Promise<void> {
     app.exit(code)
   })()
   return shutdownPromise
+}
+
+async function reportPreviousQuit(): Promise<void> {
+  const file = join(paths.stateDir, 'quit-summary.json')
+  try {
+    const raw = await readFile(file, 'utf8')
+    const parsed = JSON.parse(raw) as {
+      code?: unknown
+      reason?: unknown
+      durationMs?: unknown
+      at?: unknown
+    }
+    logger.info('app.quit_summary.previous', {
+      code: typeof parsed.code === 'number' ? parsed.code : -1,
+      reason: typeof parsed.reason === 'string' ? parsed.reason : 'unknown',
+      durationMs: typeof parsed.durationMs === 'number' ? parsed.durationMs : -1,
+      at: typeof parsed.at === 'number' ? parsed.at : 0,
+    })
+    await rm(file, { force: true })
+  } catch {
+    // No previous summary (first run) or an unreadable file: nothing to report.
+  }
 }
 
 function registerAppLifecycle(): void {

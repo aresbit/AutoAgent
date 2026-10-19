@@ -41,6 +41,7 @@
 | T31 | 设置页统一选择后端 harness（opencc/claude-code）与 API 来源（Claude/AutoAgent/env），移除独立 Engine tab | complete | T30 | exists:backend/src/autoagent_backend/adapters/engine/harness.py |
 | T32 | Ubuntu 22.04 安装兼容：portable CPython 后端 + GLIBC 基线测量/校验 + 依赖下限 2.35 | complete | T31 | exists:scripts/glibc-baseline.py |
 | T33 | MCP T0：持久连接管理器 + 状态/日志/重连 + resources/prompts + 审批策略与状态面板 | complete | T32 | exists:backend/src/autoagent_backend/adapters/mcp/connection_manager.py |
+| T34 | Highlights P0 第一批：事件信封+闸门、启动/退出时间线、Support Bundle、boot placeholder | complete | T33 | exists:backend/src/autoagent_backend/application/support_bundle.py |
 
 ## Anti-Trap Control Checklist
 - [ ] Vibe coding constrained: no long unreviewed AI coding streaks

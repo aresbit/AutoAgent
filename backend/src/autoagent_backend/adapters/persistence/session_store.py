@@ -72,6 +72,19 @@ class SqliteSessionStore:
         )
         return tuple(_row_to_session(row) for row in rows)
 
+    def counts(self) -> tuple[int, int, int]:
+        row = self._db.query_one(
+            """
+            SELECT
+              (SELECT COUNT(*) FROM sessions WHERE deleted_at IS NULL) AS sessions,
+              (SELECT COUNT(*) FROM messages) AS messages,
+              (SELECT COUNT(*) FROM turns) AS turns
+            """
+        )
+        if row is None:  # pragma: no cover - aggregate always returns a row
+            return (0, 0, 0)
+        return (int(row["sessions"]), int(row["messages"]), int(row["turns"]))
+
     def get(self, session_id: str) -> Session:
         row = self._db.query_one(
             """

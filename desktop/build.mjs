@@ -121,6 +121,13 @@ function buildBackendManagerForTests() {
     '--target', 'node',
     '--format', 'esm',
   ])
+  run([
+    'build',
+    join(src, 'observability.ts'),
+    '--outfile', join(dist, 'observability.js'),
+    '--target', 'node',
+    '--format', 'esm',
+  ])
 }
 
 function verify() {
@@ -133,6 +140,7 @@ function verify() {
     'preview-protocol.js',
     'backend-manager.js',
     'logging.js',
+    'observability.js',
     'paths.js',
   ]) {
     const file = join(dist, name)

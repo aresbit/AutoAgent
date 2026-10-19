@@ -29,6 +29,10 @@ interface NativeBridge {
   artifact?: {
     open: (artifactId: string, version?: string, title?: string) => Promise<boolean>;
   };
+  renderer?: {
+    /** One-way startup checkpoint; safe to call more than once. */
+    ready: () => void;
+  };
 }
 
 declare global {
@@ -39,6 +43,14 @@ declare global {
 
 export function nativeBridge(): NativeBridge | undefined {
   return typeof window === "undefined" ? undefined : window.autoagentNative;
+}
+
+/**
+ * Tell the desktop shell that the first React frame is painted. No-op in a
+ * plain browser; the shell also has a timeout so a broken renderer is visible.
+ */
+export function signalRendererReady(): void {
+  nativeBridge()?.renderer?.ready();
 }
 
 export async function chooseSavePath(

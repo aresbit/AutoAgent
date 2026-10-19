@@ -133,6 +133,8 @@ export function SettingsPanel({
   });
   const [fallbackSaved, setFallbackSaved] = useState(false);
   const [fallbackError, setFallbackError] = useState<string | null>(null);
+  const [bundleBusy, setBundleBusy] = useState(false);
+  const [bundleError, setBundleError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!engineConfigQuery.data) return;
@@ -252,6 +254,28 @@ export function SettingsPanel({
       );
     } finally {
       setSaving(false);
+    }
+  };
+
+  const downloadBundle = async () => {
+    setBundleBusy(true);
+    setBundleError(null);
+    try {
+      const blob = await api.supportBundle();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = "autoagent-support.zip";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (cause) {
+      setBundleError(
+        errorMessage(cause, "The support bundle could not be created."),
+      );
+    } finally {
+      setBundleBusy(false);
     }
   };
 
@@ -595,6 +619,33 @@ export function SettingsPanel({
             {engine?.lastError ? (
               <p className="rounded-card bg-bad/10 px-3 py-2.5 text-[11.5px] leading-relaxed text-bad">
                 {engine.lastError}
+              </p>
+            ) : null}
+          </section>
+
+          <section className="hairline-t flex flex-col gap-3 pt-4">
+            <SectionLabel>Diagnostics</SectionLabel>
+            <p className="text-[11.5px] leading-relaxed text-ink-2">
+              A support bundle contains health, redacted settings, aggregate
+              counts, MCP server metadata and log tails. It never includes
+              message bodies, API keys, environment values or tool headers.
+            </p>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] text-ink-3">
+                {bundleBusy ? "Preparing…" : ""}
+              </span>
+              <Button
+                size="sm"
+                variant="secondary"
+                loading={bundleBusy}
+                onClick={() => void downloadBundle()}
+              >
+                Download support bundle
+              </Button>
+            </div>
+            {bundleError ? (
+              <p className="text-[11.5px] text-bad" role="alert">
+                {bundleError}
               </p>
             ) : null}
           </section>

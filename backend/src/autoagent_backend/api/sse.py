@@ -11,6 +11,7 @@ import logging
 from collections.abc import Iterator
 from typing import Any
 
+from ..application.event_bus import EVENT_ENVELOPE_VERSION, is_essential
 from ..application.journal import TurnSubscription
 from ..domain.events import (
     ArtifactCreated,
@@ -219,20 +220,32 @@ def stream_bus_sse(
     clock: ClockPort,
     heartbeat_s: float = HEARTBEAT_SECONDS,
 ) -> Iterator[str]:
-    """Yield cross-cutting invalidation events plus heartbeats.
+    """Yield enveloped cross-cutting events plus heartbeats.
 
-    ``next_payload`` is a zero-argument callable returning a mapping or ``None``
-    on timeout, keeping this module independent of the event bus class.
+    Each event carries ``v`` (envelope version), ``seq`` (monotonic per
+    response), ``ts`` and ``essential``; the original payload is nested under
+    ``data``. ``next_payload`` is a zero-argument callable returning a mapping or
+    ``None`` on timeout, keeping this module independent of the event bus class.
     """
 
+    seq = 0
     while True:
         payload = next_payload(heartbeat_s)
         if payload is None:
             yield format_heartbeat(ts=clock.now_ms())
             continue
+        seq += 1
         event_name = str(payload.get("type", "event"))
+        body = {key: value for key, value in payload.items() if key != "type"}
+        envelope = {
+            "v": EVENT_ENVELOPE_VERSION,
+            "seq": seq,
+            "ts": clock.now_ms(),
+            "essential": is_essential(payload),
+            "data": body,
+        }
         encoded = json.dumps(
-            {key: value for key, value in payload.items() if key != "type"},
+            envelope,
             separators=(",", ":"),
             ensure_ascii=False,
         )
