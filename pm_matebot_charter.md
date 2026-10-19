@@ -39,6 +39,7 @@
 | T29 | Filesystem T0：SafeFileService（根作用域/符号链接拒绝/原子写/CAS/Range）+ 文件面板 | complete | T28 | exists:backend/src/autoagent_backend/adapters/files/safe_file_service.py |
 | T30 | Browser/Preview T0：PreviewManager（WebContentsView/partition/导航白名单）+ IPC + 预览面板 | complete | T28 | exists:desktop/src/native/preview-manager.ts |
 | T31 | 设置页统一选择后端 harness（opencc/claude-code）与 API 来源（Claude/AutoAgent/env），移除独立 Engine tab | complete | T30 | exists:backend/src/autoagent_backend/adapters/engine/harness.py |
+| T32 | Ubuntu 22.04 安装兼容：portable CPython 后端 + GLIBC 基线测量/校验 + 依赖下限 2.35 | complete | T31 | exists:scripts/glibc-baseline.py |
 
 ## Anti-Trap Control Checklist
 - [ ] Vibe coding constrained: no long unreviewed AI coding streaks

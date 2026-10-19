@@ -25,8 +25,8 @@ with a reinstall instruction.
 
 ```
 release/autoagent_0.8.0_amd64.deb
-135,015,208 bytes
-sha256 1fb610f636de9a132cbf2e27d15a5259b110b595a0bb0b09dda6ffc192aabb47
+135,456,008 bytes
+sha256 5802e841e40fab4008b28af32c955f3220ac0cdc7fba08d72c4550df80832923
 ```
 
 Self-contained layout:
@@ -163,6 +163,11 @@ The Settings panel is the single place for runtime selection:
   file 644; `--runtime-check` reports `engineMode=matebot`,
   `matebotVendorExists=true`; CSP and immutable asset caching; fake SSE turn;
   clean shutdown/no orphan.
+- Ubuntu 22.04 compatibility: the packaged ELF floor is **GLIBC_2.34** and the
+  control declares `libc6 (>= 2.35)` (22.04 ships 2.35). The backend is the
+  portable CPython 3.12 runtime (GLIBC_2.17), not a host-linked Nuitka binary.
+  `make smoke` re-measures the floor from the extracted package and fails if
+  the control over-promises.
 - Config precedence: verified with an empty Claude config (AutoAgent source,
   600/700, secret absent) and the real Claude config (`claude-settings`,
   `YF95AXVV/deepseek-flash[1M]`).
@@ -178,6 +183,34 @@ A single `Makefile` is the unified entry point (adapted from the
 `build`, `package`, `smoke`, `artifact`, `dev`, `clean`, `distclean`, `install`.
 `make package` runs `make check` first.
 
+### glibc baseline and Ubuntu 22.04
+
+The build targets **glibc 2.35** (Ubuntu 22.04) by default
+(`AUTOAGENT_TARGET_GLIBC`). A Nuitka standalone binary links against the build
+host's glibc; building on 24.04 (2.39) produces a binary that cannot load on
+22.04. `scripts/build-backend.sh` therefore selects the portable embedded
+CPython runtime whenever the host glibc is newer than the target:
+
+- The portable runtime is python-build-standalone (GLIBC 2.17) plus the locked
+  runtime distributions copied from the project venv or installed from the
+  registry. It is self-contained, larger (~113 MiB uncompressed) and slower on
+  a cold start than Nuitka.
+- `scripts/glibc-baseline.py` scans every packaged ELF and reports the highest
+  GLIBC symbol version. `build-backend.sh`, `build-deb.sh` and
+  `smoke-packaged.sh` all fail when the measured floor exceeds the declared
+  one, so the control file can never over-promise.
+- Force a mode with `--portable` / `--nuitka`; override the safety check with
+  `AUTOAGENT_ALLOW_NEWER_GLIBC=1` (the control file then declares the measured
+  floor).
+- Builds without network egress use `AUTOAGENT_OFFLINE=1`: bun installs from
+  its cache and the backend copies the runtime from `backend/.venv`.
+
+```bash
+# Ubuntu 22.04-compatible package on a newer build host
+AUTOAGENT_OFFLINE=1 make package
+python3 scripts/glibc-baseline.py backend/build --max 2.35
+```
+
 ```bash
 cd /home/tars/yysapp/AutoAgent
 
@@ -187,7 +220,7 @@ make doctor
 make setup
 make check          # lint + backend/frontend/desktop tests
 make build          # SPA + Electron shell
-make package        # check + Nuitka backend + .deb
+make package        # check + backend + .deb
 make smoke          # packaged X11/Wayland/API smoke
 make artifact       # path, size, SHA256
 
@@ -214,7 +247,8 @@ autoagent
   scripted CLI. Run one real `--matebot` turn and a long soak on a disposable
   machine.
 - Nuitka full rebuilds vary by tens of bytes (build-id); packaging-only rebuilds
-  are byte-identical.
+  are byte-identical. On hosts newer than the glibc target the default is the
+  portable runtime, which is larger and starts more slowly.
 - Route count is 69 (the architecture's ≤30 was a guideline); 14 of them are
   the reviewed file-browser surface.
 - The Feishu bridge code is vendored. The desktop currently owns the long

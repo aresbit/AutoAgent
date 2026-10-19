@@ -147,6 +147,17 @@ if printf '%s\n' "$DEPENDS" | grep -Eq 'nodejs|npm|python3|build-essential|unzip
 fi
 log "Depends: $DEPENDS"
 
+# The control file must advertise the measured glibc floor; an over-promise
+# installs on newer hosts and fails on the declared baseline.
+DECLARED_GLIBC="$(printf '%s\n' "$DEPENDS" | sed -n 's/.*libc6 (>= \([0-9.]*\)).*/\1/p')"
+[ -n "$DECLARED_GLIBC" ] || die "Depends does not declare a libc6 floor"
+PACKAGED_GLIBC="$(python3 "$SCRIPT_DIR/glibc-baseline.py" "$APP" | awk '{print $1}')"
+[ "$PACKAGED_GLIBC" = "none" ] && PACKAGED_GLIBC="0.0"
+if [ "$(printf '%s\n%s\n' "$PACKAGED_GLIBC" "$DECLARED_GLIBC" | sort -V | tail -1)" != "$DECLARED_GLIBC" ]; then
+  die "packaged binaries require GLIBC_$PACKAGED_GLIBC but Depends declares only $DECLARED_GLIBC"
+fi
+log "glibc: packaged requires $PACKAGED_GLIBC, declared >= $DECLARED_GLIBC"
+
 if command -v desktop-file-validate >/dev/null 2>&1; then
   desktop-file-validate "$ROOT/usr/share/applications/autoagent.desktop" \
     || die "desktop entry failed validation"

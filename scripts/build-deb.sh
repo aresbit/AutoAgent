@@ -18,6 +18,10 @@ LAUNCHER_TEMPLATE="${PACKAGING_DIR}/usr/bin/autoagent"
 DESKTOP_TEMPLATE="${PACKAGING_DIR}/usr/share/applications/autoagent.desktop"
 OUTPUT_DIR="${PROJECT_DIR}/release"
 BUILD_LOCK="/tmp/autoagent-build.lock"
+# The oldest glibc the package promises to support. Ubuntu 22.04 ships 2.35.
+TARGET_GLIBC="${AUTOAGENT_TARGET_GLIBC:-2.35}"
+export AUTOAGENT_TARGET_GLIBC="$TARGET_GLIBC"
+export AUTOAGENT_ALLOW_NEWER_GLIBC="${AUTOAGENT_ALLOW_NEWER_GLIBC:-0}"
 
 export TZ=UTC
 export LC_ALL=C
@@ -284,13 +288,37 @@ for license in \
   fi
 done
 
+# ---------------------------------------------------------------- glibc floor
+# Derive the dependency from the packaged ELF files instead of hard-coding the
+# build host's version. A Nuitka backend built on 24.04 still requires 2.38;
+# build-backend.sh avoids that by emitting the portable runtime, and this check
+# makes an accidental regression a build failure rather than a broken install.
+GLIBC_SCAN="$SCRIPT_DIR/glibc-baseline.py"
+[ -f "$GLIBC_SCAN" ] || die "missing $GLIBC_SCAN"
+ACTUAL_GLIBC="$(python3 "$GLIBC_SCAN" "$STAGE/opt/autoagent" | awk '{print $1}')"
+[ -n "$ACTUAL_GLIBC" ] || die "glibc scan produced no result"
+log "highest packaged GLIBC requirement: $ACTUAL_GLIBC (target $TARGET_GLIBC)"
+GLIBC_BASELINE="$TARGET_GLIBC"
+is_newer() {
+  [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -1)" = "$1" ]
+}
+if [ "$ACTUAL_GLIBC" != "none" ] && is_newer "$ACTUAL_GLIBC" "$TARGET_GLIBC"; then
+  if [ "$AUTOAGENT_ALLOW_NEWER_GLIBC" = "1" ]; then
+    log "WARNING: shipping a package that requires glibc $ACTUAL_GLIBC (target $TARGET_GLIBC)"
+    GLIBC_BASELINE="$ACTUAL_GLIBC"
+  else
+    die "the packaged binaries require GLIBC_$ACTUAL_GLIBC but the target is $TARGET_GLIBC (set AUTOAGENT_ALLOW_NEWER_GLIBC=1 to ship anyway or rebuild with --portable)"
+  fi
+fi
+
 # ---------------------------------------------------------------- control
 INSTALLED_KIB="$(find "$STAGE" -path "$STAGE/DEBIAN" -prune -o -type f -printf '%s\n' \
   | awk '{ total += $1 } END { print int((total + 1023) / 1024) }')"
 
-awk -v version="$VERSION" -v size="$INSTALLED_KIB" '
+awk -v version="$VERSION" -v size="$INSTALLED_KIB" -v glibc="$GLIBC_BASELINE" '
   /^Version:/        { print "Version: " version; next }
   /^Installed-Size:/ { print "Installed-Size: " size; next }
+  /^Depends:/        { gsub(/@GLIBC_BASELINE@/, glibc); print; next }
   { print }
 ' "$CONTROL_TEMPLATE" > "$STAGE/DEBIAN/control"
 
@@ -373,6 +401,10 @@ DEPENDS="$(dpkg-deb -f "$DEB_PATH" Depends)"
 if printf '%s\n' "$DEPENDS" | grep -Eq 'nodejs|npm|python3|build-essential|unzip'; then
   die "runtime Depends contains a build tool: $DEPENDS"
 fi
+case "$DEPENDS" in
+  *"libc6 (>= $GLIBC_BASELINE)"*) ;;
+  *) die "Depends does not declare the measured libc6 floor ($GLIBC_BASELINE): $DEPENDS" ;;
+esac
 
 SUID_LINES="$(dpkg-deb -c "$DEB_PATH" | awk '$1 ~ /^-..s/ {print}')"
 SUID_COUNT="$(printf '%s\n' "$SUID_LINES" | grep -c . || true)"
@@ -382,7 +414,7 @@ case "$SUID_LINES" in
   *) die "the setuid file is not chrome-sandbox" ;;
 esac
 
-if dpkg-deb -c "$DEB_PATH" | grep -Eq 'node_modules|\.map$|/\.git'; then
+if dpkg-deb -c "$DEB_PATH" | grep -Eq 'node_modules|\.map$|(^|/)\.git(/|$)'; then
   die "forbidden path found in built archive"
 fi
 
