@@ -119,6 +119,7 @@ dpkg-deb -x "$DEB" "$ROOT"
   || die "vendored module mode is not 644"
 [ -f "$APP/desktop/resources/app/entry.js" ] || die "desktop entry.js missing"
 [ -f "$APP/desktop/resources/app/main.js" ] || die "desktop main.js missing"
+[ -f "$APP/desktop/resources/app/artifact-preload.cjs" ] || die "artifact preload missing"
 [ -f "$ROOT/usr/share/applications/autoagent.desktop" ] || die "desktop entry missing"
 
 SUID_LIST="$(dpkg-deb -c "$DEB" | awk '$1 ~ /^-..s/ {print $1, $2, $6}')"

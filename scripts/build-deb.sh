@@ -105,6 +105,7 @@ for required in \
   "desktop/dist/entry.js" \
   "desktop/dist/main.js" \
   "desktop/dist/preload.cjs" \
+  "desktop/dist/artifact-preload.cjs" \
   "frontend/dist/index.html" \
   "frontend/dist/assets" \
   "backend/build/autoagent-backend" \
@@ -225,6 +226,7 @@ cp -a "$PROJECT_DIR/frontend/dist/." "$FRONTEND_DIST/"
 install -m 0644 "$PROJECT_DIR/desktop/dist/entry.js" "$APP_DIR/entry.js"
 install -m 0644 "$PROJECT_DIR/desktop/dist/main.js" "$APP_DIR/main.js"
 install -m 0644 "$PROJECT_DIR/desktop/dist/preload.cjs" "$APP_DIR/preload.cjs"
+install -m 0644 "$PROJECT_DIR/desktop/dist/artifact-preload.cjs" "$APP_DIR/artifact-preload.cjs"
 install -m 0644 "$PROJECT_DIR/assets/icon.png" "$APP_DIR/icon.png"
 
 cat > "$APP_DIR/package.json" <<APP_PACKAGE_JSON
@@ -410,6 +412,8 @@ fi
   || die "entry.js missing after extraction"
 [ -f "$TMP_EXTRACT/opt/autoagent/desktop/resources/app/main.js" ] \
   || die "main.js missing after extraction"
+[ -f "$TMP_EXTRACT/opt/autoagent/desktop/resources/app/artifact-preload.cjs" ] \
+  || die "artifact-preload.cjs missing after extraction"
 
 LDD_MISSING="$(ldd "$TMP_EXTRACT/opt/autoagent/desktop/electron" 2>/dev/null | grep 'not found' || true)"
 [ -z "$LDD_MISSING" ] || die "unresolved Electron dependencies: $LDD_MISSING"

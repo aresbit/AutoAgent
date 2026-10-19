@@ -4,6 +4,7 @@ import {
   Code2,
   Download,
   Eye,
+  ExternalLink,
   FileUp,
   GitCompare,
   RefreshCw,
@@ -37,8 +38,9 @@ import { InlineError, PanelHeader, PanelScroll } from "@/features/panels/Chrome"
 import { cx } from "@/lib/cx";
 import { errorMessage } from "@/lib/errorMessage";
 import { relativeTime, truncate } from "@/lib/format";
-import { chooseOpenPath, chooseSavePath, nativeBridge } from "@/lib/native";
+import { chooseOpenPath, chooseSavePath, nativeBridge, openArtifactWindow } from "@/lib/native";
 import { ArtifactFrame } from "./ArtifactFrame";
+import { CapabilitiesEditor } from "./CapabilitiesEditor";
 import { DiffViewer } from "./DiffViewer";
 import { ArtifactSplitPane } from "./SplitPane";
 import { ToolConsentDialog } from "./ToolConsentDialog";
@@ -81,6 +83,16 @@ export function ArtifactsPanel({
   const [pathDraft, setPathDraft] = useState("");
   const [pathError, setPathError] = useState<string | null>(null);
   const composing = useRef(false);
+
+  const applyArtifactView = useCallback(
+    (next: ArtifactView) => {
+      setPreview((current) => (current?.id === next.id ? next : current));
+      queryClient.setQueryData<ArtifactView[]>(queryKey, (current) =>
+        current?.map((item) => (item.id === next.id ? next : item)),
+      );
+    },
+    [queryClient, queryKey],
+  );
 
   const previewFrameRef = useRef<HTMLIFrameElement | null>(null);
   const splitLeftFrameRef = useRef<HTMLIFrameElement | null>(null);
@@ -428,6 +440,22 @@ export function ArtifactsPanel({
                       >
                         <Download size={12} strokeWidth={2} />
                       </Button>
+                      {nativeBridge() ? (
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label={`Open ${displayTitle(artifact)} in a window`}
+                          onClick={() =>
+                            void openArtifactWindow(
+                              artifact.id,
+                              artifact.revision,
+                              displayTitle(artifact),
+                            )
+                          }
+                        >
+                          <ExternalLink size={12} strokeWidth={2} />
+                        </Button>
+                      ) : null}
                     </div>
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5">
@@ -580,6 +608,7 @@ export function ArtifactsPanel({
                   restoreVersion.mutate({ id: preview.id, versionId })
                 }
               />
+              <CapabilitiesEditor artifact={preview} onChange={applyArtifactView} />
               {!versionApiSupported ? (
                 <p className="text-[10.5px] leading-relaxed text-ink-3">
                   This backend exposes version timestamps only; restore becomes available

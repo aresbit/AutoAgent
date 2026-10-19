@@ -27,7 +27,7 @@ interface NativeBridge {
     ) => Promise<{ canceled: boolean; filePath: string | null }>;
   };
   artifact?: {
-    open: (url: string, title?: string) => Promise<boolean>;
+    open: (artifactId: string, version?: string, title?: string) => Promise<boolean>;
   };
 }
 
@@ -60,9 +60,10 @@ export async function chooseOpenPath(
 }
 
 export function openArtifactWindow(
-  url: string,
-  title: string,
+  artifactId: string,
+  version?: string,
+  title?: string,
 ): Promise<boolean> | null {
   const bridge = nativeBridge();
-  return bridge?.artifact ? bridge.artifact.open(url, title) : null;
+  return bridge?.artifact ? bridge.artifact.open(artifactId, version, title) : null;
 }
