@@ -78,6 +78,16 @@ function buildArtifactProtocolForTests() {
   ])
 }
 
+function buildPreviewProtocolForTests() {
+  run([
+    'build',
+    join(src, 'native', 'preview-protocol.ts'),
+    '--outfile', join(dist, 'preview-protocol.js'),
+    '--target', 'node',
+    '--format', 'esm',
+  ])
+}
+
 function buildEntry() {
   run([
     'build',
@@ -120,6 +130,7 @@ function verify() {
     'preload.cjs',
     'artifact-preload.cjs',
     'artifact-protocol.js',
+    'preview-protocol.js',
     'backend-manager.js',
     'logging.js',
     'paths.js',
@@ -137,6 +148,7 @@ buildMain()
 buildPreload()
 buildArtifactPreload()
 buildArtifactProtocolForTests()
+buildPreviewProtocolForTests()
 buildEntry()
 buildBackendManagerForTests()
 verify()

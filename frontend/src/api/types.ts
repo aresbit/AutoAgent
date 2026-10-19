@@ -17,14 +17,20 @@ export type EngineModelSource =
   | "autoagent"
   | "default";
 
+export type EngineHarness = "opencc" | "claude-code";
+export type ApiCredentialSource = "auto" | "claude" | "autoagent" | "env";
+
 export interface EngineProfileView {
   preset: "bundled" | "custom" | "matebot";
   version: string | null;
   mode?: string | null;
+  harness?: EngineHarness;
   cli?: string | null;
   model?: string | null;
   modelSource?: EngineModelSource;
   configPath?: string | null;
+  credentialSource?: "claude-settings" | "autoagent" | "env" | "none";
+  credentialConfigured?: boolean;
 }
 
 export interface SettingsView {
@@ -46,6 +52,8 @@ export interface SettingsView {
   addDirs: string[];
   appendSystemPrompt: string;
   layout: LayoutView;
+  engineHarness: EngineHarness;
+  apiCredentialSource: ApiCredentialSource;
   engine: EngineProfileView;
 }
 
@@ -68,6 +76,8 @@ export interface SettingsPatch {
   addDirs?: string[];
   appendSystemPrompt?: string;
   layout?: LayoutView;
+  engineHarness?: EngineHarness;
+  apiCredentialSource?: ApiCredentialSource;
 }
 
 export interface ProviderView {
@@ -128,7 +138,7 @@ export type EngineState = "idle" | "starting" | "busy" | "error";
 
 export interface EngineStatusView {
   state: EngineState;
-  mode: "local" | "matebot";
+  mode: "local" | "matebot" | "claude-code";
   activeTurns: number;
   version: string | null;
   lastError: string | null;

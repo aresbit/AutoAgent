@@ -90,7 +90,10 @@ class BootstrapService:
             mcp_servers=self._mcp_list(),
             artifacts=self._artifact_list(),
             model_resolution=(
-                self._engine_config.resolve(settings.model)
+                self._engine_config.resolve(
+                    settings.model,
+                    preference=settings.api_credential_source,
+                )
                 if self._engine_config is not None
                 else ModelResolution()
             ),

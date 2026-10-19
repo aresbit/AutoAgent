@@ -298,3 +298,113 @@ def test_apply_environment_does_not_export_process_values(tmp_path: Path) -> Non
     )
     resolver.apply_environment()
     assert environment == {"ANTHROPIC_AUTH_TOKEN": "process-token"}
+
+
+def test_explicit_claude_source_ignores_other_sources(tmp_path: Path) -> None:
+    resolver = _resolver(
+        tmp_path,
+        claude={
+            "model": "claude-model",
+            "env": {"ANTHROPIC_AUTH_TOKEN": "claude-token"},
+        },
+        auto=_auto(
+            tmp_path, model="auto-model", api_key="auto-key", base_url="https://auto"
+        ),
+        environ={"ANTHROPIC_MODEL": "process-model"},
+    )
+    resolution = resolver.resolve(preference="claude")
+    assert resolution.model == "claude-model"
+    assert resolution.source == "claude-settings"
+    assert resolution.credential_source == "claude-settings"
+    assert resolution.base_url_source == "none"
+
+
+def test_explicit_autoagent_source_ignores_claude(tmp_path: Path) -> None:
+    resolver = _resolver(
+        tmp_path,
+        claude={
+            "model": "claude-model",
+            "env": {
+                "ANTHROPIC_AUTH_TOKEN": "claude-token",
+                "ANTHROPIC_BASE_URL": "https://claude",
+            },
+        },
+        auto=_auto(
+            tmp_path, model="auto-model", api_key="auto-key", base_url="https://auto"
+        ),
+        environ={"ANTHROPIC_MODEL": "process-model"},
+    )
+    resolution = resolver.resolve(preference="autoagent")
+    assert resolution.model == "auto-model"
+    assert resolution.source == "autoagent"
+    assert resolution.credential_source == "autoagent"
+    assert resolution.base_url == "https://auto"
+
+
+def test_explicit_env_source_ignores_files(tmp_path: Path) -> None:
+    resolver = _resolver(
+        tmp_path,
+        claude={"model": "claude-model", "env": {"ANTHROPIC_AUTH_TOKEN": "c"}},
+        auto=_auto(tmp_path, model="auto-model", api_key="auto-key"),
+        environ={
+            "ANTHROPIC_MODEL": "process-model",
+            "ANTHROPIC_API_KEY": "process-key",
+            "ANTHROPIC_BASE_URL": "https://process",
+        },
+    )
+    resolution = resolver.resolve(preference="env")
+    assert resolution.model == "process-model"
+    assert resolution.source == "env"
+    assert resolution.credential_source == "env"
+    assert resolution.base_url_source == "env"
+
+
+def test_missing_source_reports_none_instead_of_falling_back(tmp_path: Path) -> None:
+    resolver = _resolver(
+        tmp_path,
+        claude={"model": "claude-model"},
+        auto=_auto(tmp_path, api_key="auto-key"),
+    )
+    resolution = resolver.resolve(preference="env")
+    assert resolution.model is None
+    assert resolution.credential_source == "none"
+    assert resolution.base_url_source == "none"
+
+
+def test_preference_provider_supplies_the_default(tmp_path: Path) -> None:
+    resolver = EngineConfigResolver(
+        claude=_reader(
+            tmp_path,
+            settings={"model": "claude-model"},
+            environ={},
+        ),
+        autoagent=_auto(tmp_path, model="auto-model"),
+        environ={},
+        preference_provider=lambda: "autoagent",
+    )
+    resolution = resolver.resolve()
+    assert resolution.model == "auto-model"
+    assert resolution.source == "autoagent"
+
+
+def test_apply_environment_follows_the_preference(tmp_path: Path) -> None:
+    environment: dict[str, str] = {}
+    store = _auto(
+        tmp_path,
+        model="auto-model",
+        api_key="auto-key",
+        base_url="https://auto",
+    )
+    resolver = EngineConfigResolver(
+        claude=_reader(tmp_path, environ=environment),
+        autoagent=store,
+        environ=environment,
+    )
+    resolver.apply_environment(preference="autoagent")
+    assert environment == {
+        "ANTHROPIC_MODEL": "auto-model",
+        "ANTHROPIC_AUTH_TOKEN": "auto-key",
+        "ANTHROPIC_BASE_URL": "https://auto",
+    }
+    resolver.apply_environment(preference="claude")
+    assert environment == {}

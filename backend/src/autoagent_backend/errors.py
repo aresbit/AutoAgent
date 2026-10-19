@@ -13,6 +13,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from .adapters.files.safe_file_service import FileServiceError
 from .domain.errors import DomainError
 
 LOG = logging.getLogger("autoagent.api.errors")
@@ -48,6 +49,13 @@ def install_error_handlers(app: FastAPI) -> None:
     ) -> JSONResponse:
         del request
         return error_response(exc.status_code, exc.code, exc.message)
+
+    @app.exception_handler(FileServiceError)
+    async def handle_file_error(
+        request: Request, exc: FileServiceError
+    ) -> JSONResponse:
+        del request
+        return error_response(exc.status, exc.code, exc.message)
 
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(

@@ -248,19 +248,24 @@ class EngineConfigPort(Protocol):
     environment, never writes the Claude config, and never returns credential
     values (only sources and a configured boolean).
 
-    Pre: ``override`` is the desktop model override or ``None``.
+    Pre: ``override`` is the desktop model override or ``None``; ``preference``
+         is one of ``auto``/``claude``/``autoagent``/``env`` or ``None`` to use
+         the configured preference.
     Post: returns a ``ModelResolution``; ``config_path`` names the file that
           supplied the model and ``autoagent_config_path`` the AutoAgent file.
     """
 
-    def resolve(self, override: str | None = None) -> ModelResolution: ...
+    def resolve(
+        self, override: str | None = None, *, preference: str | None = None
+    ) -> ModelResolution: ...
 
-    def apply_environment(self) -> None:
-        """Export AutoAgent-sourced credentials/base URL for engine children.
+    def apply_environment(self, *, preference: str | None = None) -> None:
+        """Export the selected source's values for engine children.
 
-        Post: sets ``ANTHROPIC_AUTH_TOKEN`` / ``ANTHROPIC_BASE_URL`` only when
-              the effective source is the AutoAgent config, so Claude-settings
-              values always win. Never logs the values.
+        Post: sets ``ANTHROPIC_MODEL`` / ``ANTHROPIC_AUTH_TOKEN`` /
+              ``ANTHROPIC_BASE_URL`` only for AutoAgent-sourced values; another
+              selection restores the process's original environment. Never logs
+              the values.
         """
         ...
 

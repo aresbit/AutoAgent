@@ -82,3 +82,11 @@ def test_engine_ref_validation() -> None:
     assert valid_engine_ref("not-a-uuid") is None
     value = "11111111-1111-4111-8111-111111111111"
     assert valid_engine_ref(value) == value
+
+
+def test_claude_code_harness_omits_the_matebot_flag() -> None:
+    argv = build_argv(_command(matebot=False))
+    assert "--matebot" not in argv
+    for flag in REQUIRED_FLAGS:
+        if flag != "--matebot":
+            assert flag in argv

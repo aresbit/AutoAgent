@@ -79,11 +79,17 @@ log "version: $VERSION"
 # ---------------------------------------------------------------- build
 # Kiln may build concurrently; serialize install + build.
 log "installing dependencies and building (flock: $BUILD_LOCK)"
+# AUTOAGENT_OFFLINE=1 uses the local bun cache and makes no registry calls. The
+# lockfile is frozen either way; offline is for build hosts without egress.
+BUN_INSTALL_ARGS=(--frozen-lockfile)
+if [ "${AUTOAGENT_OFFLINE:-0}" = "1" ]; then
+  BUN_INSTALL_ARGS+=(--offline)
+fi
 run_build() {
-  bun install --frozen-lockfile
+  bun install "${BUN_INSTALL_ARGS[@]}"
   (
     cd "$PROJECT_DIR/frontend"
-    bun install --frozen-lockfile
+    bun install "${BUN_INSTALL_ARGS[@]}"
     bun run build
   )
   bun build packages/opencc/src/entrypoints/cli.tsx \

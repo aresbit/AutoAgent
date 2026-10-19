@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
+import { previewApi } from './preview-api.js'
 
 /**
  * Native-only preload. Fixed channels only:
@@ -101,5 +102,6 @@ const api = Object.freeze({
 })
 
 contextBridge.exposeInMainWorld('autoagentNative', api)
+contextBridge.exposeInMainWorld('autoagentPreview', previewApi)
 
 export type AutoAgentNativeApi = typeof api

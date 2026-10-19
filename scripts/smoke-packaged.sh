@@ -63,6 +63,7 @@ TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
 DATA="$TMP/data"
 STATE="$TMP/state"
 LOGS="$STATE/logs"
+WORKSPACE="$TMP/workspace"
 SERVER_PID=""
 GUI_PID=""
 
@@ -190,6 +191,8 @@ assert engine.get("cli"), engine
 
 # ---------------------------------------------------------------- server smoke
 PORT="$(find_free_port)"
+mkdir -p "$WORKSPACE"
+printf 'hello from the packaged backend\n' >"$WORKSPACE/hello.txt"
 log "starting backend on 127.0.0.1:$PORT (AUTOAGENT_ENGINE=fake)"
 AUTOAGENT_ENGINE=fake \
 AUTOAGENT_PACKAGED=0 \
@@ -204,6 +207,7 @@ AUTOAGENT_FRONTEND_DIST="$APP/frontend/dist" \
 AUTOAGENT_MATEBOT_VENDOR_DIR="$APP/vendor/matebot" \
 AUTOAGENT_BUN_PATH="$APP/engine/bun" \
 AUTOAGENT_OPENCC_CLI_PATH="$APP/engine/opencc-dist/cli.js" \
+AUTOAGENT_DEFAULT_CWD="$WORKSPACE" \
   "$BIN" >"$TMP/server.log" 2>&1 &
 SERVER_PID=$!
 
@@ -224,6 +228,49 @@ log "GET $ASSET_PATH"
 curl -fsS --max-time 5 "http://127.0.0.1:$PORT$ASSET_PATH" -o "$TMP/asset"
 [ -s "$TMP/asset" ] || die "asset was empty"
 log "asset bytes: $(wc -c <"$TMP/asset")"
+
+log "file API: list, read, atomic write and hash CAS"
+curl -fsS --max-time 5 \
+  -H "Authorization: Bearer $TOKEN" \
+  "http://127.0.0.1:$PORT/api/files?root=workspace&path=" -o "$TMP/files.json"
+python3 - "$TMP/files.json" <<'PY'
+import json, sys
+payload = json.load(open(sys.argv[1]))
+names = {entry["name"] for entry in payload["entries"]}
+assert "hello.txt" in names, names
+assert "/workspace" not in json.dumps(payload), "absolute path leaked into the DTO"
+PY
+curl -fsS --max-time 5 \
+  -H "Authorization: Bearer $TOKEN" \
+  "http://127.0.0.1:$PORT/api/files/content?root=workspace&path=hello.txt" \
+  -o "$TMP/file.json"
+python3 - "$TMP/file.json" <<'PY'
+import json, sys
+payload = json.load(open(sys.argv[1]))
+assert payload["text"] == "hello from the packaged backend\n", payload
+assert payload["binary"] is False and len(payload["sha256"]) == 64, payload
+PY
+curl -fsS --max-time 5 -X PUT \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"root":"workspace","path":"written.txt","text":"packaged"}' \
+  "http://127.0.0.1:$PORT/api/files/content" -o "$TMP/write.json"
+python3 - "$TMP/write.json" <<'PY'
+import json, sys
+payload = json.load(open(sys.argv[1]))
+assert payload["size"] == 8 and payload["created"] is True, payload
+PY
+ZERO_HASH="$(printf '0%.0s' {1..64})"
+STALE_STATUS="$(
+  curl -sS -o "$TMP/stale.json" -w '%{http_code}' --max-time 5 -X PUT \
+    -H "Authorization: Bearer $TOKEN" \
+    -H 'Content-Type: application/json' \
+    -d "{\"root\":\"workspace\",\"path\":\"written.txt\",\"text\":\"clobber\",\"expectedSha256\":\"$ZERO_HASH\"}" \
+    "http://127.0.0.1:$PORT/api/files/content"
+)"
+[ "$STALE_STATUS" = "409" ] || die "stale hash did not return 409 (got $STALE_STATUS)"
+grep -q '"code":"HASH_MISMATCH"' "$TMP/stale.json" || die "stale hash code missing"
+log "file API: ok"
 
 log "fake turn over SSE"
 SESSION_ID="$(

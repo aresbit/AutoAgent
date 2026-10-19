@@ -224,6 +224,9 @@ def test_settings_update_and_permission_policy(client: TestClient) -> None:
     assert default_engine["autoagentConfigPath"] == autoagent_path
     assert default_engine["credentialSource"] == "none"
     assert default_engine["credentialConfigured"] is False
+    assert default_payload["engineHarness"] == "opencc"
+    assert default_payload["apiCredentialSource"] == "auto"
+    assert default_engine["harness"] == "opencc"
     assert default_engine["cli"].endswith(
         "packages/opencc/dist/cli.js"
     )
@@ -241,6 +244,29 @@ def test_settings_update_and_permission_policy(client: TestClient) -> None:
     )
     assert rejected.status_code == 400
     assert rejected.json()["code"] == "PERMISSION_MODE_UNSUPPORTED"
+
+    switched = client.put(
+        "/api/settings",
+        headers=headers,
+        json={
+            "engineHarness": "claude-code",
+            "apiCredentialSource": "autoagent",
+        },
+    )
+    assert switched.status_code == 200, switched.text
+    assert switched.json()["engineHarness"] == "claude-code"
+    assert switched.json()["apiCredentialSource"] == "autoagent"
+    assert switched.json()["engine"]["harness"] == "claude-code"
+    assert switched.json()["engine"]["mode"] == "claude-code"
+
+    persisted = client.get("/api/settings", headers=headers).json()
+    assert persisted["engineHarness"] == "claude-code"
+    assert persisted["apiCredentialSource"] == "autoagent"
+
+    invalid = client.put(
+        "/api/settings", headers=headers, json={"engineHarness": "other"}
+    )
+    assert invalid.status_code == 422
 
     providers = client.get("/api/providers", headers=headers)
     assert providers.status_code == 200

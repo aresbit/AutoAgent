@@ -79,13 +79,15 @@ class EngineCommand:
     add_dirs: tuple[str, ...] = ()
     permission: PermissionPolicy = field(default_factory=lambda: FULL_ACCESS)
     extra_args: tuple[str, ...] = ()
+    matebot: bool = True
 
 
 def build_argv(command: EngineCommand) -> list[str]:
     """Build the exact child argv array (never a shell string).
 
     Post: every element is a separate argument; user-controlled values occupy
-          their own element; ``--matebot`` is always present.
+          their own element. ``--matebot`` is present for the opencc harness and
+          absent for the plain claude-code harness.
     """
 
     argv: list[str] = [
@@ -101,7 +103,8 @@ def build_argv(command: EngineCommand) -> list[str]:
         "--include-hook-events",
     ]
     argv.extend(permission_args(command.permission))
-    argv.append("--matebot")
+    if command.matebot:
+        argv.append("--matebot")
     if command.model:
         argv.extend(("--model", command.model))
     if command.append_system_prompt:
@@ -121,6 +124,7 @@ def command_for_settings(
     cli_path: Path,
     cwd: Path,
     resume: str | None,
+    matebot: bool = True,
 ) -> EngineCommand:
     return EngineCommand(
         bun_path=bun_path,
@@ -131,6 +135,7 @@ def command_for_settings(
         resume=resume,
         add_dirs=settings.add_dirs,
         permission=FULL_ACCESS,
+        matebot=matebot,
     )
 
 

@@ -98,9 +98,16 @@ class _Session:
 class SubprocessEngine:
     """``EnginePort`` backed by persistent opencc children."""
 
-    def __init__(self, options: EngineOptions, *, mode: str = "matebot") -> None:
+    def __init__(
+        self,
+        options: EngineOptions,
+        *,
+        mode: str = "matebot",
+        matebot: bool = True,
+    ) -> None:
         self._options = options
         self._mode = mode
+        self._matebot = matebot
         self._lock = threading.RLock()
         self._sessions: OrderedDict[str, _Session] = OrderedDict()
         self._log_lock = threading.Lock()
@@ -313,6 +320,7 @@ class SubprocessEngine:
             cli_path=self._options.cli_path,
             cwd=cwd,
             resume=resume_ref,
+            matebot=self._matebot,
         )
         argv = build_argv(command)
         runtime.generation += 1
@@ -598,6 +606,7 @@ def build_subprocess_engine(
     cancel_grace_s: float,
     init_timeout_s: float = 60.0,
     debug_frames: bool = False,
+    matebot: bool = True,
 ) -> SubprocessEngine:
     """Resolve executables and construct the engine adapter (composition only)."""
 
@@ -611,7 +620,7 @@ def build_subprocess_engine(
         init_timeout_s=max(0.1, init_timeout_s),
         debug_frames=debug_frames,
     )
-    return SubprocessEngine(options)
+    return SubprocessEngine(options, matebot=matebot)
 
 
 def _short(session_id: str) -> str:

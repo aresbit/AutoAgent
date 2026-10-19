@@ -16,6 +16,16 @@ import {
 import { registerClipboard } from './native/clipboard.js'
 import { registerDialogs } from './native/dialogs.js'
 import { registerNotifications } from './native/notifications.js'
+import {
+  PreviewManager,
+  type PreviewLogDetail,
+} from './native/preview-manager.js'
+import { registerPreviewIpc, type PreviewIpcRegistration } from './native/preview-ipc.js'
+import {
+  PreviewRootRegistry,
+  createPreviewProtocolHandler,
+  registerPreviewScheme,
+} from './native/preview-protocol.js'
 import { registerShell } from './native/shell.js'
 import { registerTheme } from './native/theme.js'
 import { repoRoot, resolveAppPaths } from './paths.js'
@@ -39,6 +49,11 @@ app.setPath('userData', paths.dataDir)
 // the app is ready; `protocol.handle` is installed once the backend is up.
 registerArtifactScheme(protocol)
 
+// Preview tabs are opt-out (`AUTOAGENT_PREVIEW=0` fails closed).  The scheme
+// must be registered before ready, exactly like the artifact scheme.
+const previewEnabled = process.env.AUTOAGENT_PREVIEW !== '0'
+if (previewEnabled) registerPreviewScheme(protocol)
+
 let artifactProtocolRegistered = false
 
 const logger: Logger = createLogger(paths.desktopLogFile, {
@@ -48,6 +63,8 @@ const logger: Logger = createLogger(paths.desktopLogFile, {
 let mainWindow: BrowserWindow | null = null
 let manager: BackendManager | null = null
 let artifactRegistry: ArtifactRegistry | null = null
+let previewManager: PreviewManager | null = null
+let previewIpc: PreviewIpcRegistration | null = null
 let shuttingDown = false
 let shutdownPromise: Promise<void> | null = null
 
@@ -140,6 +157,77 @@ async function boot(): Promise<void> {
     mainWindow = null
   })
 
+  if (previewEnabled) {
+    const registry = new PreviewRootRegistry()
+    const roots = (process.env.AUTOAGENT_PREVIEW_ROOT ?? '')
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean)
+    for (const [index, root] of roots.entries()) {
+      try {
+        registry.add(root, {
+          ...(index === 0 ? { id: 'workspace', label: 'Workspace' } : {}),
+          allowHidden: false,
+        })
+      } catch (error) {
+        logger.warn('preview.root.rejected', {
+          message: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+    if (roots.length === 0) {
+      // Register the configured workspace under a stable id. The renderer still
+      // receives only `autoagent-preview://workspace/...`, never the path.
+      const workspace = await readWorkspaceRoot(handle.port, token)
+      if (workspace) {
+        try {
+          registry.add(workspace, { id: 'workspace', label: 'Workspace' })
+        } catch (error) {
+          logger.warn('preview.root.rejected', {
+            message: error instanceof Error ? error.message : String(error),
+          })
+        }
+      }
+    }
+    const origins = (process.env.AUTOAGENT_PREVIEW_ORIGINS ?? '')
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean)
+    const logPreview = (event: string, detail?: PreviewLogDetail): void => {
+      logger.info(event, detail)
+    }
+    try {
+      previewManager = new PreviewManager({
+        getWindow: () => mainWindow,
+        allowedOrigins: origins,
+        allowInsecureHttp: false,
+        protocolHandler: createPreviewProtocolHandler({
+          registry,
+          onError: (event, detail) => logger.warn(event, { detail }),
+        }),
+        logger: logPreview,
+      })
+      previewIpc = registerPreviewIpc({
+        manager: previewManager,
+        getWindow: () => mainWindow,
+        getAppOrigin: () => `http://127.0.0.1:${manager?.port ?? handle.port}`,
+        logger: logPreview,
+      })
+      logger.info('preview.ready', {
+        roots: roots.length,
+        origins: origins.length,
+      })
+    } catch (error) {
+      // A bad allowlist entry must not prevent the app from starting; the
+      // preview tab then reports that the bridge is unavailable.
+      logger.error('preview.unavailable', {
+        message: error instanceof Error ? error.message : String(error),
+      })
+      previewManager = null
+      previewIpc = null
+    }
+  }
+
   logger.info('app.ready', {
     port: handle.port,
     backendPid: handle.pid,
@@ -147,11 +235,35 @@ async function boot(): Promise<void> {
   })
 }
 
+async function readWorkspaceRoot(port: number, token: string): Promise<string | null> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/api/bootstrap`, {
+      headers: { authorization: `Bearer ${token}` },
+    })
+    if (!response.ok) return null
+    const body = (await response.json()) as {
+      settings?: { cwd?: unknown }
+    }
+    const cwd = body.settings?.cwd
+    return typeof cwd === 'string' && cwd.length > 0 ? cwd : null
+  } catch {
+    return null
+  }
+}
+
 async function shutdown(code: number, reason = 'requested'): Promise<void> {
   if (shutdownPromise) return shutdownPromise
   shuttingDown = true
   shutdownPromise = (async () => {
     logger.info('app.shutdown.begin', { code, reason })
+    try {
+      previewIpc?.unregister()
+      previewIpc = null
+      previewManager?.dispose()
+      previewManager = null
+    } catch {
+      // best effort
+    }
     try {
       artifactRegistry?.close()
       artifactRegistry = null

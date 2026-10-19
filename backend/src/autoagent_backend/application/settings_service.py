@@ -64,7 +64,13 @@ class SettingsService:
         return self._settings.read()
 
     def update(self, patch: SettingsPatch) -> Settings:
-        return self._settings.update(patch)
+        updated = self._settings.update(patch)
+        if self._engine_config is not None:
+            # Re-export the selected source so the next engine child inherits it.
+            self._engine_config.apply_environment(
+                preference=updated.api_credential_source
+            )
+        return updated
 
     def model_resolution(
         self, settings: Settings | None = None
@@ -74,7 +80,9 @@ class SettingsService:
         chosen = settings if settings is not None else self._settings.read()
         if self._engine_config is None:
             return ModelResolution(model=None, source="default")
-        return self._engine_config.resolve(chosen.model)
+        return self._engine_config.resolve(
+            chosen.model, preference=chosen.api_credential_source
+        )
 
     def providers(self) -> ProviderCatalog:
         return self._settings.providers()

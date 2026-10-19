@@ -24,6 +24,7 @@ def _view(container: Container, config: object) -> EngineConfigView:
         resolution,
         engine_version=container.engine.status().version,
         cli_path=container.cli_path,
+        harness=settings.engine_harness,
     )
 
 

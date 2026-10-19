@@ -4,7 +4,9 @@ import {
   api,
   type EngineConfigPatch,
   type EngineConfigView,
+  type EngineHarness,
   type EngineStatusView,
+  type ApiCredentialSource,
   type PermissionMode,
   type ProviderCatalogView,
   type SettingsPatch,
@@ -50,6 +52,8 @@ interface Draft {
   disallowedTools: string;
   addDirs: string;
   appendSystemPrompt: string;
+  engineHarness: EngineHarness;
+  apiCredentialSource: ApiCredentialSource;
 }
 
 function draftFrom(settings: SettingsView): Draft {
@@ -69,6 +73,8 @@ function draftFrom(settings: SettingsView): Draft {
     disallowedTools: settings.disallowedTools.join(", "),
     addDirs: settings.addDirs.join(", "),
     appendSystemPrompt: settings.appendSystemPrompt,
+    engineHarness: settings.engineHarness,
+    apiCredentialSource: settings.apiCredentialSource,
   };
 }
 
@@ -79,18 +85,38 @@ function listOf(value: string): string[] {
     .filter(Boolean);
 }
 
+function credentialSourceLabel(source: string | undefined): string {
+  switch (source) {
+    case "claude-settings":
+      return "Claude settings";
+    case "autoagent":
+      return "Custom config";
+    case "env":
+      return "Environment";
+    case "none":
+      return "Not configured";
+    default:
+      return source ?? "Unknown";
+  }
+}
+
 export function SettingsPanel({
   settings,
   providers,
   onSave,
+  engine,
+  engineRefreshing = false,
+  onRefreshEngine,
 }: {
   settings: SettingsView;
   providers: ProviderCatalogView;
   onSave: (patch: SettingsPatch) => Promise<SettingsView>;
+  engine?: EngineStatusView;
+  engineRefreshing?: boolean;
+  onRefreshEngine?: () => void;
 }) {
   const { theme, setTheme } = useTheme();
   const [draft, setDraft] = useState<Draft>(() => draftFrom(settings));
-  const [apiKey, setApiKey] = useState("");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -182,18 +208,11 @@ export function SettingsPanel({
     [providers],
   );
   const provider = allProviders.find((item) => item.id === draft.providerId);
-  const isMatebot = draft.providerId === "matebot" || provider?.id === "matebot";
-  const matebotEngine =
-    settings.engine.preset === "matebot" ||
-    settings.engine.mode === "matebot" ||
-    isMatebot;
-  const runtimeLabel = matebotEngine
-    ? "MateBot (opencc --matebot)"
-    : settings.engine.preset === "bundled"
-      ? "Bundled engine"
-      : "Custom engine";
-  const dirty =
-    JSON.stringify(draft) !== JSON.stringify(draftFrom(settings)) || apiKey.trim().length > 0;
+  const runtimeLabel =
+    draft.engineHarness === "claude-code"
+      ? "Claude Code harness (opencc)"
+      : "OpenCC (MateBot coordinator)";
+  const dirty = JSON.stringify(draft) !== JSON.stringify(draftFrom(settings));
 
   const patch = (values: Partial<Draft>) =>
     setDraft((current) => ({ ...current, ...values }));
@@ -220,10 +239,10 @@ export function SettingsPanel({
         disallowedTools: listOf(draft.disallowedTools),
         addDirs: listOf(draft.addDirs),
         appendSystemPrompt: draft.appendSystemPrompt,
+        engineHarness: draft.engineHarness,
+        apiCredentialSource: draft.apiCredentialSource,
       };
-      if (apiKey.trim()) next.apiKey = apiKey.trim();
       await onSave(next);
-      setApiKey("");
       setSaved(true);
     } catch (saveError) {
       setError(
@@ -241,6 +260,31 @@ export function SettingsPanel({
       <div className="scroll-area flex-1 overflow-y-auto">
         <div className="flex flex-col gap-5 px-3 py-4">
           <section className="flex flex-col gap-3">
+            <SectionLabel>Runtime</SectionLabel>
+            <Field
+              label="Harness"
+              htmlFor="setting-harness"
+              hint="Applies to the next turn. OpenCC runs the MateBot coordinator; Claude Code runs the same local CLI without --matebot."
+            >
+              <Select
+                id="setting-harness"
+                value={draft.engineHarness}
+                onChange={(event) =>
+                  patch({ engineHarness: event.target.value as EngineHarness })
+                }
+              >
+                <option value="opencc">OpenCC (MateBot coordinator)</option>
+                <option value="claude-code">Claude Code (plain harness)</option>
+              </Select>
+            </Field>
+            <p className="rounded-card bg-panel-2 px-3 py-2.5 text-[11.5px] leading-relaxed text-ink-2">
+              {draft.engineHarness === "opencc"
+                ? "The vendored opencc CLI runs with --matebot: persistent sessions, swarm coordination and eval/apply gates."
+                : "The vendored opencc CLI runs in its Claude Code-compatible mode without the MateBot coordinator."}
+            </p>
+          </section>
+
+          <section className="hairline-t flex flex-col gap-3 pt-4">
             <SectionLabel>Model</SectionLabel>
             <Field label="Provider">
               <div className="control flex h-9 items-center gap-2 rounded-lg px-3">
@@ -249,10 +293,48 @@ export function SettingsPanel({
                   {provider?.name ?? "MateBot (OpenCC)"}
                 </span>
                 <span className="t-code flex-none text-[10.5px] text-ink-3">
-                  {isMatebot ? "opencc --matebot" : provider?.apiType ?? ""}
+                  {draft.engineHarness === "opencc" ? "opencc --matebot" : "opencc"}
                 </span>
               </div>
             </Field>
+            <Field
+              label="API source"
+              htmlFor="setting-api-source"
+              hint="Where the model API URL and key come from. Auto keeps the documented precedence."
+            >
+              <Select
+                id="setting-api-source"
+                value={draft.apiCredentialSource}
+                onChange={(event) =>
+                  patch({
+                    apiCredentialSource: event.target.value as ApiCredentialSource,
+                  })
+                }
+              >
+                <option value="auto">
+                  Auto (Claude settings → AutoAgent → env)
+                </option>
+                <option value="claude">Claude settings (~/.claude/settings.json)</option>
+                <option value="autoagent">Custom (~/.autoagent/settings.json)</option>
+                <option value="env">Process environment</option>
+              </Select>
+            </Field>
+            <div className="control flex min-h-9 items-center gap-2 rounded-lg px-3 py-1.5">
+              <span className="min-w-0 flex-1 text-[12px] text-ink-2">
+                Effective API credentials
+              </span>
+              <Badge
+                tone={
+                  settings.engine.credentialConfigured
+                    ? "ok"
+                    : settings.engine.credentialSource === "none"
+                      ? "neutral"
+                      : "accent"
+                }
+              >
+                {credentialSourceLabel(settings.engine.credentialSource)}
+              </Badge>
+            </div>
             <Field label="Effective model">
               <div className="control flex min-h-9 items-center gap-2 rounded-lg px-3 py-1.5">
                 <span className="t-code min-w-0 flex-1 truncate text-[12.5px] text-ink">
@@ -273,28 +355,16 @@ export function SettingsPanel({
               </p>
             ) : null}
             <Field
-              label={isMatebot ? "App override (--model)" : "Model"}
+              label="App override (--model)"
               htmlFor="setting-model"
-              hint={
-                isMatebot
-                  ? "Leave blank to reuse ~/.claude/settings.json. An override is passed as --model for desktop sessions only and does not modify the file."
-                  : provider?.allowCustomModels
-                    ? "Type any model id this provider accepts."
-                    : "Choose one of the models supported by this provider."
-              }
+              hint="Leave blank to use the selected API source. An override is passed as --model for desktop sessions only and does not modify any file."
             >
               <Input
                 id="setting-model"
                 value={draft.model}
-                list="model-options"
-                placeholder={isMatebot ? "Reuse global config" : undefined}
+                placeholder="Reuse the selected source"
                 onChange={(event) => patch({ model: event.target.value })}
               />
-              {!isMatebot ? (
-                <datalist id="model-options">
-                  {provider?.models.map((model) => <option key={model} value={model} />)}
-                </datalist>
-              ) : null}
             </Field>
             <Field label="Fallback model" htmlFor="setting-fallback">
               <Input
@@ -304,40 +374,15 @@ export function SettingsPanel({
                 placeholder="Optional"
               />
             </Field>
-            {isMatebot ? (
-              <p className="rounded-card bg-panel-2 px-3 py-2.5 text-[11.5px] leading-relaxed text-ink-2">
-                Credentials are inherited from the OpenCC/MateBot environment; the
-                engine runs locally with{" "}
-                <span className="t-code text-ink">--matebot</span>.
-              </p>
-            ) : (
-              <>
-                <Field label="Base URL" htmlFor="setting-base-url">
-                  <Input
-                    id="setting-base-url"
-                    value={draft.baseURL}
-                    onChange={(event) => patch({ baseURL: event.target.value })}
-                    placeholder="Provider default"
-                  />
-                </Field>
-                <Field
-                  label="API key"
-                  htmlFor="setting-api-key"
-                  hint="Stored by the local service and never shown again."
-                >
-                  <Input
-                    id="setting-api-key"
-                    type="password"
-                    value={apiKey}
-                    onChange={(event) => setApiKey(event.target.value)}
-                    placeholder={
-                      settings.apiKeyConfigured ? "Configured" : "Not configured"
-                    }
-                    autoComplete="off"
-                  />
-                </Field>
-              </>
-            )}
+            <p className="rounded-card bg-panel-2 px-3 py-2.5 text-[11.5px] leading-relaxed text-ink-2">
+              {draft.apiCredentialSource === "claude"
+                ? "Uses the model, base URL and key from ~/.claude/settings.json. AutoAgent never reads the secret value."
+                : draft.apiCredentialSource === "autoagent"
+                  ? "Uses the custom config below. Edit Base URL and API key there; the file is written 0600 under ~/.autoagent/."
+                  : draft.apiCredentialSource === "env"
+                    ? "Uses ANTHROPIC_MODEL / ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN from the process that launched AutoAgent."
+                    : "Claude settings win, then the custom config below, then the process environment. Switch the source above to pin one."}
+            </p>
           </section>
 
           <section className="hairline-t flex flex-col gap-3 pt-4">
@@ -472,7 +517,19 @@ export function SettingsPanel({
           </section>
 
           <section className="hairline-t flex flex-col gap-3 pt-4">
-            <SectionLabel>Engine</SectionLabel>
+            <div className="flex items-center justify-between gap-2">
+              <SectionLabel>Engine</SectionLabel>
+              {onRefreshEngine ? (
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  onClick={onRefreshEngine}
+                  loading={engineRefreshing}
+                >
+                  Refresh
+                </Button>
+              ) : null}
+            </div>
             <dl className="flex flex-col gap-2 rounded-card bg-panel-2 px-3 py-2.5">
               <div className="flex items-center justify-between gap-3">
                 <dt className="text-[12px] text-ink-3">Runtime</dt>
@@ -480,6 +537,33 @@ export function SettingsPanel({
                   {runtimeLabel}
                 </dd>
               </div>
+              {engine ? (
+                <>
+                  <div className="flex items-center justify-between gap-3">
+                    <dt className="text-[12px] text-ink-3">Status</dt>
+                    <dd>
+                      <Badge
+                        tone={
+                          engine.state === "error"
+                            ? "bad"
+                            : engine.state === "idle"
+                              ? "ok"
+                              : "accent"
+                        }
+                        dot
+                      >
+                        {engine.state}
+                      </Badge>
+                    </dd>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <dt className="text-[12px] text-ink-3">Active turns</dt>
+                    <dd className="t-num text-[12px] text-ink">
+                      {engine.activeTurns}
+                    </dd>
+                  </div>
+                </>
+              ) : null}
               {settings.engine.mode ? (
                 <div className="flex items-center justify-between gap-3">
                   <dt className="text-[12px] text-ink-3">Mode</dt>
@@ -508,6 +592,11 @@ export function SettingsPanel({
                 </div>
               ) : null}
             </dl>
+            {engine?.lastError ? (
+              <p className="rounded-card bg-bad/10 px-3 py-2.5 text-[11.5px] leading-relaxed text-bad">
+                {engine.lastError}
+              </p>
+            ) : null}
           </section>
 
           <section className="hairline-t flex flex-col gap-3 pt-4">
@@ -700,99 +789,6 @@ export function SettingsPanel({
           </div>
         </div>
       </div>
-    </div>
-  );
-}
-
-export function EnginePanel({
-  engine,
-  refreshing,
-  onRefresh,
-}: {
-  engine: EngineStatusView | undefined;
-  refreshing: boolean;
-  onRefresh: () => void;
-}) {
-  return (
-    <div className="scroll-area flex-1 overflow-y-auto px-3 py-4">
-      <div className="flex items-center justify-between gap-2">
-        <SectionLabel>Engine</SectionLabel>
-        <Button
-          variant="ghost"
-          size="xs"
-          onClick={onRefresh}
-          loading={refreshing}
-        >
-          Refresh
-        </Button>
-      </div>
-
-      {!engine ? (
-        <p className="mt-4 text-[12px] text-ink-3">Waiting for the engine…</p>
-      ) : (
-        <div className="mt-4 flex flex-col gap-4">
-          <div className="flex items-center gap-2">
-            <Badge
-              tone={
-                engine.state === "error"
-                  ? "bad"
-                  : engine.state === "idle"
-                    ? "ok"
-                    : "accent"
-              }
-              dot
-            >
-              {engine.state}
-            </Badge>
-            <span className="text-[12px] text-ink-2">{engine.mode}</span>
-          </div>
-
-          <dl className="flex flex-col gap-2.5">
-            <div className="flex items-center justify-between gap-3">
-              <dt className="text-[12px] text-ink-3">Active turns</dt>
-              <dd className="t-num text-[12px] text-ink">{engine.activeTurns}</dd>
-            </div>
-            <div className="flex items-center justify-between gap-3">
-              <dt className="text-[12px] text-ink-3">Version</dt>
-              <dd className="t-code truncate text-[11.5px] text-ink-2">
-                {engine.version ?? "Unknown"}
-              </dd>
-            </div>
-            <div className="flex items-center justify-between gap-3">
-              <dt className="text-[12px] text-ink-3">Runtime</dt>
-              <dd className="text-[12px] text-ink-2">
-                {engine.mode === "matebot"
-                  ? "MateBot (opencc --matebot)"
-                  : engine.mode}
-              </dd>
-            </div>
-            <div className="flex items-center justify-between gap-3">
-              <dt className="text-[12px] text-ink-3">Mode</dt>
-              <dd className="text-[12px] text-ink-2">{engine.mode}</dd>
-            </div>
-          </dl>
-
-          {engine.lastError ? (
-            <div className="rounded-card bg-bad/10 px-3 py-2.5">
-              <p className="text-[11px] font-medium uppercase tracking-[0.06em] text-bad">
-                Last error
-              </p>
-              <p className="mt-1 text-[11.5px] leading-relaxed text-ink-2">
-                {engine.lastError}
-              </p>
-            </div>
-          ) : (
-            <p className="text-[11.5px] leading-relaxed text-ink-3">
-              No engine errors have been reported in this session.
-            </p>
-          )}
-
-          <p className="hairline-t pt-3 text-[11px] leading-relaxed text-ink-3">
-            Status is read-only. The local service manages the engine process and
-            exposes only sanitized details here.
-          </p>
-        </div>
-      )}
     </div>
   );
 }

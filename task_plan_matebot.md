@@ -35,6 +35,9 @@
 | T26 | M5.2 收尾前端：Open in window 接线 + artifact capabilities 编辑器 | complete | T24 | exists:frontend/src/features/artifacts/CapabilitiesEditor.tsx |
 | T27 | M5.2 收尾桌面：native bridge 签名对齐与协议资产打包验证 | complete | T24 | exists:desktop/dist/artifact-protocol.js |
 | T28 | Terminal T0：stdlib PTY manager + WebSocket + xterm 面板 | complete | T27 | exists:backend/src/autoagent_backend/adapters/terminal/manager.py |
+| T29 | Filesystem T0：SafeFileService（根作用域/符号链接拒绝/原子写/CAS/Range）+ 文件面板 | complete | T28 | exists:backend/src/autoagent_backend/adapters/files/safe_file_service.py |
+| T30 | Browser/Preview T0：PreviewManager（WebContentsView/partition/导航白名单）+ IPC + 预览面板 | complete | T28 | exists:desktop/src/native/preview-manager.ts |
+| T31 | 设置页统一选择后端 harness（opencc/claude-code）与 API 来源（Claude/AutoAgent/env），移除独立 Engine tab | complete | T30 | exists:backend/src/autoagent_backend/adapters/engine/harness.py |
 
 ## Notes
 -

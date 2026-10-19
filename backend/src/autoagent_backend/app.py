@@ -20,6 +20,7 @@ from .api.routes import (
     bootstrap,
     engine_config,
     events,
+    file_router,
     health,
     mcp,
     sessions,
@@ -104,6 +105,8 @@ def create_app(
     app.include_router(skills.router)
     app.include_router(mcp.router)
     app.include_router(workspace.router)
+    if resolved.files_enabled:
+        app.include_router(file_router.router)
     app.include_router(artifacts.router)
     app.include_router(artifact_frame.router)
     app.include_router(events.router)

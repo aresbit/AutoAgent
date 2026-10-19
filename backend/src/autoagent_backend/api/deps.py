@@ -32,6 +32,10 @@ MAX_BODY_BYTES = 1024 * 1024
 # GET frame path is exempt -- frame-token issuance stays bearer-protected.
 _FRAME_PATH = re.compile(r"^/api/artifacts/[^/]+/frame$")
 
+# The file upload route streams a raw body; the service enforces the write cap
+# while reading. Every other API body keeps the small JSON-sized cap.
+_STREAMED_UPLOAD_PATHS = frozenset({"/api/files/upload"})
+
 
 def get_container(request: Request) -> Container:
     container = getattr(request.app.state, "container", None)
@@ -108,7 +112,7 @@ def authorize_request(
         return None
 
     length = request.headers.get("content-length")
-    if length is not None:
+    if length is not None and path not in _STREAMED_UPLOAD_PATHS:
         try:
             if int(length) > MAX_BODY_BYTES:
                 return JSONResponse(

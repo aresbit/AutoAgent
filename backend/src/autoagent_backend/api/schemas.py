@@ -86,6 +86,8 @@ class SettingsPatchInput(StrictModel):
     addDirs: list[str] | None = None
     appendSystemPrompt: str | None = None
     layout: LayoutInput | None = None
+    engineHarness: Literal["opencc", "claude-code"] | None = None
+    apiCredentialSource: Literal["auto", "claude", "autoagent", "env"] | None = None
 
 
 class EngineConfigPatch(StrictModel):
@@ -194,7 +196,8 @@ class LayoutView(ApiModel):
 
 class EngineProfileView(ApiModel):
     preset: Literal["matebot", "bundled", "custom"] = "matebot"
-    mode: Literal["matebot"] = "matebot"
+    mode: Literal["matebot", "claude-code"] = "matebot"
+    harness: Literal["opencc", "claude-code"] = "opencc"
     version: str | None = None
     model: str | None = None
     modelSource: Literal[
@@ -239,6 +242,8 @@ class SettingsView(ApiModel):
     addDirs: list[str]
     appendSystemPrompt: str
     layout: LayoutView
+    engineHarness: Literal["opencc", "claude-code"] = "opencc"
+    apiCredentialSource: Literal["auto", "claude", "autoagent", "env"] = "auto"
     engine: EngineProfileView
 
 
@@ -283,7 +288,7 @@ class SessionView(ApiModel):
 
 class EngineStatusView(ApiModel):
     state: Literal["idle", "starting", "busy", "error"]
-    mode: Literal["local", "matebot"]
+    mode: Literal["local", "matebot", "claude-code"]
     activeTurns: int
     version: str | None
     lastError: str | None
@@ -550,6 +555,22 @@ def to_layout_view(layout: Layout) -> LayoutView:
     )
 
 
+def _harness_literal(value: str) -> Literal["opencc", "claude-code"]:
+    return "claude-code" if value == "claude-code" else "opencc"
+
+
+def _api_source_literal(
+    value: str,
+) -> Literal["auto", "claude", "autoagent", "env"]:
+    if value == "claude":
+        return "claude"
+    if value == "autoagent":
+        return "autoagent"
+    if value == "env":
+        return "env"
+    return "auto"
+
+
 def to_settings_view(
     settings: Settings,
     *,
@@ -592,8 +613,13 @@ def to_settings_view(
         addDirs=list(settings.add_dirs),
         appendSystemPrompt=settings.append_system_prompt,
         layout=to_layout_view(settings.layout),
+        engineHarness=_harness_literal(settings.engine_harness),
+        apiCredentialSource=_api_source_literal(settings.api_credential_source),
         engine=to_engine_profile_view(
-            resolution, engine_version=engine_version, cli_path=cli_path
+            resolution,
+            engine_version=engine_version,
+            cli_path=cli_path,
+            harness=_harness_literal(settings.engine_harness),
         ),
     )
 
@@ -603,10 +629,12 @@ def to_engine_profile_view(
     *,
     engine_version: str | None = None,
     cli_path: str | None = None,
+    harness: Literal["opencc", "claude-code"] = "opencc",
 ) -> EngineProfileView:
     return EngineProfileView(
         preset="matebot",
-        mode="matebot",
+        mode="claude-code" if harness == "claude-code" else "matebot",
+        harness=harness,
         version=engine_version,
         model=resolution.model,
         modelSource=_model_source(resolution.source),
@@ -624,6 +652,7 @@ def to_engine_config_view(
     *,
     engine_version: str | None = None,
     cli_path: str | None = None,
+    harness: str = "opencc",
 ) -> EngineConfigView:
     return EngineConfigView(
         configPath=resolution.autoagent_config_path,
@@ -632,7 +661,10 @@ def to_engine_config_view(
         apiKeyConfigured=config.api_key_configured,
         apiKeyHelperConfigured=config.api_key_helper_configured,
         engine=to_engine_profile_view(
-            resolution, engine_version=engine_version, cli_path=cli_path
+            resolution,
+            engine_version=engine_version,
+            cli_path=cli_path,
+            harness=_harness_literal(harness),
         ),
     )
 
@@ -702,8 +734,12 @@ def to_engine_status_view(status: EngineStatus) -> EngineStatusView:
         state = status.state.value
     else:
         state = "error"
-    mode: Literal["local", "matebot"] = (
-        "matebot" if status.mode == "matebot" else "local"
+    mode: Literal["local", "matebot", "claude-code"] = (
+        "matebot"
+        if status.mode == "matebot"
+        else "claude-code"
+        if status.mode == "claude-code"
+        else "local"
     )
     return EngineStatusView(
         state=state,
@@ -809,6 +845,8 @@ def to_domain_patch(patch: SettingsPatchInput) -> SettingsPatch:
         ),
         add_dirs=None if patch.addDirs is None else tuple(patch.addDirs),
         append_system_prompt=patch.appendSystemPrompt,
+        engine_harness=patch.engineHarness,
+        api_credential_source=patch.apiCredentialSource,
         layout=(
             None
             if layouts is None

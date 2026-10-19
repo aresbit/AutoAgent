@@ -522,13 +522,13 @@ Packaging copies Python sources only; Nuitka does not bundle them.
 
 | Port | Methods | Adapter(s) | Hidden representation |
 |---|---|---|---|
-| `EnginePort` | `start_turn(request) -> TurnHandle`; `stream(handle) -> Iterator[DomainEvent]`; `cancel(handle) -> None`; `status() -> EngineStatus`; `session_ref(session_id) -> EngineSessionRef \| None`; `close(session_id) -> None` | **`MateBotEngine` (default)** wrapping the vendored `OpenccSession`; `SubprocessEngine` (fallback); `FakeEngine` / `FailingEngine` | CLI resolution, argv, `--matebot`, `--resume`, env scrubbing, readiness queue, resume gates, interrupt→terminate/kill, stream-json frames, tool ids, spawn retries, max-4 LRU, death/recreate |
+| `EnginePort` | `start_turn(request) -> TurnHandle`; `stream(handle) -> Iterator[DomainEvent]`; `cancel(handle) -> None`; `status() -> EngineStatus`; `session_ref(session_id) -> EngineSessionRef \| None`; `close(session_id) -> None` | **`HarnessEngine`** routing to **`MateBotEngine` (opencc)** and `SubprocessEngine(matebot=False)` (claude-code); `FakeEngine` / `FailingEngine` | CLI resolution, argv, `--matebot`, `--resume`, env scrubbing, readiness queue, resume gates, interrupt→terminate/kill, stream-json frames, tool ids, spawn retries, max-4 LRU, death/recreate, per-turn harness routing |
 | `SessionStorePort` | `list(limit)`; `get(id)`; `create(title)`; `rename(id,title)`; `delete(id)`; `branch(id,title)`; `append_message(id, NewMessage)`; `record_turn(id, TurnResult)` | `SqliteSessionStore` | tables/columns, JSON meta, ordering, transactions, WAL, migrations |
 | `TurnStorePort` | `begin_turn`; `finish_turn`; `get_turn`; `running_turn_for_session`; `fail_orphaned_turns` | `SqliteSessionStore` (same adapter, separate seam) | `turns` rows, idempotency, one-running-turn-per-session, orphan recovery |
 | `EngineRefStorePort` | `get_ref(session_id)`; `set_ref(session_id, ref \| None)` | `SqliteSessionStore` (same adapter, separate seam) | `sessions.engine_session_ref` column, UUID validation, clear-on-invalid policy; keeps engine-resume state out of the session CRUD surface |
 | `SettingsPort` | `read() -> Settings`; `update(patch) -> Settings`; `provider(id)`; `providers()` | `SqliteSettingsStore` | settings document layout, defaults, unknown-field preservation, permission-mode validation |
 | `AutoAgentConfigPort` | `config_path`; `read() -> AutoAgentConfig`; `update(patch)` | `AutoAgentConfigStore` | `~/.autoagent/settings.json` (`AUTOAGENT_CONFIG_DIR`), atomic 0600 write, secret masking |
-| `EngineConfigPort` | `resolve(override) -> ModelResolution`; `apply_environment()` | `EngineConfigResolver` | precedence chain, Claude/AutoAgent/env sources, source labels, child env application; never returns secret values |
+| `EngineConfigPort` | `resolve(override, preference) -> ModelResolution`; `apply_environment(preference)` | `EngineConfigResolver` | precedence chain, Claude/AutoAgent/env sources, explicit source pinning, source labels, child env application; never returns secret values |
 | `WorkspacePort` | `status(work_dir)`; `diff(path, work_dir)`; `switch_branch(branch, work_dir)`; `init(work_dir)` | `GitCliWorkspace` | `git` invocation, timeouts, `--numstat`/`--name-status` parsing, `HEAD:` reads, error aggregation |
 | `SkillCatalogPort` | `catalog(cwd)`; `enable(name, path)`; `disable(name)`; `discover(cwd, query)` | `FilesystemSkillCatalog` | skill dirs (`.autoagent/skills`, `.claude/skills`), atomic directory moves into `.disabled`, source precedence |
 | `McpRegistryPort` | `list()`; `upsert(name, spec)`; `remove(name)`; `set_enabled(name, bool)`; `discover(name?)`; `invoke(server, tool, args)` | `SqliteMcpRegistry` + MCP client | `tool` table, JSON config, stdio/HTTP/SSE transports, connection pooling, JSON-RPC framing, retry policy |
@@ -537,10 +537,14 @@ Packaging copies Python sources only; Nuitka does not bundle them.
 
 `EnginePort` is the only port that owns subprocesses. `MateBotPort` from the
 earlier contract is **folded into `EnginePort`**: the local coordinator is a
-subprocess protocol, not a separate network transport. `MateBotEngine` is the
-default adapter; `SubprocessEngine` remains a fallback and is also the adapter
-used by the evaluation with a scripted CLI. If remote workers are added later,
-a separate `RemoteWorkerPort` can be introduced without changing `TurnService`.
+subprocess protocol, not a separate network transport. `HarnessEngine` is the
+default adapter and routes each turn to the setting selected in the UI:
+`MateBotEngine` (vendored `OpenccSession`, `--matebot`) or
+`SubprocessEngine(matebot=False)` (the same opencc CLI without the MateBot
+coordinator). `SubprocessEngine` also remains the `AUTOAGENT_ENGINE=subprocess`
+development fallback and the adapter used by the evaluation with a scripted
+CLI. If remote workers are added later, a separate `RemoteWorkerPort` can be
+introduced without changing `TurnService`.
 
 ### 5.3 Value objects and DTO boundary
 
@@ -986,6 +990,48 @@ So the default spawn today can carry both `--dangerously-skip-permissions` and
 - Artifact iframe: `sandbox` without `allow-same-origin` when scripts are
   allowed; `postMessage` origin checks; a transparent shield during split-pane
   drags.
+
+**Reviewed exception — workspace file browser (T0).** `GET /api/files*` and the
+mutation routes in `api/routes/file_router.py` are a *root-scoped*, non-generic
+surface. The threat model:
+
+- Clients send a root id (`workspace` only in T0) plus a POSIX relative path.
+  Absolute paths, drive letters, UNC prefixes, backslashes, NUL, `.`/`..` and
+  over-long segments are rejected with `INVALID_PATH`.
+- `SafeFileService` resolves the root through an injected resolver and requires
+  the canonical path to equal the configured workspace. Every component is
+  `lstat`-walked; symlinks are refused (`SYMLINK_NOT_ALLOWED`), including the
+  final component. Opens use `O_NOFOLLOW` and revalidate after resolution.
+- Writes are same-directory temp + fsync + `os.replace`; `expectedSha256`
+  provides compare-and-swap and a mismatch returns `HASH_MISMATCH` with the
+  original bytes untouched.
+- Read/write/line/scan/copy caps are enforced in the adapter. The 1 MiB body
+  cap is exempted only for `/api/files/upload`; that route streams and counts
+  bytes against `file_max_write_bytes` and returns 413 before writing.
+- No DTO or error body contains an absolute path. The `reveal` route returns
+  501 unless a desktop-only hook is installed; T0 does not wire one.
+- Uploads are raw `application/octet-stream`; no `python-multipart` dependency
+  and no `File`/`Form` parameters (declaring them would break router import).
+- Feature gate: `AUTOAGENT_FILES=0` omits the router; limits are
+  `AUTOAGENT_FILE_MAX_READ_BYTES` / `AUTOAGENT_FILE_MAX_WRITE_BYTES`.
+
+**Reviewed exception — browser preview (T0).** The desktop exposes a fixed
+preview IPC surface (`window.autoagentPreview`) backed by one
+`WebContentsView` per tab:
+
+- Preview pages have no preload, no Node integration and a dedicated
+  `persist:autoagent-preview` partition. They never see the launch token or the
+  AutoAgent bridge.
+- Navigation is allowlisted by exact `https:` origin from
+  `AUTOAGENT_PREVIEW_ORIGINS`; the allowlist is empty by default. Window-open,
+  permissions and downloads are denied. `autoagent-preview://` serves only
+  explicitly registered roots with `realpath` containment, hidden-segment
+  denial, MIME restrictions, 64 MiB cap and a restrictive CSP.
+- Every IPC payload is revalidated in the main process and the sender must be
+  the main window's top frame on the app origin. Errors carry a stable
+  `preview:<code>`, never a URL or filesystem path.
+- Rollback: `AUTOAGENT_PREVIEW=0` fails closed at startup; the Preview tab then
+  reports that the bridge is unavailable.
 
 ---
 

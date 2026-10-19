@@ -19,12 +19,14 @@ from .adapters.claude_settings import ClaudeSettingsReader
 from .adapters.engine.argv import resolve_bun, resolve_cli
 from .adapters.engine.failing_engine import FailingEngine
 from .adapters.engine.fake_engine import FakeEngine
+from .adapters.engine.harness import HarnessEngine
 from .adapters.engine.matebot_engine import (
     MateBotEngine,
     build_matebot_session_factory,
 )
 from .adapters.engine.subprocess_engine import build_subprocess_engine
 from .adapters.engine_config import EngineConfigResolver
+from .adapters.files.safe_file_service import SafeFileService
 from .adapters.mcp.client import McpConnectionFactory
 from .adapters.mcp.mcp_store import SqliteMcpRegistry
 from .adapters.persistence.legacy_import import LegacyImporter
@@ -106,6 +108,7 @@ class Container:
     artifact_tool_service: ArtifactToolService
     bootstrap_service: BootstrapService
     terminal_manager: TerminalManager
+    file_service: SafeFileService
     closers: list[Callable[[], None]] = field(default_factory=list)
 
     def close(self) -> None:
@@ -165,45 +168,67 @@ def build_container(
     autoagent_config = AutoAgentConfigStore(config.paths.autoagent_config_path)
     claude_settings = ClaudeSettingsReader()
     engine_config = EngineConfigResolver(
-        claude=claude_settings, autoagent=autoagent_config
+        claude=claude_settings,
+        autoagent=autoagent_config,
+        preference_provider=lambda: settings_store.read().api_credential_source,
     )
-    # Export AutoAgent-sourced credentials/base URL before any child spawns.
-    engine_config.apply_environment()
 
     engine: EnginePort
     if config.engine_mode == "fake":
         engine = FakeEngine()
-    elif config.engine_mode == "subprocess":
-        try:
-            engine = build_subprocess_engine(
-                bun_path=config.bun_path,
-                cli_path=config.cli_path,
-                claude_config_dir=config.paths.claude_config_dir,
-                engine_log_dir=config.paths.engine_log_dir,
-                max_engines=config.max_engines,
-                cancel_grace_s=config.cancel_grace_s,
-                debug_frames=config.debug_engine,
-            )
-        except DomainError as exc:
-            LOG.error("engine unavailable at boot: %s", exc.message)
-            engine = FailingEngine(exc.message)
     else:
-        try:
-            factory = build_matebot_session_factory(
-                vendor_path=config.matebot_vendor,
-                cli_path=resolve_cli(config.cli_path),
-                bun_path=resolve_bun(config.bun_path),
-            )
-            engine = MateBotEngine(
-                session_factory=factory,
-                refs=sessions,
-                max_sessions=config.max_engines,
-                cancel_grace_s=config.cancel_grace_s,
-                engine_log_dir=config.paths.engine_log_dir,
-            )
-        except DomainError as exc:
-            LOG.error("MateBot engine unavailable at boot: %s", exc.message)
-            engine = FailingEngine(exc.message)
+        harnesses: dict[str, EnginePort] = {}
+        if config.engine_mode == "subprocess":
+            for name, matebot in (("opencc", True), ("claude-code", False)):
+                try:
+                    harnesses[name] = build_subprocess_engine(
+                        bun_path=config.bun_path,
+                        cli_path=config.cli_path,
+                        claude_config_dir=config.paths.claude_config_dir,
+                        engine_log_dir=config.paths.engine_log_dir,
+                        max_engines=config.max_engines,
+                        cancel_grace_s=config.cancel_grace_s,
+                        debug_frames=config.debug_engine,
+                        matebot=matebot,
+                    )
+                except DomainError as exc:
+                    LOG.error("%s harness unavailable at boot: %s", name, exc.message)
+                    harnesses[name] = FailingEngine(exc.message)
+        else:
+            try:
+                factory = build_matebot_session_factory(
+                    vendor_path=config.matebot_vendor,
+                    cli_path=resolve_cli(config.cli_path),
+                    bun_path=resolve_bun(config.bun_path),
+                )
+                harnesses["opencc"] = MateBotEngine(
+                    session_factory=factory,
+                    refs=sessions,
+                    max_sessions=config.max_engines,
+                    cancel_grace_s=config.cancel_grace_s,
+                    engine_log_dir=config.paths.engine_log_dir,
+                )
+            except DomainError as exc:
+                LOG.error("MateBot engine unavailable at boot: %s", exc.message)
+                harnesses["opencc"] = FailingEngine(exc.message)
+            try:
+                harnesses["claude-code"] = build_subprocess_engine(
+                    bun_path=config.bun_path,
+                    cli_path=config.cli_path,
+                    claude_config_dir=config.paths.claude_config_dir,
+                    engine_log_dir=config.paths.engine_log_dir,
+                    max_engines=config.max_engines,
+                    cancel_grace_s=config.cancel_grace_s,
+                    debug_frames=config.debug_engine,
+                    matebot=False,
+                )
+            except DomainError as exc:
+                LOG.error("claude-code harness unavailable at boot: %s", exc.message)
+                harnesses["claude-code"] = FailingEngine(exc.message)
+        engine = HarnessEngine(
+            harness=lambda: settings_store.read().engine_harness,
+            engines=harnesses,
+        )
 
     workspace: WorkspacePort = GitCliWorkspace(
         default_work_dir=str(config.default_cwd)
@@ -259,6 +284,28 @@ def build_container(
         engine_config=engine_config,
     )
 
+    def workspace_root(root_id: str) -> Path | None:
+        if root_id != "workspace":
+            return None
+        configured = settings_store.read().cwd.strip()
+        return Path(configured or config.default_cwd).expanduser()
+
+    def is_allowed_workspace(candidate: Path) -> bool:
+        configured = settings_store.read().cwd.strip()
+        root = Path(configured or config.default_cwd).expanduser()
+        try:
+            return candidate == root.resolve()
+        except OSError:
+            return False
+
+    file_service = SafeFileService(
+        workspace_root,
+        is_allowed_workspace,
+        default_root_id="workspace",
+        max_read_bytes=config.file_max_read_bytes,
+        max_write_bytes=config.file_max_write_bytes,
+    )
+
     container = Container(
         config=config,
         paths=config.paths,
@@ -287,11 +334,18 @@ def build_container(
         artifact_tool_service=artifact_tool_service,
         bootstrap_service=bootstrap_service,
         terminal_manager=terminal_manager,
+        file_service=file_service,
     )
 
     container.closers.append(terminal_manager.shutdown_now)
 
     _initialize(config, container)
+    # Export the selected source's credentials/base URL after the schema exists
+    # and before any engine child can spawn.
+    try:
+        engine_config.apply_environment()
+    except Exception:
+        LOG.exception("engine environment export failed")
     return container
 
 

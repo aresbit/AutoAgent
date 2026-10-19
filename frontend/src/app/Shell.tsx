@@ -1,9 +1,10 @@
 import { AnimatePresence, motion } from "motion/react";
 import {
-  Activity,
   Blocks,
   Boxes,
   FolderGit2,
+  FolderOpen,
+  Globe,
   Puzzle,
   Settings2,
   Terminal as TerminalIcon,
@@ -40,10 +41,13 @@ import {
   useIsNarrow,
   useSpring,
 } from "@/cds";
-import { EnginePanel, SettingsPanel } from "@/features/settings/SettingsPanel";
+import { SettingsPanel } from "@/features/settings/SettingsPanel";
 import { SkillsPanel } from "@/features/skills/SkillsPanel";
 import { McpPanel } from "@/features/mcp/McpPanel";
 import { WorkspacePanel } from "@/features/workspace/WorkspacePanel";
+import { FileBrowser } from "@/features/files/FileBrowser";
+import { FileClient } from "@/features/files/fileClient";
+import { PreviewPane } from "@/features/preview/PreviewPane";
 import { ArtifactsPanel } from "@/features/artifacts/ArtifactsPanel";
 import { TerminalPanel } from "@/features/terminal/TerminalPanel";
 import type { ChatArtifact } from "@/features/artifacts/logic";
@@ -61,6 +65,10 @@ import {
   clampWidth,
   keyboardStep,
 } from "@/lib/layout";
+
+// One client for the panel; it carries no state beyond the optional bearer
+// token, which main.tsx installs before the first render.
+const fileClient = new FileClient();
 
 export function Shell({
   sessions,
@@ -406,10 +414,6 @@ function RightPanel({
             <Settings2 size={12.5} strokeWidth={2} />
             Settings
           </TabsTrigger>
-          <TabsTrigger value="engine" className="justify-center px-1">
-            <Activity size={12.5} strokeWidth={2} />
-            Engine
-          </TabsTrigger>
           <TabsTrigger value="skills" className="justify-center px-1">
             <Puzzle size={12.5} strokeWidth={2} />
             Skills
@@ -421,6 +425,14 @@ function RightPanel({
           <TabsTrigger value="workspace" className="justify-center px-1">
             <FolderGit2 size={12.5} strokeWidth={2} />
             Workspace
+          </TabsTrigger>
+          <TabsTrigger value="files" className="justify-center px-1">
+            <FolderOpen size={12.5} strokeWidth={2} />
+            Files
+          </TabsTrigger>
+          <TabsTrigger value="preview" className="justify-center px-1">
+            <Globe size={12.5} strokeWidth={2} />
+            Preview
           </TabsTrigger>
           <TabsTrigger value="artifacts" className="justify-center px-1">
             <Boxes size={12.5} strokeWidth={2} />
@@ -441,16 +453,13 @@ function RightPanel({
         value="settings"
         className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden"
       >
-        <SettingsPanel settings={settings} providers={providers} onSave={onSaveSettings} />
-      </TabsContent>
-      <TabsContent
-        value="engine"
-        className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden"
-      >
-        <EnginePanel
+        <SettingsPanel
+          settings={settings}
+          providers={providers}
+          onSave={onSaveSettings}
           engine={engine}
-          refreshing={engineRefreshing}
-          onRefresh={onRefreshEngine}
+          engineRefreshing={engineRefreshing}
+          onRefreshEngine={onRefreshEngine}
         />
       </TabsContent>
       <TabsContent
@@ -470,6 +479,26 @@ function RightPanel({
         className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden"
       >
         <WorkspacePanel initialStatus={workspace} />
+      </TabsContent>
+      <TabsContent
+        value="files"
+        className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden"
+      >
+        <FileBrowser
+          client={fileClient}
+          root="workspace"
+          rootLabel={settings.cwd}
+        />
+      </TabsContent>
+      <TabsContent
+        value="preview"
+        className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden"
+      >
+        <PreviewPane
+          initialUrl="autoagent-preview://workspace/"
+          editableAddress
+          className="h-full"
+        />
       </TabsContent>
       <TabsContent
         value="artifacts"

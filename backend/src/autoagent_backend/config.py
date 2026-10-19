@@ -24,6 +24,15 @@ DEFAULT_PORT = 8787
 DEFAULT_ENGINE_MODE = "matebot"
 MIN_PORT = 1
 MAX_PORT = 65535
+FILE_MAX_READ_BYTES = 2 * 1024 * 1024
+FILE_MAX_WRITE_BYTES = 1024 * 1024
+
+
+def _parse_positive_int(value: str | None, default: int, *, name: str) -> int:
+    parsed = _parse_int(value, default)
+    if parsed <= 0:
+        raise ValueError(f"{name} must be positive, got {parsed}")
+    return parsed
 
 
 def _parse_bool(value: str | None) -> bool:
@@ -71,6 +80,9 @@ class BootConfig:
     matebot_vendor: Path = field(default_factory=default_matebot_vendor_path)
     terminals_enabled: bool = True
     max_terminals: int = 12
+    file_max_read_bytes: int = FILE_MAX_READ_BYTES
+    file_max_write_bytes: int = FILE_MAX_WRITE_BYTES
+    files_enabled: bool = True
 
     @property
     def origin(self) -> str:
@@ -172,4 +184,15 @@ def config_from_env(
         matebot_vendor=matebot_vendor,
         terminals_enabled=_parse_bool(env.get("AUTOAGENT_TERMINALS", "1")),
         max_terminals=_parse_int(env.get("AUTOAGENT_MAX_TERMINALS"), 12),
+        file_max_read_bytes=_parse_positive_int(
+            env.get("AUTOAGENT_FILE_MAX_READ_BYTES"),
+            FILE_MAX_READ_BYTES,
+            name="AUTOAGENT_FILE_MAX_READ_BYTES",
+        ),
+        file_max_write_bytes=_parse_positive_int(
+            env.get("AUTOAGENT_FILE_MAX_WRITE_BYTES"),
+            FILE_MAX_WRITE_BYTES,
+            name="AUTOAGENT_FILE_MAX_WRITE_BYTES",
+        ),
+        files_enabled=_parse_bool(env.get("AUTOAGENT_FILES", "1")),
     )

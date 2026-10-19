@@ -71,10 +71,13 @@ const settings: SettingsView = {
   addDirs: [],
   appendSystemPrompt: "",
   layout: { leftOpen: true, leftWidth: 288, rightOpen: true, rightWidth: 360 },
+  engineHarness: "opencc",
+  apiCredentialSource: "auto",
   engine: {
     preset: "matebot",
     version: "opencc-matebot",
     mode: "matebot",
+    harness: "opencc",
     cli: "/opt/autoagent/bin/opencc",
     model: "claude-sonnet-4-6",
     modelSource: "claude-settings",
@@ -615,6 +618,13 @@ export const mockApi = {
     }
     const { apiKey, ...rest } = patch;
     Object.assign(settings, rest);
+    if (patch.engineHarness) {
+      settings.engine = {
+        ...settings.engine,
+        harness: patch.engineHarness,
+        mode: patch.engineHarness === "claude-code" ? "claude-code" : "matebot",
+      };
+    }
     if (apiKey) settings.apiKeyConfigured = true;
     return structuredClone(settings);
   },

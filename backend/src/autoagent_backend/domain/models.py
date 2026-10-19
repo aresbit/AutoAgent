@@ -31,6 +31,17 @@ class PermissionPolicy(StrEnum):
     FULL_ACCESS = "bypassPermissions"
 
 
+#: ``opencc`` runs the MateBot coordinator (``--matebot``); ``claude-code``
+#: runs the same vendored CLI in its plain Claude Code-compatible harness.
+ENGINE_HARNESSES: frozenset[str] = frozenset({"opencc", "claude-code"})
+
+#: Where the model API credentials come from. ``auto`` keeps the documented
+#: precedence (Claude settings, then AutoAgent, then the process environment).
+API_CREDENTIAL_SOURCES: frozenset[str] = frozenset(
+    {"auto", "claude", "autoagent", "env"}
+)
+
+
 @dataclass(frozen=True, slots=True)
 class Layout:
     left_open: bool = True
@@ -59,11 +70,19 @@ class Settings:
     add_dirs: tuple[str, ...] = ()
     append_system_prompt: str = ""
     layout: Layout = field(default_factory=Layout)
+    engine_harness: str = "opencc"
+    api_credential_source: str = "auto"
 
     def __post_init__(self) -> None:
         if self.permission_mode != PermissionPolicy.FULL_ACCESS.value:
             # Defensive: the settings adapter rejects other values first.
             raise ValueError("v1 supports bypassPermissions only")
+        if self.engine_harness not in ENGINE_HARNESSES:
+            raise ValueError(f"unknown engine harness: {self.engine_harness!r}")
+        if self.api_credential_source not in API_CREDENTIAL_SOURCES:
+            raise ValueError(
+                f"unknown API credential source: {self.api_credential_source!r}"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +107,8 @@ class SettingsPatch:
     add_dirs: tuple[str, ...] | None = None
     append_system_prompt: str | None = None
     layout: Layout | None = None
+    engine_harness: str | None = None
+    api_credential_source: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

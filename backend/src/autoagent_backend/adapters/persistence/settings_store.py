@@ -12,6 +12,8 @@ from ...domain.errors import (
     ProviderNotFound,
 )
 from ...domain.models import (
+    API_CREDENTIAL_SOURCES,
+    ENGINE_HARNESSES,
     Layout,
     PermissionPolicy,
     Provider,
@@ -157,6 +159,12 @@ class SqliteSettingsStore:
         permission = values.get("permission_mode")
         if permission != PermissionPolicy.FULL_ACCESS.value:
             values["permission_mode"] = PermissionPolicy.FULL_ACCESS.value
+        harness = values.get("engine_harness")
+        if harness not in ENGINE_HARNESSES:
+            values.pop("engine_harness", None)
+        api_source = values.get("api_credential_source")
+        if api_source not in API_CREDENTIAL_SOURCES:
+            values.pop("api_credential_source", None)
         try:
             return Settings(**values)  # type: ignore[arg-type]
         except (TypeError, ValueError) as exc:

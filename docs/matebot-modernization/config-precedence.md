@@ -21,6 +21,10 @@ stable regardless of the data-dir convention.
 
 ## Model precedence
 
+The Settings panel exposes an **API source** selection. `auto` keeps the
+precedence below; `claude`, `autoagent` and `env` pin one source and do not
+silently fall through when it is empty.
+
 1. Desktop app override (`Settings.model` non-empty) — source `override`.
 2. `settings.json` → `env.ANTHROPIC_MODEL` — source `claude-settings`.
 3. `settings.json` → top-level `model` — source `claude-settings`.
@@ -28,7 +32,13 @@ stable regardless of the data-dir convention.
 5. Process `ANTHROPIC_MODEL` — source `env`.
 6. OpenCC/MateBot default — source `default`.
 
+With `apiCredentialSource=claude` only steps 2–3 apply; with `autoagent` only
+step 4; with `env` only step 5. The desktop override still wins in every mode.
+
 ## Credential and base URL precedence
+
+The same `apiCredentialSource` selection applies to credentials and the base
+URL. In `auto` mode:
 
 1. `~/.claude/settings.json` / `settings.local.json`
    (`env.ANTHROPIC_AUTH_TOKEN`, `env.ANTHROPIC_API_KEY`, `apiKeyHelper`,
@@ -37,10 +47,24 @@ stable regardless of the data-dir convention.
 3. Process environment.
 4. None.
 
-If the effective source is the AutoAgent fallback, the backend applies the
-derived `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` to the environment of the
-engine child. Values already supplied by the Claude configuration are never
-overridden.
+`claude`, `autoagent` and `env` select exactly one of those three sources.
+When the selected source is the AutoAgent fallback, the backend applies its
+`ANTHROPIC_MODEL` / `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` to the engine
+child's environment; switching away restores the original process environment.
+Claude-settings values are never overwritten.
+
+## Backend harness
+
+`Settings.engineHarness` selects the adapter used for the next turn:
+
+| Value | Adapter | argv |
+|---|---|---|
+| `opencc` (default) | vendored `OpenccSession` (`MateBotEngine`) | includes `--matebot` |
+| `claude-code` | `SubprocessEngine(matebot=False)` | same opencc CLI, no `--matebot` |
+
+Both are long-lived per conversation. A running turn keeps the harness that
+started it; switching closes the other harness's child for that conversation.
+The setting is persisted in SQLite and takes effect without a restart.
 
 ## API shape
 

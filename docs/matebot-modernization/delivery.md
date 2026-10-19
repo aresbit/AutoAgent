@@ -25,8 +25,8 @@ with a reinstall instruction.
 
 ```
 release/autoagent_0.8.0_amd64.deb
-134,860,224 bytes
-sha256 9ff5311e8043e5a58b233afe13ad64ac37eb5e5fe60128fe3619c15160ec49b1
+135,015,208 bytes
+sha256 1fb610f636de9a132cbf2e27d15a5259b110b595a0bb0b09dda6ffc192aabb47
 ```
 
 Self-contained layout:
@@ -85,6 +85,43 @@ Self-contained layout:
   T1 should move to a subprocess PTY broker. T0 has no bottom dock, search,
   OSC 133, or disk logs.
 
+## Workspace files (F0)
+
+- Backend: `adapters/files/safe_file_service.py` (stdlib only) and
+  `api/routes/file_router.py`, registered before the static catch-all and
+  gated by `AUTOAGENT_FILES`. Composition builds exactly one service over the
+  configured workspace (`settings.cwd`, falling back to `default_cwd`).
+- Path model: root id + POSIX relative path. Absolute paths, drive letters,
+  UNC, backslashes, NUL, `.`/`..` are rejected; every component is
+  `lstat`-walked and symlinks (including the final one) are refused. Reads use
+  `O_NOFOLLOW`; writes are temp + fsync + `os.replace` with optional SHA-256
+  compare-and-swap; read/write/copy/scan limits are enforced in the adapter.
+- Uploads are raw `application/octet-stream`; `/api/files/upload` is the only
+  path exempt from the 1 MiB JSON body cap and streams against
+  `file_max_write_bytes`. No `python-multipart` dependency.
+- Frontend: `features/files/` (`fileClient`, `useFileTree`, `FileBrowser`) and
+  a Files tab in the right panel.
+- Verified: 31 adapter tests, 8 HTTP integration tests (containment, symlink,
+  CAS 409, 413, 206 Range, raw upload, mutation routes), `ruff`, `mypy`,
+  import-linter, `tsc`.
+
+## Browser preview (P0)
+
+- Desktop: `native/preview-manager.ts` owns one `WebContentsView` per tab in
+  the dedicated `persist:autoagent-preview` partition; no preload, no Node
+  integration. `native/preview-ipc.ts` validates sender + payload for a fixed
+  channel set; `native/preview-protocol.ts` serves `autoagent-preview://` with
+  `realpath` containment, hidden-segment denial, MIME/CSP and a 64 MiB cap.
+  `preload.ts` exposes `window.autoagentPreview` (no generic invoke/fs/exec).
+- Policy: https origins must match `AUTOAGENT_PREVIEW_ORIGINS` (empty by
+  default); window-open, permissions and downloads are denied; the workspace
+  is registered under the opaque id `workspace` (from `settings.cwd`, or
+  `AUTOAGENT_PREVIEW_ROOT`). `AUTOAGENT_PREVIEW=0` fails closed.
+- Frontend: `features/preview/` (`previewClient`, `PreviewPane`) and a Preview
+  tab that reports when the native bridge is unavailable (browser/mock mode).
+- Verified: `tsc`, desktop build, 6 protocol tests (scheme, grammar, MIME/CSP,
+  symlink escape, hidden files, HEAD), 12 existing contract tests, smoke.
+
 ## Configuration
 
 See `config-precedence.md`. Summary:
@@ -101,11 +138,27 @@ The API never returns `apiKey`; only `apiKeyConfigured` / `credentialSource`.
 The desktop Settings panel shows the effective model and its source, an app
 override, and the AutoAgent fallback editor.
 
+The Settings panel is the single place for runtime selection:
+
+- **Harness** (`engineHarness`): `opencc` (default, `--matebot`) or
+  `claude-code` (same vendored CLI without `--matebot`). `HarnessEngine`
+  routes each turn to the selected adapter; a running turn keeps its harness.
+- **API source** (`apiCredentialSource`): `auto` (Claude settings → AutoAgent →
+  env), `claude`, `autoagent` (the custom config editor below), or `env`.
+  Switching re-exports the selected source to the engine child immediately.
+- The separate Engine tab was removed; live state, active turns, last error,
+  CLI and version now live in the Settings Engine section.
+
 ## Verification (independent)
 
-- Backend: **199 pytest**, ruff, mypy (74 files), import-linter (2 contracts).
-- Frontend: **51 Vitest**, `tsc --noEmit`, Vite build.
-- Desktop: 23 smoke checks (port/token/health/log/shutdown).
+- Backend: **302 pytest**, ruff, mypy (85 files), import-linter (2 contracts).
+- Frontend: **99 Vitest**, `tsc --noEmit`, Vite build.
+- Desktop: 23 smoke checks (port/token/health/log/shutdown) plus 18 Node tests
+  (artifact and preview protocol contracts).
+- Files: 31 adapter tests + 8 HTTP integration tests (root containment,
+  symlink refusal, CAS, 413, 206 Range, raw upload, mutations).
+- Preview: 6 protocol tests (scheme, URL grammar, MIME/CSP, symlink escape,
+  hidden files, HEAD); manager/IPC sender checks are typechecked and bundled.
 - Packaged: hash reproduced exactly; one setuid `chrome-sandbox` 4755; vendor
   file 644; `--runtime-check` reports `engineMode=matebot`,
   `matebotVendorExists=true`; CSP and immutable asset caching; fake SSE turn;
@@ -162,12 +215,20 @@ autoagent
   machine.
 - Nuitka full rebuilds vary by tens of bytes (build-id); packaging-only rebuilds
   are byte-identical.
-- Route count is 42 (the architecture's ≤30 was a guideline).
+- Route count is 69 (the architecture's ≤30 was a guideline); 14 of them are
+  the reviewed file-browser surface.
 - The Feishu bridge code is vendored. The desktop currently owns the long
   connection; running the bridge as a supervised packaged service is a
   follow-up.
+- Files T0 exposes one root (`workspace`). Native reveal, larger streamed
+  uploads above the write cap and per-session roots remain T1.
+- Preview T0 has no local file→preview handoff, no downloads, no popout, and
+  its origin allowlist is empty by default. Local content is served only from
+  the registered `workspace` root via `autoagent-preview://workspace/...`.
 
 ## Rollback
 
 - Development: `AUTOAGENT_LEGACY=1`.
+- Files: `AUTOAGENT_FILES=0` omits the file routes.
+- Preview: `AUTOAGENT_PREVIEW=0` fails closed at startup.
 - Package: reinstall the previous `.deb`; user data under `$HOME` is untouched.

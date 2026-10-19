@@ -29,4 +29,6 @@ class EngineConfigService:
         return config
 
     def resolution(self, settings: Settings) -> ModelResolution:
-        return self._resolver.resolve(settings.model)
+        return self._resolver.resolve(
+            settings.model, preference=settings.api_credential_source
+        )
