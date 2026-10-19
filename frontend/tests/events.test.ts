@@ -46,4 +46,25 @@ describe("cross-cutting event refresh", () => {
     expect(invalidateQueries).toHaveBeenNthCalledWith(2, { queryKey: ["sessions"] });
     expect(invalidateQueries).toHaveBeenCalledTimes(2);
   });
+
+  it("refreshes MCP lists and approval state", () => {
+    const { client, invalidateQueries } = invalidator();
+    handleGlobalEvent(
+      { name: "mcp.status", data: { server: "github" } },
+      { sessionId: null, client },
+    );
+    handleGlobalEvent(
+      { name: "mcp.approval_required", data: {} },
+      { sessionId: null, client },
+    );
+
+    expect(invalidateQueries).toHaveBeenNthCalledWith(1, { queryKey: ["mcp"] });
+    expect(invalidateQueries).toHaveBeenNthCalledWith(2, {
+      queryKey: ["mcp-status"],
+    });
+    expect(invalidateQueries).toHaveBeenNthCalledWith(3, {
+      queryKey: ["mcp-approvals"],
+    });
+    expect(invalidateQueries).toHaveBeenCalledTimes(3);
+  });
 });

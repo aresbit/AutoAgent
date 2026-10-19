@@ -1,7 +1,10 @@
-# MCP 集成交接（Claude Desktop 逆向 + opencc/mcpfs 更新 + AutoAgent 参考实现）
+# MCP 集成交接（Claude Desktop 逆向 + opencc/mcpfs 更新 + AutoAgent T0）
 
-> 状态（2026-10-19）：**vendored opencc 已更新到 MateBot HEAD `0ed706d` / 2.1.888**，新 `services/mcpfs` 已落地并通过构建/测试；根 `bun.lock` 已同步。
-> 本目录是研究 + 参考实现；`reference/` 未应用到 AutoAgent 源码。
+> 状态（2026-10-19）：**opencc 2.1.888 已提交（`d575bfb`）**；AutoAgent 后端 T0 已落地：
+> `adapters/mcp/{transports,connection_manager,approval}.py`、持久 runtime、
+> status/logs/resources/prompts/approval 路由、状态面板与审批 UI。
+> 旧短连接实现保留为 `AUTOAGENT_MCP_PERSISTENT=0` 回滚路径。
+> `reference/` 保留为来源证据。
 
 ## 文件
 

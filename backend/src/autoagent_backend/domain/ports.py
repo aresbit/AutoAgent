@@ -11,7 +11,7 @@ Starlette, Pydantic, sqlite3, subprocess or HTTP clients. This is enforced by
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -27,10 +27,16 @@ from .models import (
     AutoAgentConfigPatch,
     EngineStatus,
     FileDiff,
+    McpApprovalContext,
     McpDiscovery,
     McpInvocationResult,
+    McpLogEntry,
+    McpPrompt,
+    McpResource,
     McpServer,
     McpServerSpec,
+    McpServerStatus,
+    McpTool,
     Message,
     ModelResolution,
     NewMessage,
@@ -321,12 +327,43 @@ class McpRegistryPort(Protocol):
     def set_enabled(self, name: str, enabled: bool) -> McpServer: ...
 
     def discover(
-        self, name: str | None = None, enabled_only: bool = True
+        self,
+        name: str | None = None,
+        enabled_only: bool = True,
+        *,
+        refresh: bool = False,
     ) -> Sequence[McpDiscovery]: ...
 
     def invoke(
-        self, server: str | None, tool: str, args: dict[str, object]
+        self,
+        server: str | None,
+        tool: str,
+        args: dict[str, object],
+        *,
+        approval: McpApprovalContext | None = None,
     ) -> McpInvocationResult: ...
+
+    def status(self, name: str | None = None) -> Sequence[McpServerStatus]: ...
+
+    def reconnect(self, name: str) -> McpServerStatus: ...
+
+    def logs(self, name: str, limit: int = 200) -> Sequence[McpLogEntry]: ...
+
+    def tools(self, name: str, *, refresh: bool = False) -> Sequence[McpTool]: ...
+
+    def list_resources(
+        self, name: str, *, refresh: bool = False
+    ) -> Sequence[McpResource]: ...
+
+    def read_resource(self, name: str, uri: str) -> object: ...
+
+    def list_prompts(
+        self, name: str, *, refresh: bool = False
+    ) -> Sequence[McpPrompt]: ...
+
+    def get_prompt(
+        self, name: str, prompt: str, args: Mapping[str, str]
+    ) -> object: ...
 
 
 class ArtifactStorePort(Protocol):

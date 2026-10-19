@@ -30,6 +30,8 @@ _ENGINE_ENV = (
     "AUTOAGENT_DEFAULT_CWD",
     "AUTOAGENT_MATEBOT_VENDOR_DIR",
     "AUTOAGENT_CONFIG_DIR",
+    "AUTOAGENT_MCP_PERSISTENT",
+    "AUTOAGENT_MCP_HEALTH_INTERVAL_S",
     "CLAUDE_CONFIG_DIR",
     "ANTHROPIC_MODEL",
     "ANTHROPIC_API_KEY",
@@ -44,6 +46,9 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("AUTOAGENT_API_TOKEN", TOKEN)
     monkeypatch.setenv("AUTOAGENT_ENGINE", "fake")
+    # Existing suites inject a short-lived MCP factory; the persistent runtime
+    # is covered by tests/integration/test_mcp_runtime.py.
+    monkeypatch.setenv("AUTOAGENT_MCP_PERSISTENT", "0")
     monkeypatch.setenv("AUTOAGENT_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("AUTOAGENT_LOG_DIR", str(tmp_path / "logs"))
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-config"))

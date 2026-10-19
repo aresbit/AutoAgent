@@ -83,6 +83,8 @@ class BootConfig:
     file_max_read_bytes: int = FILE_MAX_READ_BYTES
     file_max_write_bytes: int = FILE_MAX_WRITE_BYTES
     files_enabled: bool = True
+    mcp_persistent: bool = True
+    mcp_health_interval_s: float = 30.0
 
     @property
     def origin(self) -> str:
@@ -195,4 +197,8 @@ def config_from_env(
             name="AUTOAGENT_FILE_MAX_WRITE_BYTES",
         ),
         files_enabled=_parse_bool(env.get("AUTOAGENT_FILES", "1")),
+        mcp_persistent=_parse_bool(env.get("AUTOAGENT_MCP_PERSISTENT", "1")),
+        mcp_health_interval_s=_parse_float(
+            env.get("AUTOAGENT_MCP_HEALTH_INTERVAL_S"), 30.0
+        ),
     )

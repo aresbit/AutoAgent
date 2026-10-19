@@ -117,6 +117,39 @@ class McpUnavailable(DomainError):
     status_code = 502
 
 
+class McpTimeout(McpUnavailable):
+    code = "MCP_TIMEOUT"
+    status_code = 504
+
+
+class McpCapabilityUnavailable(InvalidInput):
+    code = "MCP_CAPABILITY_UNAVAILABLE"
+
+
+class McpApprovalRequired(DomainError):
+    """Policy returned ``ask``; the caller must consent and retry."""
+
+    code = "MCP_APPROVAL_REQUIRED"
+    status_code = 403
+
+    def __init__(
+        self, message: str = "", *, details: dict[str, object] | None = None
+    ) -> None:
+        super().__init__(message)
+        self.details = details or {}
+
+
+class McpApprovalDenied(DomainError):
+    code = "MCP_APPROVAL_DENIED"
+    status_code = 403
+
+    def __init__(
+        self, message: str = "", *, details: dict[str, object] | None = None
+    ) -> None:
+        super().__init__(message)
+        self.details = details or {}
+
+
 class ArtifactNotFound(NotFound):
     code = "ARTIFACT_NOT_FOUND"
 

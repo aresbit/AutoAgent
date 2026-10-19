@@ -243,6 +243,20 @@ export interface McpToolInvokeRequest {
   server?: string | null;
   tool: string;
   args: Record<string, unknown>;
+  approval?: {
+    scope: "once" | "session";
+    approvedTools?: string[];
+    approvedServers?: string[];
+    autoApprove?: boolean;
+  };
+}
+
+export interface McpApprovalDecisionInput {
+  server: string;
+  tool: string;
+  decision: "allow" | "deny";
+  scope: "once" | "session";
+  callId?: string;
 }
 
 export interface McpContentBlock {
@@ -428,6 +442,7 @@ export interface ApiErrorShape {
   code: string;
   message: string;
   retryable: boolean;
+  details?: Record<string, unknown>;
 }
 
 export interface LiveTool {

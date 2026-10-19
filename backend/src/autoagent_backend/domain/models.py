@@ -346,10 +346,85 @@ class McpServer:
 
 
 @dataclass(frozen=True, slots=True)
+class McpToolAnnotations:
+    """Normalized MCP tool annotations (conservative MCP defaults)."""
+
+    title: str | None = None
+    read_only: bool = False
+    destructive: bool = True
+    idempotent: bool = False
+    open_world: bool = True
+
+
+@dataclass(frozen=True, slots=True)
 class McpTool:
     name: str
     description: str = ""
     input_schema: dict[str, object] | None = None
+    title: str | None = None
+    output_schema: dict[str, object] | None = None
+    annotations: McpToolAnnotations = field(default_factory=McpToolAnnotations)
+
+
+@dataclass(frozen=True, slots=True)
+class McpServerStatus:
+    """Public connection snapshot; never contains argv, env or headers."""
+
+    name: str
+    state: str
+    connected: bool = False
+    tool_count: int = 0
+    resource_count: int = 0
+    prompt_count: int = 0
+    last_error: str | None = None
+    protocol_version: str | None = None
+    server_name: str | None = None
+    server_version: str | None = None
+    instructions: str | None = None
+    session_id: str | None = None
+    pid: int | None = None
+    reconnect_attempts: int = 0
+    next_retry_in_ms: int | None = None
+    updated_at: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class McpLogEntry:
+    server: str
+    level: str
+    message: str
+    ts_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class McpResource:
+    uri: str
+    name: str = ""
+    description: str = ""
+    mime_type: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class McpPromptArgument:
+    name: str
+    description: str = ""
+    required: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class McpPrompt:
+    name: str
+    description: str = ""
+    arguments: tuple[McpPromptArgument, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class McpApprovalContext:
+    """Consent for one invocation; the manager stays stateless about it."""
+
+    approved_tools: frozenset[str] = frozenset()
+    approved_servers: frozenset[str] = frozenset()
+    auto_approve: bool = False
 
 
 @dataclass(frozen=True, slots=True)

@@ -122,6 +122,33 @@ Self-contained layout:
 - Verified: `tsc`, desktop build, 6 protocol tests (scheme, grammar, MIME/CSP,
   symlink escape, hidden files, HEAD), 12 existing contract tests, smoke.
 
+## MCP runtime (T0)
+
+- Backend: `adapters/mcp/{transports,connection_manager,approval}.py` provide
+  one persistent session per server (stdio, Streamable HTTP, legacy SSE),
+  tool caching with `list_changed` invalidation, timeouts/cancellation,
+  exponential backoff and a health loop.
+- `SqliteMcpRegistry` keeps the SQLite registry as the source of truth and
+  delegates discovery/invocation/status to the runtime;
+  `AUTOAGENT_MCP_PERSISTENT=0` restores the old short-lived client unchanged.
+- Approval: destructive/open-world tools return `403 MCP_APPROVAL_REQUIRED`
+  with UI-safe details; `POST /api/mcp/approvals` records once/session consent
+  in process memory (never persisted) and the retry carries the approval
+  context. Read-only tools run without prompting.
+- New routes: status (all/one), reconnect, logs, tools, resources/read,
+  prompts/get and approvals. Existing CRUD/discover/invoke payloads remain
+  compatible; `mcp.status`, `mcp.log`, `mcp.tools_changed`,
+  `mcp.server_changed` and `mcp.approval_required` flow through `/api/events`.
+- Frontend: `McpStatusPanel` (state, counts, last error, reconnect, logs
+  drawer, approve/deny) under the server list, plus an approval prompt in the
+  invoke dialog that retries after consent.
+- Verified: 14 manager/transport tests (real loopback + child process),
+  4 HTTP integration tests (persistent pid, kill/reconnect, resources/prompts,
+  approval once/session, disable), 108 frontend tests, ruff, mypy,
+  import-linter, `tsc`.
+- Not in T0: engine turns still do not consume these servers (T2), OAuth/DCR,
+  MCP Apps `ui://`, secret keyring, and live log streaming into the drawer.
+
 ## Configuration
 
 See `config-precedence.md`. Summary:
@@ -151,8 +178,8 @@ The Settings panel is the single place for runtime selection:
 
 ## Verification (independent)
 
-- Backend: **302 pytest**, ruff, mypy (85 files), import-linter (2 contracts).
-- Frontend: **99 Vitest**, `tsc --noEmit`, Vite build.
+- Backend: **332 pytest**, ruff, mypy (89 files), import-linter (2 contracts).
+- Frontend: **108 Vitest**, `tsc --noEmit`, Vite build.
 - Desktop: 23 smoke checks (port/token/health/log/shutdown) plus 18 Node tests
   (artifact and preview protocol contracts).
 - Files: 31 adapter tests + 8 HTTP integration tests (root containment,

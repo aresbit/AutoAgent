@@ -531,7 +531,7 @@ Packaging copies Python sources only; Nuitka does not bundle them.
 | `EngineConfigPort` | `resolve(override, preference) -> ModelResolution`; `apply_environment(preference)` | `EngineConfigResolver` | precedence chain, Claude/AutoAgent/env sources, explicit source pinning, source labels, child env application; never returns secret values |
 | `WorkspacePort` | `status(work_dir)`; `diff(path, work_dir)`; `switch_branch(branch, work_dir)`; `init(work_dir)` | `GitCliWorkspace` | `git` invocation, timeouts, `--numstat`/`--name-status` parsing, `HEAD:` reads, error aggregation |
 | `SkillCatalogPort` | `catalog(cwd)`; `enable(name, path)`; `disable(name)`; `discover(cwd, query)` | `FilesystemSkillCatalog` | skill dirs (`.autoagent/skills`, `.claude/skills`), atomic directory moves into `.disabled`, source precedence |
-| `McpRegistryPort` | `list()`; `upsert(name, spec)`; `remove(name)`; `set_enabled(name, bool)`; `discover(name?)`; `invoke(server, tool, args)` | `SqliteMcpRegistry` + MCP client | `tool` table, JSON config, stdio/HTTP/SSE transports, connection pooling, JSON-RPC framing, retry policy |
+| `McpRegistryPort` | `list()`; `upsert`; `remove`; `set_enabled`; `discover(name?, enabledOnly, refresh)`; `invoke(server, tool, args, approval)`; `status(name?)`; `reconnect(name)`; `logs(name, limit)`; `tools(name, refresh)`; `list_resources`; `read_resource`; `list_prompts`; `get_prompt` | `SqliteMcpRegistry` over `McpConnectionManager` (persistent); `DefaultMcpConnectionFactory` (rollback, `AUTOAGENT_MCP_PERSISTENT=0`) | `mcp_servers` table, JSON config, stdio/Streamable HTTP/legacy SSE transports, one session per server, tool cache + `list_changed`, backoff/health loop, approval engine, log ring, JSON-RPC framing |
 | `ArtifactStorePort` | `list()`; `get(id)`; `create(input)`; `content(id)`; `mark_opened(id)`; `export(id, target)`; `import(zip_path)` | `FilesystemArtifactStore` | `manifest.json`, `<id>/index.html`, `versions/<ms>.html`, thumbnails, zip layout, path derivation |
 | `ClockPort` (optional) | `now_ms()` | `SystemClock`, `FakeClock` | wall clock; makes turn timing and resume-age tests deterministic |
 
@@ -1032,6 +1032,24 @@ preview IPC surface (`window.autoagentPreview`) backed by one
   `preview:<code>`, never a URL or filesystem path.
 - Rollback: `AUTOAGENT_PREVIEW=0` fails closed at startup; the Preview tab then
   reports that the bridge is unavailable.
+
+**MCP runtime (T0).** One `McpConnectionManager` owns at most one live transport
+per registered server; the SQLite registry remains the user-facing source.
+
+- stdio children are executed as an argv vector with a scrubbed environment,
+  started in their own process group and killed as a group. HTTP/SSE URLs must
+  be http(s); user headers cannot set transport-owned headers.
+- Tool calls pass through `ApprovalEngine` (default `ask` with read-only tools
+  allowed). A destructive/open-world call returns 403 `MCP_APPROVAL_REQUIRED`
+  with no argv/env in the details; `POST /api/mcp/approvals` records process-
+  local consent (never persisted) and the caller retries.
+- Status/log/event DTOs never contain env, headers or raw protocol frames.
+  Logs are capped and redacted. `mcp.*` events are advisory invalidations.
+- Connect/call/health timeouts, tool-cache invalidation on
+  `notifications/tools/list_changed`, and exponential backoff are enforced in
+  the adapter. `AUTOAGENT_MCP_PERSISTENT=0` restores the short-lived client.
+- Engine turns do **not** yet consume these servers (T2); the backend manager
+  is for UI/direct calls only.
 
 ---
 

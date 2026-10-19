@@ -25,6 +25,17 @@ export function handleGlobalEvent(event: ServerEvent, target: EventTarget): read
     keys.push(["engine"]);
   } else if (event.name === "sessions.changed") {
     keys.push(["sessions"]);
+  } else if (
+    event.name === "mcp.status" ||
+    event.name === "mcp.tools_changed" ||
+    event.name === "mcp.server_changed"
+  ) {
+    keys.push(["mcp"], ["mcp-status"]);
+  } else if (
+    event.name === "mcp.approval_required" ||
+    event.name === "mcp.approval_denied"
+  ) {
+    keys.push(["mcp-approvals"]);
   }
   for (const queryKey of keys) {
     void target.client.invalidateQueries({ queryKey });

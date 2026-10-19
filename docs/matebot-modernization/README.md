@@ -5,11 +5,12 @@ The final artifact is `release/autoagent_0.8.0_amd64.deb` (SHA256
 `5802e841e40fab4008b28af32c955f3220ac0cdc7fba08d72c4550df80832923`). It
 includes M5.1 artifacts, M5.2 tool bridge/diff/split/native window, the
 integrated terminal T0 (stdlib PTY + WebSocket + xterm), the workspace file
-browser T0 (`SafeFileService` + Files tab), and the browser preview T0
-(`WebContentsView` + fixed IPC + Preview tab). The packaged legacy
-entry fails fast with a reinstall instruction. Root-only install/upgrade/remove,
-a real-model soak, and the full subprocess PTY replacement (fork-in-uvicorn
-risk) remain open.
+browser T0 (`SafeFileService` + Files tab), the browser preview T0
+(`WebContentsView` + fixed IPC + Preview tab), and the persistent MCP runtime
+T0 (one session per server, status/logs/resources/prompts, approval policy).
+The packaged legacy entry fails fast with a reinstall instruction. Root-only
+install/upgrade/remove, a real-model soak, engine-owned MCP turns (T2), and the
+full subprocess PTY replacement (fork-in-uvicorn risk) remain open.
 
 ## Read in this order
 
@@ -69,6 +70,11 @@ risk) remain open.
   dedicated partition. The origin allowlist is empty by default
   (`AUTOAGENT_PREVIEW_ORIGINS`), local roots are opt-in
   (`AUTOAGENT_PREVIEW_ROOT`), and `AUTOAGENT_PREVIEW=0` fails closed.
+- **MCP:** `McpConnectionManager` owns one persistent session per server over
+  stdio / Streamable HTTP / legacy SSE. `SqliteMcpRegistry` keeps SQLite as the
+  source of truth; `AUTOAGENT_MCP_PERSISTENT=0` restores the short-lived client.
+  Destructive tools require process-local approval; engine turns do not yet
+  consume these servers (T2).
 - **Rollback:** `AUTOAGENT_LEGACY=1` in development. In the package it fails
   fast with a clear message; to roll back, reinstall the previous `.deb`.
 
@@ -100,6 +106,7 @@ risk) remain open.
 | T0 | Integrated terminal: stdlib PTY + WebSocket + xterm | done; fork-in-uvicorn risk noted |
 | F0 | Workspace files: root-scoped `SafeFileService`, atomic writes/CAS, Files tab | done; update/reveal routes retry |
 | P0 | Browser preview: `WebContentsView`, fixed IPC, `autoagent-preview://`, Preview tab | done; empty origin allowlist by default |
+| M0 | Persistent MCP runtime: one session per server, status/logs/resources/prompts, approval | done; engine-owned turns are T2 |
 
 ## First commands
 

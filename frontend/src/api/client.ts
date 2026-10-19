@@ -17,6 +17,7 @@ import type {
   EngineConfigView,
   EngineStatusView,
   FileDiffView,
+  McpApprovalDecisionInput,
   McpDiscoverResponse,
   McpServerInput,
   McpServerView,
@@ -124,19 +125,39 @@ async function errorFromResponse(response: Response): Promise<ApiError> {
     body = null;
   }
   const record = (body ?? {}) as Record<string, unknown>;
-  const nested = (record.error ?? record) as Record<string, unknown>;
+  const nested =
+    record.error !== null && typeof record.error === "object"
+      ? (record.error as Record<string, unknown>)
+      : record;
   let message = "";
-  if (typeof nested.message === "string") message = nested.message;
+  if (typeof record.error === "string") message = record.error;
+  else if (typeof nested.message === "string") message = nested.message;
   else if (typeof nested.detail === "string") message = nested.detail;
   else if (Array.isArray(nested.detail)) message = "The request could not be validated.";
   if (!message) message = response.statusText || "The request failed.";
   const code =
-    typeof nested.code === "string" ? nested.code : `HTTP_${response.status}`;
+    typeof record.code === "string"
+      ? record.code
+      : typeof nested.code === "string"
+        ? nested.code
+        : `HTTP_${response.status}`;
   const retryable =
     typeof nested.retryable === "boolean"
       ? nested.retryable
       : response.status === 429 || response.status >= 500;
-  const shape: ApiErrorShape = { status: response.status, code, message, retryable };
+  const details =
+    record.details && typeof record.details === "object"
+      ? (record.details as Record<string, unknown>)
+      : nested.details && typeof nested.details === "object"
+        ? (nested.details as Record<string, unknown>)
+        : undefined;
+  const shape: ApiErrorShape = {
+    status: response.status,
+    code,
+    message,
+    retryable,
+    details,
+  };
   return new ApiError(shape);
 }
 
@@ -498,6 +519,17 @@ export const api = {
     return useMock
       ? mockApi.invokeTool(input)
       : request<McpToolInvokeResult>("/api/tools/invoke", {
+          method: "POST",
+          body: JSON.stringify(input),
+        });
+  },
+
+  decideMcpApproval(
+    input: McpApprovalDecisionInput,
+  ): Promise<{ ok: boolean }> {
+    return useMock
+      ? mockApi.decideMcpApproval()
+      : request<{ ok: boolean }>("/api/mcp/approvals", {
           method: "POST",
           body: JSON.stringify(input),
         });

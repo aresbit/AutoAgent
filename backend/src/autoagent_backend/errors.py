@@ -34,12 +34,16 @@ _STATUS_CODES = {
 
 
 def error_response(
-    status_code: int, code: str, message: str
+    status_code: int,
+    code: str,
+    message: str,
+    *,
+    details: dict[str, object] | None = None,
 ) -> JSONResponse:
-    return JSONResponse(
-        status_code=status_code,
-        content={"ok": False, "code": code, "error": message},
-    )
+    content: dict[str, object] = {"ok": False, "code": code, "error": message}
+    if details:
+        content["details"] = details
+    return JSONResponse(status_code=status_code, content=content)
 
 
 def install_error_handlers(app: FastAPI) -> None:
@@ -48,7 +52,12 @@ def install_error_handlers(app: FastAPI) -> None:
         request: Request, exc: DomainError
     ) -> JSONResponse:
         del request
-        return error_response(exc.status_code, exc.code, exc.message)
+        return error_response(
+            exc.status_code,
+            exc.code,
+            exc.message,
+            details=getattr(exc, "details", None),
+        )
 
     @app.exception_handler(FileServiceError)
     async def handle_file_error(

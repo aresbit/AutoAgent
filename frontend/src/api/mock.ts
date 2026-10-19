@@ -634,6 +634,11 @@ export const mockApi = {
     return { ...engine, activeTurns: engineActive };
   },
 
+  async decideMcpApproval(): Promise<{ ok: boolean }> {
+    await sleep(80);
+    return { ok: true };
+  },
+
   async engineConfig(): Promise<EngineConfigView> {
     await sleep(110);
     return structuredClone(engineConfig);

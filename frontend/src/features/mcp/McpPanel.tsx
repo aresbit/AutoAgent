@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import {
   useEffect,
+  useMemo,
   useRef,
   useState,
   type FormEvent,
@@ -19,12 +20,18 @@ import {
 } from "react";
 import {
   api,
+  ApiError,
+  getLaunchToken,
+  isMockMode,
+  type McpApprovalDecisionInput,
   type McpDiscoveryResult,
   type McpServerInput,
   type McpServerView,
   type McpToolInvokeResult,
   type McpTransport,
 } from "@/api/client";
+import { McpStatusClient } from "./mcpStatusClient";
+import { McpStatusPanel } from "./McpStatusPanel";
 import {
   Badge,
   Button,
@@ -102,6 +109,10 @@ export function McpPanel({ initialServers = [] }: { initialServers?: McpServerVi
     initialData: initialServers,
   });
   const servers = serversQuery.data;
+  const statusClient = useMemo(
+    () => new McpStatusClient({ getToken: getLaunchToken }),
+    [],
+  );
   const [actionError, setActionError] = useState<string | null>(null);
   const [editorOpen, setEditorOpen] = useState(false);
   const [editing, setEditing] = useState<McpServerView | null>(null);
@@ -112,6 +123,18 @@ export function McpPanel({ initialServers = [] }: { initialServers?: McpServerVi
   const [invokeTool, setInvokeTool] = useState("");
   const [invokeArgs, setInvokeArgs] = useState("{}");
   const [invokeError, setInvokeError] = useState<string | null>(null);
+  const [pendingApproval, setPendingApproval] = useState<{
+    server: string;
+    tool: string;
+    risk: string;
+    reason: string;
+    callId?: string;
+  } | null>(null);
+  const [lastInvoke, setLastInvoke] = useState<{
+    server: string;
+    tool: string;
+    args: Record<string, unknown>;
+  } | null>(null);
   const [result, setResult] = useState<McpToolInvokeResult | null>(null);
   const [resultTool, setResultTool] = useState("");
   const [discoverOpen, setDiscoverOpen] = useState(false);
@@ -208,20 +231,75 @@ export function McpPanel({ initialServers = [] }: { initialServers?: McpServerVi
   });
 
   const invoke = useMutation({
-    mutationFn: (input: { server: string; tool: string; args: Record<string, unknown> }) =>
+    mutationFn: (input: {
+      server: string;
+      tool: string;
+      args: Record<string, unknown>;
+      approval?: {
+        scope: "once" | "session";
+        approvedTools?: string[];
+        approvedServers?: string[];
+      };
+    }) =>
       api.invokeTool({
         server: input.server || null,
         tool: input.tool,
         args: input.args,
+        approval: input.approval,
       }),
     onSuccess: (data, input) => {
       setResult(data);
       setResultTool(input.tool);
       setInvokeError(null);
+      setPendingApproval(null);
     },
     onError: (error) => {
       setResult(null);
+      if (error instanceof ApiError && error.code === "MCP_APPROVAL_REQUIRED") {
+        const details = error.details ?? {};
+        const server =
+          typeof details.server === "string" ? details.server : invokeServer;
+        const tool = typeof details.tool === "string" ? details.tool : invokeTool;
+        setPendingApproval({
+          server,
+          tool,
+          risk: typeof details.risk === "string" ? details.risk : "unknown",
+          reason:
+            typeof details.reason === "string" ? details.reason : error.message,
+          callId:
+            typeof details.callId === "string" ? details.callId : undefined,
+        });
+        setInvokeError(null);
+        return;
+      }
+      setPendingApproval(null);
       setInvokeError(errorMessage(error, "The tool call failed."));
+    },
+  });
+
+  const decide = useMutation({
+    mutationFn: (input: McpApprovalDecisionInput) => api.decideMcpApproval(input),
+    onSuccess: (_data, input) => {
+      const pending = pendingApproval;
+      setPendingApproval(null);
+      if (input.decision === "allow" && pending) {
+        const args = lastInvoke?.args ?? {};
+        invoke.mutate({
+          server: pending.server,
+          tool: pending.tool,
+          args,
+          approval: {
+            scope: input.scope,
+            approvedTools: [pending.tool],
+            approvedServers: [pending.server],
+          },
+        });
+      } else {
+        setInvokeError("The tool call was denied.");
+      }
+    },
+    onError: (error) => {
+      setInvokeError(errorMessage(error, "The decision could not be recorded."));
     },
   });
 
@@ -237,11 +315,14 @@ export function McpPanel({ initialServers = [] }: { initialServers?: McpServerVi
       return;
     }
     setInvokeError(null);
-    invoke.mutate({
+    setPendingApproval(null);
+    const input = {
       server: invokeServer,
       tool: invokeTool.trim(),
       args: parsed.value,
-    });
+    };
+    setLastInvoke(input);
+    invoke.mutate(input);
   };
 
   const openCreate = () => {
@@ -503,6 +584,16 @@ export function McpPanel({ initialServers = [] }: { initialServers?: McpServerVi
             </ul>
           )}
         </div>
+        <div className="hairline-t mt-3 pt-3">
+          {isMockMode() ? (
+            <p className="text-[11.5px] leading-relaxed text-ink-3">
+              Connection status and logs require the local backend; mock mode
+              only simulates the server list.
+            </p>
+          ) : (
+            <McpStatusPanel client={statusClient} />
+          )}
+        </div>
       </PanelScroll>
 
       <McpEditor
@@ -624,6 +715,71 @@ export function McpPanel({ initialServers = [] }: { initialServers?: McpServerVi
               onChange={(event) => setInvokeArgs(event.target.value)}
             />
           </Field>
+          {pendingApproval ? (
+            <div className="flex flex-col gap-2 rounded-card bg-warn/10 px-3 py-2.5">
+              <p className="text-[12px] font-medium text-ink">
+                Approval required for{" "}
+                <span className="t-code">
+                  {pendingApproval.server}/{pendingApproval.tool}
+                </span>
+              </p>
+              <p className="text-[11.5px] leading-relaxed text-ink-2">
+                Risk: {pendingApproval.risk}. {pendingApproval.reason}
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  size="xs"
+                  loading={decide.isPending}
+                  onClick={() =>
+                    decide.mutate({
+                      server: pendingApproval.server,
+                      tool: pendingApproval.tool,
+                      decision: "allow",
+                      scope: "once",
+                      callId: pendingApproval.callId,
+                    })
+                  }
+                >
+                  Allow once
+                </Button>
+                <Button
+                  type="button"
+                  size="xs"
+                  variant="secondary"
+                  loading={decide.isPending}
+                  onClick={() =>
+                    decide.mutate({
+                      server: pendingApproval.server,
+                      tool: pendingApproval.tool,
+                      decision: "allow",
+                      scope: "session",
+                      callId: pendingApproval.callId,
+                    })
+                  }
+                >
+                  Allow for session
+                </Button>
+                <Button
+                  type="button"
+                  size="xs"
+                  variant="ghost"
+                  loading={decide.isPending}
+                  onClick={() =>
+                    decide.mutate({
+                      server: pendingApproval.server,
+                      tool: pendingApproval.tool,
+                      decision: "deny",
+                      scope: "once",
+                      callId: pendingApproval.callId,
+                    })
+                  }
+                >
+                  Deny
+                </Button>
+              </div>
+            </div>
+          ) : null}
           <div className="flex justify-end gap-2">
             <Button type="button" variant="ghost" size="sm" onClick={() => setInvokeOpen(false)}>
               Close

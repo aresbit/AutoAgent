@@ -25,9 +25,14 @@ from ..domain.models import (
     EngineStatus,
     FileDiff,
     Layout,
+    McpApprovalContext,
     McpDiscovery,
+    McpLogEntry,
+    McpPrompt,
+    McpResource,
     McpServer,
     McpServerSpec,
+    McpServerStatus,
     McpTool,
     Message,
     ModelResolution,
@@ -141,12 +146,38 @@ class McpServerInput(StrictModel):
 class McpDiscoverRequest(StrictModel):
     name: str | None = None
     enabledOnly: bool = True
+    refresh: bool = False
+
+
+class McpApprovalContextInput(StrictModel):
+    scope: Literal["once", "session"] = "once"
+    approvedTools: list[str] = Field(default_factory=list, max_length=512)
+    approvedServers: list[str] = Field(default_factory=list, max_length=512)
+    autoApprove: bool = False
+
+
+class McpApprovalDecisionInput(StrictModel):
+    server: str = Field(min_length=1, max_length=200)
+    tool: str = Field(min_length=1, max_length=500)
+    decision: Literal["allow", "deny"]
+    scope: Literal["once", "session"] = "once"
+    callId: str | None = Field(default=None, max_length=200)
+
+
+class McpResourceReadRequest(StrictModel):
+    uri: str = Field(min_length=1, max_length=8192)
+
+
+class McpPromptGetRequest(StrictModel):
+    name: str = Field(min_length=1, max_length=500)
+    args: dict[str, str] = Field(default_factory=dict)
 
 
 class ToolInvokeRequest(StrictModel):
     server: str | None = None
     tool: str = Field(min_length=1, max_length=500)
     args: dict[str, Any] = Field(default_factory=dict)
+    approval: McpApprovalContextInput | None = None
 
 
 class BranchSwitchRequest(StrictModel):
@@ -425,10 +456,98 @@ class McpServerListView(ApiModel):
     servers: list[McpServerView]
 
 
+class McpToolAnnotationsView(ApiModel):
+    title: str | None = None
+    readOnlyHint: bool = False
+    destructiveHint: bool = True
+    idempotentHint: bool = False
+    openWorldHint: bool = True
+
+
 class McpToolView(ApiModel):
     name: str
     description: str
     inputSchema: dict[str, Any] | None = None
+    title: str | None = None
+    outputSchema: dict[str, Any] | None = None
+    annotations: McpToolAnnotationsView | None = None
+
+
+class McpServerStatusView(ApiModel):
+    name: str
+    state: Literal[
+        "idle",
+        "connecting",
+        "connected",
+        "reconnecting",
+        "error",
+        "disabled",
+        "closed",
+    ]
+    connected: bool = False
+    toolCount: int = 0
+    resourceCount: int = 0
+    promptCount: int = 0
+    lastError: str | None = None
+    protocolVersion: str | None = None
+    serverName: str | None = None
+    serverVersion: str | None = None
+    instructions: str | None = None
+    sessionId: str | None = None
+    pid: int | None = None
+    reconnectAttempts: int = 0
+    nextRetryInMs: int | None = None
+    updatedAt: int = 0
+
+
+class McpStatusListView(ApiModel):
+    servers: list[McpServerStatusView]
+
+
+class McpLogView(ApiModel):
+    server: str
+    level: Literal["debug", "info", "warning", "error", "stderr"]
+    message: str
+    ts: int
+
+
+class McpLogListView(ApiModel):
+    entries: list[McpLogView]
+
+
+class McpResourceView(ApiModel):
+    uri: str
+    name: str = ""
+    description: str = ""
+    mimeType: str | None = None
+
+
+class McpResourceListView(ApiModel):
+    resources: list[McpResourceView]
+
+
+class McpPromptArgumentView(ApiModel):
+    name: str
+    description: str = ""
+    required: bool = False
+
+
+class McpPromptView(ApiModel):
+    name: str
+    description: str = ""
+    arguments: list[McpPromptArgumentView] = Field(default_factory=list)
+
+
+class McpPromptListView(ApiModel):
+    prompts: list[McpPromptView]
+
+
+class McpResourceResultView(ApiModel):
+    result: Any
+
+
+class McpPromptResultView(ApiModel):
+    result: Any
 
 
 class McpDiscoveryResultView(ApiModel):
@@ -963,6 +1082,107 @@ def to_mcp_tool_view(tool: McpTool) -> McpToolView:
         name=tool.name,
         description=tool.description,
         inputSchema=tool.input_schema,
+        title=tool.title,
+        outputSchema=tool.output_schema,
+        annotations=McpToolAnnotationsView(
+            title=tool.annotations.title,
+            readOnlyHint=tool.annotations.read_only,
+            destructiveHint=tool.annotations.destructive,
+            idempotentHint=tool.annotations.idempotent,
+            openWorldHint=tool.annotations.open_world,
+        ),
+    )
+
+
+def to_mcp_status_view(status: McpServerStatus) -> McpServerStatusView:
+    state: Literal[
+        "idle",
+        "connecting",
+        "connected",
+        "reconnecting",
+        "error",
+        "disabled",
+        "closed",
+    ]
+    if status.state in {
+        "idle",
+        "connecting",
+        "connected",
+        "reconnecting",
+        "error",
+        "disabled",
+        "closed",
+    }:
+        state = status.state  # type: ignore[assignment]
+    else:
+        state = "error"
+    return McpServerStatusView(
+        name=status.name,
+        state=state,
+        connected=status.connected,
+        toolCount=status.tool_count,
+        resourceCount=status.resource_count,
+        promptCount=status.prompt_count,
+        lastError=status.last_error,
+        protocolVersion=status.protocol_version,
+        serverName=status.server_name,
+        serverVersion=status.server_version,
+        instructions=status.instructions,
+        sessionId=status.session_id,
+        pid=status.pid,
+        reconnectAttempts=status.reconnect_attempts,
+        nextRetryInMs=status.next_retry_in_ms,
+        updatedAt=status.updated_at,
+    )
+
+
+def to_mcp_log_view(entry: McpLogEntry) -> McpLogView:
+    level: Literal["debug", "info", "warning", "error", "stderr"]
+    if entry.level in {"debug", "info", "warning", "error", "stderr"}:
+        level = entry.level  # type: ignore[assignment]
+    else:
+        level = "info"
+    return McpLogView(
+        server=entry.server,
+        level=level,
+        message=entry.message,
+        ts=entry.ts_ms,
+    )
+
+
+def to_mcp_resource_view(resource: McpResource) -> McpResourceView:
+    return McpResourceView(
+        uri=resource.uri,
+        name=resource.name,
+        description=resource.description,
+        mimeType=resource.mime_type,
+    )
+
+
+def to_mcp_prompt_view(prompt: McpPrompt) -> McpPromptView:
+    return McpPromptView(
+        name=prompt.name,
+        description=prompt.description,
+        arguments=[
+            McpPromptArgumentView(
+                name=argument.name,
+                description=argument.description,
+                required=argument.required,
+            )
+            for argument in prompt.arguments
+        ],
+    )
+
+
+def to_domain_mcp_approval(
+    approval: McpApprovalContextInput | None,
+) -> McpApprovalContext | None:
+    if approval is None:
+        return None
+    return McpApprovalContext(
+        approved_tools=frozenset(approval.approvedTools),
+        approved_servers=frozenset(approval.approvedServers),
+        auto_approve=approval.autoApprove,
     )
 
 

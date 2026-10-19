@@ -27,8 +27,10 @@ from .adapters.engine.matebot_engine import (
 from .adapters.engine.subprocess_engine import build_subprocess_engine
 from .adapters.engine_config import EngineConfigResolver
 from .adapters.files.safe_file_service import SafeFileService
+from .adapters.mcp.approval import ApprovalEngine, ServerApprovalPolicy
 from .adapters.mcp.client import McpConnectionFactory
-from .adapters.mcp.mcp_store import SqliteMcpRegistry
+from .adapters.mcp.connection_manager import McpConnectionManager
+from .adapters.mcp.mcp_store import SqliteMcpRegistry, runtime_spec_for
 from .adapters.persistence.legacy_import import LegacyImporter
 from .adapters.persistence.migrations import migrate
 from .adapters.persistence.session_store import SqliteSessionStore
@@ -97,6 +99,7 @@ class Container:
     event_bus: EventBus
     skill_catalog: FilesystemSkillCatalog
     mcp_registry: SqliteMcpRegistry
+    mcp_runtime: McpConnectionManager | None
     artifact_store: FilesystemArtifactStore
     session_service: SessionService
     settings_service: SettingsService
@@ -237,13 +240,23 @@ def build_container(
         home_dir=home_dir or Path.home(),
         default_cwd=str(config.default_cwd),
     )
+    event_bus = EventBus()
+    mcp_runtime: McpConnectionManager | None = None
+    if config.mcp_persistent:
+        mcp_runtime = McpConnectionManager(
+            approval_engine=ApprovalEngine(
+                default_policy=ServerApprovalPolicy(
+                    mode="ask", allow_read_only=True
+                )
+            ),
+            event_callback=event_bus.publish,
+        )
     mcp_registry = SqliteMcpRegistry(
-        db, clock, connections=mcp_connections
+        db, clock, connections=mcp_connections, runtime=mcp_runtime
     )
     artifact_store = FilesystemArtifactStore(
         config.paths.data_dir / "artifacts", clock
     )
-    event_bus = EventBus()
     try:
         cli_path: str | None = str(resolve_cli(config.cli_path))
     except DomainError:
@@ -254,7 +267,7 @@ def build_container(
     )
     engine_config_service = EngineConfigService(autoagent_config, engine_config)
     skill_service = SkillService(skill_catalog, settings_store)
-    mcp_service = McpService(mcp_registry)
+    mcp_service = McpService(mcp_registry, events=event_bus)
     workspace_service = WorkspaceService(workspace, settings_store)
     artifact_service = ArtifactService(
         artifact_store, events=event_bus, clock=clock
@@ -323,6 +336,7 @@ def build_container(
         event_bus=event_bus,
         skill_catalog=skill_catalog,
         mcp_registry=mcp_registry,
+        mcp_runtime=mcp_runtime,
         artifact_store=artifact_store,
         session_service=session_service,
         settings_service=settings_service,
@@ -338,8 +352,23 @@ def build_container(
     )
 
     container.closers.append(terminal_manager.shutdown_now)
+    if mcp_runtime is not None:
+        container.closers.append(mcp_runtime.shutdown)
 
     _initialize(config, container)
+    if mcp_runtime is not None:
+        # Registration needs the migrated schema; it never connects at boot.
+        try:
+            for server in mcp_registry.list():
+                mcp_runtime.register(
+                    runtime_spec_for(server), enabled=server.enabled
+                )
+            mcp_runtime.start_background(
+                interval=max(5.0, config.mcp_health_interval_s)
+            )
+        except Exception:
+            # A damaged DB must still produce a health-reporting app.
+            LOG.exception("MCP runtime registration failed")
     # Export the selected source's credentials/base URL after the schema exists
     # and before any engine child can spawn.
     try:

@@ -39,6 +39,7 @@
 | T30 | Browser/Preview T0：PreviewManager（WebContentsView/partition/导航白名单）+ IPC + 预览面板 | complete | T28 | exists:desktop/src/native/preview-manager.ts |
 | T31 | 设置页统一选择后端 harness（opencc/claude-code）与 API 来源（Claude/AutoAgent/env），移除独立 Engine tab | complete | T30 | exists:backend/src/autoagent_backend/adapters/engine/harness.py |
 | T32 | Ubuntu 22.04 安装兼容：portable CPython 后端 + GLIBC 基线测量/校验 + 依赖下限 2.35 | complete | T31 | exists:scripts/glibc-baseline.py |
+| T33 | MCP T0：持久连接管理器 + 状态/日志/重连 + resources/prompts + 审批策略与状态面板 | complete | T32 | exists:backend/src/autoagent_backend/adapters/mcp/connection_manager.py |
 
 ## Notes
 -
