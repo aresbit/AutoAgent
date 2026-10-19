@@ -380,6 +380,7 @@ assert token not in text, "launch token leaked into the support bundle"
 PY
 log "support bundle: ok"
 
+
 log "fake turn over SSE"
 SESSION_ID="$(
   curl -fsS -X POST \
@@ -400,6 +401,25 @@ grep -q '^event: turn.completed$' "$TMP/turn.sse" || {
   die "fake turn did not complete"
 }
 log "turn events: $(grep -c '^event: ' "$TMP/turn.sse")"
+
+log "terminal: PTY host spawn/list/delete"
+TERM_TAB="$(
+  curl -fsS --max-time 10 -X POST \
+    -H "Authorization: Bearer $TOKEN" \
+    -H 'Content-Type: application/json' \
+    -d '{"cols":80,"rows":24}' \
+    "http://127.0.0.1:$PORT/api/sessions/$SESSION_ID/terminals" \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["tabId"])'
+)"
+[ -n "$TERM_TAB" ] || die "terminal create returned no tabId"
+curl -fsS --max-time 5 \
+  -H "Authorization: Bearer $TOKEN" \
+  "http://127.0.0.1:$PORT/api/sessions/$SESSION_ID/terminals" \
+  | grep -q "$TERM_TAB" || die "terminal list did not include the new tab"
+curl -fsS --max-time 5 -X DELETE \
+  -H "Authorization: Bearer $TOKEN" \
+  "http://127.0.0.1:$PORT/api/sessions/$SESSION_ID/terminals/$TERM_TAB" >/dev/null
+log "terminal: ok"
 
 # ---------------------------------------------------------------- shutdown
 kill -TERM "$SERVER_PID"

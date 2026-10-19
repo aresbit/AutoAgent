@@ -16,6 +16,7 @@ import asyncio
 import os
 import sys
 from collections.abc import Awaitable
+from pathlib import Path
 
 import pytest
 
@@ -435,3 +436,46 @@ def test_shutdown_now_reaps_everything() -> None:
     manager.shutdown_now(timeout_s=0.5)
     assert session.closed is True
     assert len(manager) == 0
+
+
+def test_spawn_uses_the_pty_host_when_available() -> None:
+    async def case() -> None:
+        manager = TerminalManager(max_sessions=1)
+        try:
+            session = await manager.spawn(
+                "s::host",
+                shell="/bin/bash",
+                cwd=os.getcwd(),
+                argv=["/bin/bash", "-lc", "sleep 5"],
+            )
+            try:
+                assert manager._spawner is not None
+                assert manager._spawner.alive is True
+                assert session._supervised is True
+                # The shell is a child of the host, not of the backend process.
+                parent = int(
+                    Path(f"/proc/{session.pid}/stat").read_text().split()[3]
+                )
+                assert parent != os.getpid()
+            finally:
+                await manager.destroy("s::host", grace_s=0.2)
+        finally:
+            await manager.shutdown()
+
+    run(case())
+
+
+def test_fork_fallback_remains_available() -> None:
+    async def case() -> None:
+        manager = TerminalManager(max_sessions=1, use_pty_host=False)
+        try:
+            session, output = await run_command(
+                manager, key="s::fork", command="printf via-fork"
+            )
+            assert b"via-fork" in output
+            assert manager._spawner is None
+            assert session._supervised is False
+        finally:
+            await manager.shutdown()
+
+    run(case())

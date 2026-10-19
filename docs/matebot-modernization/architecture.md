@@ -1051,6 +1051,14 @@ per registered server; the SQLite registry remains the user-facing source.
 - Engine turns do **not** yet consume these servers (T2); the backend manager
   is for UI/direct calls only.
 
+**PTY host.** Terminal sessions are created by a dedicated single-threaded
+process (`adapters/terminal/spawner.py`) because `setsid` + `TIOCSCTTY` cannot
+use `posix_spawn` and `os.fork()` in multi-threaded uvicorn is unsafe. The host
+passes the PTY master back with `SCM_RIGHTS`, owns `waitpid`, and kills every
+process group when the backend drops the socket. The manager keeps the async
+reader, ring buffer and replay logic; `AUTOAGENT_TERMINAL_PTY_HOST=0` or a host
+start failure falls back to the legacy in-process fork.
+
 **Event envelope (P0).** `GET /api/events` keeps the SSE event name and wraps
 each payload as `{v, seq, ts, essential, data}`. `seq` is monotonic per
 response; `essential` classifies state invalidations and approvals as

@@ -2,18 +2,18 @@
 
 Status as of 2026-10-19: **implemented, packaged, and independently verified.**
 The final artifact is `release/autoagent_0.8.0_amd64.deb` (SHA256
-`9997eb352629203e0114015dafc85c9bbcaef1ec09e58a73bf934eb60be1824a`). It
+`2dc06f9257f3f2dfa86a18bc88e711fc0417242323e87aa003fee553af543341`). It
 includes M5.1 artifacts, M5.2 tool bridge/diff/split/native window, the
 integrated terminal T0 (stdlib PTY + WebSocket + xterm), the workspace file
 browser T0 (`SafeFileService` + Files tab), the browser preview T0
 (`WebContentsView` + fixed IPC + Preview tab), the persistent MCP runtime
 T0 (one session per server, status/logs/resources/prompts, approval policy),
 and the first highlights tranche (versioned event envelope + delivery gate,
-startup/quit timelines, support bundle, boot placeholder).
+startup/quit timelines, support bundle, boot placeholder), followed by the PTY
+host (fork moved out of uvicorn) and the turn-level persistent outbox.
 The packaged legacy entry fails fast with a reinstall instruction. Root-only
-install/upgrade/remove, a real-model soak, engine-owned MCP turns (T2), the
-PTY supervisor and turn-level outbox, and the full subprocess PTY replacement
-(fork-in-uvicorn risk) remain open.
+install/upgrade/remove, a real-model soak, engine-owned MCP turns (T2), and the
+remaining worktree/context-autocompact P1 items remain open.
 
 ## Read in this order
 
@@ -79,6 +79,10 @@ PTY supervisor and turn-level outbox, and the full subprocess PTY replacement
   source of truth; `AUTOAGENT_MCP_PERSISTENT=0` restores the short-lived client.
   Destructive tools require process-local approval; engine turns do not yet
   consume these servers (T2).
+- **Terminal:** a dedicated single-threaded PTY host performs
+  `openpty`/`fork`/`setsid`/`TIOCSCTTY` and passes the master FD back over
+  `SCM_RIGHTS`; the backend never forks inside uvicorn.
+  `AUTOAGENT_TERMINAL_PTY_HOST=0` restores the in-process path.
 - **Rollback:** `AUTOAGENT_LEGACY=1` in development. In the package it fails
   fast with a clear message; to roll back, reinstall the previous `.deb`.
 
@@ -111,7 +115,8 @@ PTY supervisor and turn-level outbox, and the full subprocess PTY replacement
 | F0 | Workspace files: root-scoped `SafeFileService`, atomic writes/CAS, Files tab | done; update/reveal routes retry |
 | P0 | Browser preview: `WebContentsView`, fixed IPC, `autoagent-preview://`, Preview tab | done; empty origin allowlist by default |
 | M0 | Persistent MCP runtime: one session per server, status/logs/resources/prompts, approval | done; engine-owned turns are T2 |
-| O0 | Highlights tranche 1: event envelope/gate, startup/quit timelines, support bundle, boot placeholder | done; PTY supervisor and turn outbox remain |
+| O0 | Highlights tranche 1: event envelope/gate, startup/quit timelines, support bundle, boot placeholder | done |
+| O1 | PTY host (fork moved out of uvicorn) + turn-level persistent outbox | done; health loop and worktree pool remain P1 |
 
 ## First commands
 

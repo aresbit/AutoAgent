@@ -36,6 +36,11 @@ import {
   useScrollPinning,
 } from "@/cds";
 import type { ChatArtifact } from "@/features/artifacts/logic";
+import {
+  addPendingTurn,
+  pendingTurnsForSession,
+  removePendingTurn,
+} from "./outbox";
 import { Markdown } from "./markdown";
 
 interface LiveTurn {
@@ -61,6 +66,10 @@ const SUGGESTIONS = [
   "Review the settings surface",
   "Show a small HTML artifact",
 ];
+
+function outboxStorage(): Storage | null {
+  return typeof window === "undefined" ? null : window.localStorage;
+}
 
 export function ChatPanel({
   sessionId,
@@ -138,6 +147,14 @@ export function ChatPanel({
       if (!text) return;
 
       const turnId = options?.turnId ?? newTurnId();
+      // Persist the intent before the request leaves the renderer. The backend
+      // is idempotent by turn id, so a replay never duplicates the message.
+      addPendingTurn(outboxStorage(), {
+        turnId,
+        sessionId,
+        text,
+        createdAt: Date.now(),
+      });
       if (!options?.reuseUserMessage) {
         const userMessage: MessageView = {
           id: `local-${turnId}`,
@@ -235,6 +252,7 @@ export function ChatPanel({
         }
         if (event.type === "turn.completed") {
           terminal = true;
+          removePendingTurn(outboxStorage(), turnId);
           setLive(null);
           if (cancelTimer.current) clearTimeout(cancelTimer.current);
           void queryClient.invalidateQueries({ queryKey: ["sessions"] });
@@ -243,6 +261,9 @@ export function ChatPanel({
         }
         if (event.type === "error") {
           terminal = true;
+          // The turn reached a terminal failed state; the user message is
+          // already persisted, so replaying it on the next load is wrong.
+          removePendingTurn(outboxStorage(), turnId);
           setLive((current) => (current ? { ...current, status: "error" } : current));
           setFailure({
             message: event.message,
@@ -301,6 +322,47 @@ export function ChatPanel({
     setComposerValue("");
     runTurn(text);
   }, [composerValue, runTurn]);
+
+  // Reconcile an unfinished turn after a reload/crash. The same turn id is
+  // reused, so the backend either attaches to the live turn or replays a
+  // request that never reached it; a finished turn only clears the entry.
+  const runTurnRef = useRef(runTurn);
+  runTurnRef.current = runTurn;
+  const reconciledTurns = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const storage = outboxStorage();
+    if (!sessionId || !storage) return;
+    const pending = pendingTurnsForSession(storage, sessionId);
+    if (pending.length === 0) return;
+    const entry = pending[pending.length - 1];
+    if (reconciledTurns.current.has(entry.turnId)) return;
+    reconciledTurns.current.add(entry.turnId);
+    void (async () => {
+      try {
+        const status = await api.turnStatus(entry.turnId);
+        if (status.state === "running") {
+          runTurnRef.current(entry.text, {
+            turnId: entry.turnId,
+            reuseUserMessage: true,
+            retry: true,
+          });
+        } else {
+          removePendingTurn(storage, entry.turnId);
+        }
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) {
+          runTurnRef.current(entry.text, {
+            turnId: entry.turnId,
+            reuseUserMessage: true,
+            retry: true,
+          });
+        } else {
+          // Leave the entry for the next load; do not spin on network errors.
+          reconciledTurns.current.delete(entry.turnId);
+        }
+      }
+    })();
+  }, [sessionId]);
 
   const cancel = useCallback(() => {
     if (!live || live.status !== "streaming") return;

@@ -80,6 +80,7 @@ class BootConfig:
     matebot_vendor: Path = field(default_factory=default_matebot_vendor_path)
     terminals_enabled: bool = True
     max_terminals: int = 12
+    terminal_pty_host: bool = True
     file_max_read_bytes: int = FILE_MAX_READ_BYTES
     file_max_write_bytes: int = FILE_MAX_WRITE_BYTES
     files_enabled: bool = True
@@ -186,6 +187,9 @@ def config_from_env(
         matebot_vendor=matebot_vendor,
         terminals_enabled=_parse_bool(env.get("AUTOAGENT_TERMINALS", "1")),
         max_terminals=_parse_int(env.get("AUTOAGENT_MAX_TERMINALS"), 12),
+        terminal_pty_host=_parse_bool(
+            env.get("AUTOAGENT_TERMINAL_PTY_HOST", "1")
+        ),
         file_max_read_bytes=_parse_positive_int(
             env.get("AUTOAGENT_FILE_MAX_READ_BYTES"),
             FILE_MAX_READ_BYTES,

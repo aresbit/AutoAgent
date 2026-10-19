@@ -48,6 +48,8 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Final, Literal
 
+from .spawner import PtySpawner, PtySpawnerError
+
 LOG = logging.getLogger("autoagent.terminal")
 
 # ---------------------------------------------------------------------------
@@ -332,6 +334,10 @@ class TerminalSession:
         "_shell",
         "_started_at",
         "_state",
+        "_supervised",
+        "_supervised_exit",
+        "_supervised_exit_at",
+        "_supervised_signal",
     )
 
     def __init__(
@@ -351,10 +357,15 @@ class TerminalSession:
         loop: asyncio.AbstractEventLoop,
         on_data: DataCallback | None,
         on_exit: ExitCallback | None,
+        supervised: bool = False,
     ) -> None:
         self._key = key
         self._pid = pid
         self._pgid = pgid
+        self._supervised = supervised
+        self._supervised_exit: tuple[int | None, int | None] | None = None
+        self._supervised_exit_at: float | None = None
+        self._supervised_signal: int | None = None
         self._master_fd: int | None = master_fd
         self._loop = loop
         self._shell = shell
@@ -435,6 +446,8 @@ class TerminalSession:
     def exit_signal(self) -> int | None:
         """Return the terminating signal number, or ``None``."""
 
+        if self._supervised and self._supervised_signal is not None:
+            return self._supervised_signal
         status = self._exit_status
         if status is None:
             return None
@@ -637,6 +650,16 @@ class TerminalSession:
 
     # -- reader / reaper ----------------------------------------------------
 
+    def mark_supervised_exit(self, code: int | None, signal_number: int | None) -> None:
+        """Record an exit reported by the PTY host (event-loop thread only)."""
+
+        if self._supervised_exit is not None or self._finished:
+            return
+        self._supervised_exit = (code, signal_number)
+        self._supervised_exit_at = self._loop.time()
+        self._supervised_signal = signal_number
+        self._exit_code = code
+
     def _on_readable(self) -> None:
         if self._finished:
             return
@@ -778,6 +801,20 @@ class TerminalSession:
     def _poll_wait(self) -> bool:
         if self._reaped:
             return True
+        if self._supervised:
+            # The PTY host owns waitpid. Wait for the reader to drain the last
+            # output (EOF) or a short grace after the exit report, so a fast
+            # child cannot lose its final bytes.
+            if self._supervised_exit is None:
+                return False
+            drained = self._reader_eof or (
+                self._supervised_exit_at is not None
+                and self._loop.time() - self._supervised_exit_at > 0.5
+            )
+            if drained:
+                self._reaped = True
+                return True
+            return False
         try:
             pid, status = os.waitpid(self._pid, os.WNOHANG)
         except ChildProcessError:
@@ -881,6 +918,7 @@ class TerminalManager:
         default_cwd: str | None = None,
         on_data: DataCallback | None = None,
         on_exit: ExitCallback | None = None,
+        use_pty_host: bool = True,
     ) -> None:
         if max_sessions < 1:
             raise ValueError("max_sessions must be positive")
@@ -899,6 +937,9 @@ class TerminalManager:
         self._default_cwd = default_cwd
         self._on_data = on_data
         self._on_exit = on_exit
+        self._use_pty_host = use_pty_host
+        self._spawner: PtySpawner | None = None
+        self._spawner_failed = False
         self._sessions: dict[str, TerminalSession] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
 
@@ -969,46 +1010,75 @@ class TerminalManager:
         command = self._build_argv(resolved_shell, argv)
         child_env = scrub_environment(self._env_base, env)
 
-        try:
-            master_fd, slave_fd = os.openpty()
-        except OSError as exc:
-            raise TerminalSpawnFailed("could not allocate a PTY") from exc
+        supervised = False
+        pgid = 0
+        master_fd: int
+        slave_fd: int | None = None
+        if self._use_pty_host and not self._spawner_failed:
+            try:
+                spawner = self._spawner
+                if spawner is None:
+                    spawner = PtySpawner()
+                    self._spawner = spawner
+                master_fd, pid, pgid = await asyncio.to_thread(
+                    spawner.spawn,
+                    session_key,
+                    argv=command,
+                    cwd=resolved_cwd,
+                    env=child_env,
+                    cols=cols,
+                    rows=rows,
+                )
+                os.set_blocking(master_fd, False)
+                supervised = True
+            except PtySpawnerError as exc:
+                LOG.warning(
+                    "PTY host unavailable (%s); falling back to in-process fork",
+                    exc,
+                )
+                self._spawner_failed = True
+                self._close_spawner()
 
-        try:
-            _set_window_size(slave_fd, cols, rows)
-            # Only the master is non-blocking.  The child inherits the slave as
-            # stdin/stdout/stderr and must see normal blocking tty semantics;
-            # a non-blocking stdout makes ordinary programs fail with EAGAIN.
-            os.set_blocking(master_fd, False)
-            pid = os.fork()
-        except OSError as exc:
-            os.close(master_fd)
+        if not supervised:
+            try:
+                master_fd, slave_fd = os.openpty()
+            except OSError as exc:
+                raise TerminalSpawnFailed("could not allocate a PTY") from exc
+            try:
+                _set_window_size(slave_fd, cols, rows)
+                # Only the master is non-blocking. The child inherits the slave
+                # as stdin/stdout/stderr and must see blocking tty semantics.
+                os.set_blocking(master_fd, False)
+                pid = os.fork()
+            except OSError as exc:
+                os.close(master_fd)
+                os.close(slave_fd)
+                raise TerminalSpawnFailed("could not start the terminal") from exc
+            except BaseException:
+                os.close(master_fd)
+                os.close(slave_fd)
+                raise
+
+            if pid == 0:  # pragma: no cover - child never returns to pytest
+                self._child_exec(
+                    master_fd=master_fd,
+                    slave_fd=slave_fd,
+                    command=command,
+                    cwd=resolved_cwd,
+                    env=child_env,
+                    parent_pid=os.getppid(),
+                )
+                os._exit(127)
+
             os.close(slave_fd)
-            raise TerminalSpawnFailed("could not start the terminal") from exc
-        except BaseException:
-            os.close(master_fd)
-            os.close(slave_fd)
-            raise
-
-        if pid == 0:  # pragma: no cover - child never returns to pytest
-            self._child_exec(
-                master_fd=master_fd,
-                slave_fd=slave_fd,
-                command=command,
-                cwd=resolved_cwd,
-                env=child_env,
-                parent_pid=os.getppid(),
-            )
-            os._exit(127)
-
-        os.close(slave_fd)
+            pgid = pid
 
         loop = asyncio.get_running_loop()
         try:
             session = TerminalSession(
                 key=session_key,
                 pid=pid,
-                pgid=pid,  # setsid() in the child makes pgid == pid
+                pgid=pgid or pid,
                 master_fd=master_fd,
                 shell=resolved_shell,
                 cwd=resolved_cwd,
@@ -1020,6 +1090,7 @@ class TerminalManager:
                 loop=loop,
                 on_data=self._on_data,
                 on_exit=self._on_exit,
+                supervised=supervised,
             )
         except BaseException as exc:
             try:
@@ -1031,6 +1102,26 @@ class TerminalManager:
 
         try:
             self._sessions[session_key] = session
+            if supervised and self._spawner is not None:
+                loop = asyncio.get_running_loop()
+
+                def _deliver(
+                    code: int | None,
+                    signal_number: int | None,
+                    *,
+                    target: TerminalSession = session,
+                    event_loop: asyncio.AbstractEventLoop = loop,
+                ) -> None:
+                    if event_loop.is_closed():
+                        return
+                    try:
+                        event_loop.call_soon_threadsafe(
+                            target.mark_supervised_exit, code, signal_number
+                        )
+                    except RuntimeError:  # pragma: no cover - loop shut down
+                        pass
+
+                self._spawner.register_exit(session_key, _deliver)
             session.start()
         except BaseException as exc:
             self._sessions.pop(session_key, None)
@@ -1100,12 +1191,12 @@ class TerminalManager:
 
         sessions = tuple(self._sessions.values())
         self._sessions.clear()
-        if not sessions:
-            return
-        await asyncio.gather(
-            *(session.close(grace_s=grace_s) for session in sessions),
-            return_exceptions=True,
-        )
+        if sessions:
+            await asyncio.gather(
+                *(session.close(grace_s=grace_s) for session in sessions),
+                return_exceptions=True,
+            )
+        self._close_spawner()
 
     def shutdown_now(self, timeout_s: float = 1.0) -> None:
         """Synchronous last-resort shutdown for ``Container.close()``."""
@@ -1117,6 +1208,16 @@ class TerminalManager:
                 session.reap_blocking(timeout_s=timeout_s)
             except Exception:  # pragma: no cover - never let shutdown raise
                 LOG.exception("terminal shutdown failed key=%s", session.key)
+        self._close_spawner()
+
+    def _close_spawner(self) -> None:
+        spawner = self._spawner
+        self._spawner = None
+        if spawner is not None:
+            try:
+                spawner.shutdown()
+            except Exception:  # pragma: no cover - best effort
+                LOG.exception("PTY host shutdown failed")
 
     # -- internals ----------------------------------------------------------
 

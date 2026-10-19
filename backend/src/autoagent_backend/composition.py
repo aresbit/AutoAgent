@@ -167,6 +167,7 @@ def build_container(
         is_cwd_allowed=_terminal_cwd_guard(config, settings_store),
         max_sessions=config.max_terminals,
         default_cwd=str(config.default_cwd),
+        use_pty_host=config.terminal_pty_host,
     )
     autoagent_config = AutoAgentConfigStore(config.paths.autoagent_config_path)
     claude_settings = ClaudeSettingsReader()

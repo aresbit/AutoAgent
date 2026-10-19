@@ -25,15 +25,15 @@ with a reinstall instruction.
 
 ```
 release/autoagent_0.8.0_amd64.deb
-135,496,164 bytes
-sha256 9997eb352629203e0114015dafc85c9bbcaef1ec09e58a73bf934eb60be1824a
+135,488,032 bytes
+sha256 2dc06f9257f3f2dfa86a18bc88e711fc0417242323e87aa003fee553af543341
 ```
 
 Self-contained layout:
 
 ```
 /opt/autoagent/
-  backend/                 Nuitka standalone backend (no system Python)
+  backend/                 self-contained backend (portable CPython or Nuitka)
   frontend/dist/           React SPA
   desktop/                 Electron + resources/app/{entry,main,preload}
   engine/                  bun + opencc-dist/cli.js (--matebot)
@@ -179,6 +179,27 @@ Verified: 341 backend tests (envelope/gate + support bundle unit and HTTP
 tests), 108 frontend tests, desktop typecheck/build plus 22 Node tests
 (protocol contracts and the startup/quit timelines).
 
+## PTY host and turn outbox (P0 tranche 2)
+
+- **PTY host.** `adapters/terminal/spawner.py` runs one single-threaded host
+  process per backend. The host performs `openpty` + `fork` + `setsid` +
+  `TIOCSCTTY` + `execvpe`, passes the master FD back over a socketpair
+  (`SCM_RIGHTS`), and owns `waitpid` and process-group cleanup. The backend
+  never calls `os.fork()` in a multi-threaded uvicorn process. The host kills
+  every child when the backend closes the socket; each child also has a
+  parent-death signal. `AUTOAGENT_TERMINAL_PTY_HOST=0` (or a failed host
+  start) falls back to the previous in-process fork path.
+- **Turn outbox.** The SPA writes `{turnId, sessionId, text, createdAt}` to
+  localStorage before the request leaves the renderer. On reload it reconciles
+  `GET /api/turns/{turnId}`: a running turn is re-attached, a finished turn
+  only clears the entry, and a 404 replays with the same turn id (the backend
+  persists the user message idempotently). Entries expire after 24 h and are
+  capped at 50.
+
+Verified: 343 backend tests (PTY host + fork fallback, child parentage, exit
+codes, no orphan), 112 frontend tests (outbox persistence/replay rules), 22
+desktop Node tests, ruff, mypy, import-linter and `tsc`.
+
 ## Configuration
 
 See `config-precedence.md`. Summary:
@@ -208,8 +229,8 @@ The Settings panel is the single place for runtime selection:
 
 ## Verification (independent)
 
-- Backend: **341 pytest**, ruff, mypy (91 files), import-linter (2 contracts).
-- Frontend: **108 Vitest**, `tsc --noEmit`, Vite build.
+- Backend: **343 pytest**, ruff, mypy (92 files), import-linter (2 contracts).
+- Frontend: **112 Vitest**, `tsc --noEmit`, Vite build.
 - Desktop: 23 smoke checks (port/token/health/log/shutdown) plus 22 Node tests
   (artifact/preview protocol contracts and the startup/quit timelines).
 - Files: 31 adapter tests + 8 HTTP integration tests (root containment,
@@ -220,8 +241,8 @@ The Settings panel is the single place for runtime selection:
   file 644; `--runtime-check` reports `engineMode=matebot`,
   `matebotVendorExists=true`; CSP and immutable asset caching; fake SSE turn;
   file API (list/read/write/CAS); persistent MCP stdio session with status and
-  invoke; startup timeline, quit summary and a redacted support bundle; clean
-  shutdown/no orphan.
+  invoke; terminal PTY host spawn/list/delete; startup timeline, quit summary
+  and a redacted support bundle; clean shutdown/no orphan.
 - Ubuntu 22.04 compatibility: the packaged ELF floor is **GLIBC_2.34** and the
   control declares `libc6 (>= 2.35)` (22.04 ships 2.35). The backend is the
   portable CPython 3.12 runtime (GLIBC_2.17), not a host-linked Nuitka binary.
