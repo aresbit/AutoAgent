@@ -79,7 +79,11 @@ cleanup() {
     kill -KILL "$GUI_PID" 2>/dev/null
     wait "$GUI_PID" 2>/dev/null
   fi
-  rm -rf "$TMP"
+  if [ "${AUTOAGENT_KEEP_TMP:-0}" = "1" ]; then
+    echo "[smoke] keeping temp dir: $TMP"
+  else
+    rm -rf "$TMP"
+  fi
 }
 trap cleanup EXIT
 
@@ -355,6 +359,27 @@ curl -fsS --max-time 5 -X DELETE \
   "http://127.0.0.1:$PORT/api/mcp/servers/smoke" >/dev/null
 log "MCP runtime: ok"
 
+log "support bundle: redacted zip"
+curl -fsS --max-time 15 \
+  -H "Authorization: Bearer $TOKEN" \
+  "http://127.0.0.1:$PORT/api/support/bundle" -o "$TMP/support.zip"
+python3 - "$TMP/support.zip" "$TOKEN" <<'PY'
+import json, sys, zipfile
+path, token = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(path) as archive:
+    names = set(archive.namelist())
+    assert {"manifest.json", "health.json", "settings.json", "sessions.json"} <= names, names
+    manifest = json.loads(archive.read("manifest.json"))
+    assert manifest["redacted"] is True, manifest
+    text = "\n".join(
+        archive.read(name).decode("utf-8", errors="replace")
+        for name in names
+        if name.endswith((".json", ".log"))
+    )
+assert token not in text, "launch token leaked into the support bundle"
+PY
+log "support bundle: ok"
+
 log "fake turn over SSE"
 SESSION_ID="$(
   curl -fsS -X POST \
@@ -419,7 +444,7 @@ if [ "$GUI" -eq 1 ]; then
       XDG_STATE_HOME="$GUI_STATE" \
       XDG_CONFIG_HOME="$GUI_DATA" \
       DISPLAY="$DISPLAY" \
-      timeout 45 "$APP/desktop/electron" --no-sandbox "$APP/desktop/resources/app" \
+      "$APP/desktop/electron" --no-sandbox "$APP/desktop/resources/app" \
       >"$TMP/gui.log" 2>&1 &
     GUI_PID=$!
 
@@ -438,6 +463,12 @@ if [ "$GUI" -eq 1 ]; then
       die "GUI smoke did not reach app.ready"
     fi
     log "GUI reached app.ready; terminating"
+    for _ in $(seq 1 60); do
+      grep -q ' INFO app.startup' "$GUI_STATE/logs/desktop.log" 2>/dev/null && break
+      sleep 0.1
+    done
+    grep -q ' INFO app.startup' "$GUI_STATE/logs/desktop.log" \
+      || die "startup timeline was not emitted"
     kill -TERM "$GUI_PID" 2>/dev/null || true
     for _ in $(seq 1 100); do
       kill -0 "$GUI_PID" 2>/dev/null || break
@@ -458,6 +489,10 @@ if [ "$GUI" -eq 1 ]; then
     if [ -n "$BACKEND_PID" ] && kill -0 "$BACKEND_PID" 2>/dev/null; then
       die "GUI backend pid $BACKEND_PID survived"
     fi
+    grep -q ' INFO app.quit_summary' "$GUI_STATE/logs/desktop.log" \
+      || die "quit summary was not emitted"
+    [ -f "$GUI_STATE/quit-summary.json" ] \
+      || die "quit-summary.json was not written"
     log "GUI smoke OK"
   fi
 fi

@@ -25,8 +25,8 @@ with a reinstall instruction.
 
 ```
 release/autoagent_0.8.0_amd64.deb
-135,480,488 bytes
-sha256 6df3f550fb918ac010fd57c0a387091a9cfe7b07bc3abad549a950a7ee518638
+135,496,164 bytes
+sha256 9997eb352629203e0114015dafc85c9bbcaef1ec09e58a73bf934eb60be1824a
 ```
 
 Self-contained layout:
@@ -220,7 +220,8 @@ The Settings panel is the single place for runtime selection:
   file 644; `--runtime-check` reports `engineMode=matebot`,
   `matebotVendorExists=true`; CSP and immutable asset caching; fake SSE turn;
   file API (list/read/write/CAS); persistent MCP stdio session with status and
-  invoke; clean shutdown/no orphan.
+  invoke; startup timeline, quit summary and a redacted support bundle; clean
+  shutdown/no orphan.
 - Ubuntu 22.04 compatibility: the packaged ELF floor is **GLIBC_2.34** and the
   control declares `libc6 (>= 2.35)` (22.04 ships 2.35). The backend is the
   portable CPython 3.12 runtime (GLIBC_2.17), not a host-linked Nuitka binary.
