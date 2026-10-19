@@ -307,6 +307,34 @@ def test_killed_child_reconnects(runtime_client: TestClient) -> None:
     assert second["state"] == "connected"
 
 
+def test_child_is_gone_after_shutdown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server = tmp_path / "fake_mcp.py"
+    server.write_text(SERVER_SOURCE, encoding="utf-8")
+    monkeypatch.setenv("AUTOAGENT_MCP_PERSISTENT", "1")
+    monkeypatch.setenv("AUTOAGENT_DEFAULT_CWD", str(tmp_path))
+    config = config_from_env(data_dir=tmp_path / "data", port=8787)
+    app = create_app(config)
+    pid = 0
+    with TestClient(app) as client:
+        client.headers.update(AUTH)
+        client.fake_server = server  # type: ignore[attr-defined]
+        _add(client)
+        client.post("/api/mcp/discover", json={"name": "fake"})
+        pid = int(client.get("/api/mcp/servers/fake/status").json()["pid"])
+        assert pid > 0
+
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.05)
+    pytest.fail("MCP child survived container shutdown")
+
+
 def test_reconnect_and_disable(runtime_client: TestClient) -> None:
     client = runtime_client
     _add(client)

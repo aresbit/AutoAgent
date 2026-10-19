@@ -178,7 +178,7 @@ The Settings panel is the single place for runtime selection:
 
 ## Verification (independent)
 
-- Backend: **332 pytest**, ruff, mypy (89 files), import-linter (2 contracts).
+- Backend: **333 pytest**, ruff, mypy (89 files), import-linter (2 contracts).
 - Frontend: **108 Vitest**, `tsc --noEmit`, Vite build.
 - Desktop: 23 smoke checks (port/token/health/log/shutdown) plus 18 Node tests
   (artifact and preview protocol contracts).
