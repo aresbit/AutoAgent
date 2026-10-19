@@ -10,6 +10,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from ..application.artifact_diff import ArtifactDiff
+from ..application.artifact_tool_service import ArtifactToolResult
 from ..application.bootstrap_service import BootstrapData
 from ..domain.errors import InvalidInput
 from ..domain.models import (
@@ -166,6 +168,18 @@ class ArtifactExportRequest(StrictModel):
 
 class ArtifactImportRequest(StrictModel):
     zipPath: str = Field(min_length=1, max_length=4096)
+
+
+class ArtifactCapabilitiesRequest(StrictModel):
+    mcpTools: list[str] = Field(max_length=256)
+    allowExternal: bool | None = None
+
+
+class ArtifactToolCallRequest(StrictModel):
+    name: str = Field(min_length=1, max_length=200)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    consent: bool
+    requestId: str | None = Field(default=None, max_length=200)
 
 
 # -- responses -------------------------------------------------------------
@@ -475,6 +489,8 @@ class ArtifactView(ApiModel):
     versionCount: int
     sizeBytes: int
     versionRefs: list[ArtifactVersionView]
+    mcpTools: list[str]
+    allowExternal: bool
 
 
 class ArtifactListView(ApiModel):
@@ -496,6 +512,21 @@ class ArtifactVerifyView(ApiModel):
 
 class ArtifactPathView(ApiModel):
     path: str
+
+
+class ArtifactDiffView(ApiModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    from_: str = Field(alias="from")
+    to: str
+    patch: str
+    truncated: bool
+
+
+class ArtifactToolCallView(ApiModel):
+    content: list[Any]
+    structuredContent: Any | None = None
+    isError: bool = False
 
 
 class ArtifactFrameTokenRequest(StrictModel):
@@ -959,6 +990,29 @@ def to_artifact_view(artifact: Artifact) -> ArtifactView:
             to_artifact_version_view(version)
             for version in artifact.version_refs
         ],
+        mcpTools=list(artifact.mcp_tools),
+        allowExternal=artifact.allow_external,
+    )
+
+
+def to_artifact_diff_view(diff: ArtifactDiff) -> ArtifactDiffView:
+    return ArtifactDiffView.model_validate(
+        {
+            "from": diff.from_version,
+            "to": diff.to_version,
+            "patch": diff.patch,
+            "truncated": diff.truncated,
+        }
+    )
+
+
+def to_artifact_tool_call_view(
+    result: ArtifactToolResult,
+) -> ArtifactToolCallView:
+    return ArtifactToolCallView(
+        content=list(result.content),
+        structuredContent=result.structured_content,
+        isError=result.is_error,
     )
 
 

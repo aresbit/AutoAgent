@@ -28,7 +28,11 @@
 | T18 | M5.1 后端：artifact 物化、不可变版本/manifest/sha256、SSE 顺序与版本 API | complete | T17 | exists:backend/src/autoagent_backend/application/artifact_materializer.py |
 | T19 | M5.1 前端：安全 ArtifactFrame（sandbox/CSP）、聊天卡片与面板联动、/api/events 刷新 | complete | T17 | exists:frontend/src/features/artifacts/ArtifactFrame.tsx |
 | T20 | M5.1 独立安全评估：物化/SSE 顺序/沙箱/CSP/版本恢复/面板联动 | complete | T18, T19 | exists:docs/matebot-modernization/evaluation.md |
-| T21 | M5.1 P1：独立 CSP artifact frame（短期 token/专用端点/注入 resize）+ 面板交互 + 版本计数修复 | pending | T18, T19 | exists:backend/src/autoagent_backend/api/routes/artifact_frame.py |
+| T21 | M5.1 P1：独立 CSP artifact frame（短期 token/专用端点/注入 resize）+ 面板交互 + 版本计数修复 | complete | T18, T19 | exists:backend/src/autoagent_backend/api/routes/artifact_frame.py |
+| T22 | M5.2 后端：artifact 能力白名单/tools.call + 审计 + 版本 diff API | complete | T21 | exists:backend/src/autoagent_backend/application/artifact_diff.py |
+| T23 | M5.2 前端：artifact JSON-RPC 桥/consent + 版本 diff/split UI | complete | T21 | exists:frontend/src/features/artifacts/bridge.ts |
+| T24 | M5.2 桌面：autoagent-artifact 自定义协议 + 专用 preload/partition 子窗口 | complete | T21 | exists:desktop/src/artifact-preload.ts |
+| T25 | M5.2 独立安全评估：工具桥 consent/配额/审计、diff、协议子窗口隔离 | in_progress | T22, T23, T24 | exists:docs/matebot-modernization/evaluation.md |
 
 ## Anti-Trap Control Checklist
 - [ ] Vibe coding constrained: no long unreviewed AI coding streaks

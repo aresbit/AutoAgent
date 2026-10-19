@@ -2,21 +2,28 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import PlainTextResponse
 
 from ...application.artifact_service import ArtifactService
-from ..deps import get_artifact_service
+from ...application.artifact_tool_service import ArtifactToolService
+from ..deps import get_artifact_service, get_artifact_tool_service
 from ..schemas import (
+    ArtifactCapabilitiesRequest,
     ArtifactCreateRequest,
+    ArtifactDiffView,
     ArtifactExportRequest,
     ArtifactImportRequest,
     ArtifactListView,
     ArtifactPathView,
+    ArtifactToolCallRequest,
+    ArtifactToolCallView,
     ArtifactVerifyView,
     ArtifactVersionsView,
     ArtifactView,
     to_artifact_create,
+    to_artifact_diff_view,
+    to_artifact_tool_call_view,
     to_artifact_verify_view,
     to_artifact_version_view,
     to_artifact_view,
@@ -56,6 +63,59 @@ def get_artifact(
     service: ArtifactService = Depends(get_artifact_service),
 ) -> ArtifactView:
     return to_artifact_view(service.get(artifact_id))
+
+
+@router.put(
+    "/api/artifacts/{artifact_id}/capabilities",
+    response_model=ArtifactView,
+)
+def update_artifact_capabilities(
+    artifact_id: str,
+    body: ArtifactCapabilitiesRequest,
+    service: ArtifactService = Depends(get_artifact_service),
+) -> ArtifactView:
+    return to_artifact_view(
+        service.set_capabilities(
+            artifact_id,
+            body.mcpTools,
+            allow_external=body.allowExternal,
+        )
+    )
+
+
+@router.post(
+    "/api/artifacts/{artifact_id}/tools/call",
+    response_model=ArtifactToolCallView,
+)
+def call_artifact_tool(
+    artifact_id: str,
+    body: ArtifactToolCallRequest,
+    service: ArtifactToolService = Depends(get_artifact_tool_service),
+) -> ArtifactToolCallView:
+    return to_artifact_tool_call_view(
+        service.call(
+            artifact_id,
+            name=body.name,
+            arguments=body.arguments,
+            consent=body.consent,
+            request_id=body.requestId,
+        )
+    )
+
+
+@router.get(
+    "/api/artifacts/{artifact_id}/diff",
+    response_model=ArtifactDiffView,
+)
+def diff_artifact_versions(
+    artifact_id: str,
+    from_version: str = Query(alias="from"),
+    to_version: str = Query(alias="to"),
+    service: ArtifactService = Depends(get_artifact_service),
+) -> ArtifactDiffView:
+    return to_artifact_diff_view(
+        service.diff(artifact_id, from_version, to_version)
+    )
 
 
 @router.get(

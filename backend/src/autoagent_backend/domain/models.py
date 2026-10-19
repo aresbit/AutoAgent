@@ -390,6 +390,8 @@ class Artifact:
     revision: str = "v1"
     version_refs: tuple[ArtifactVersion, ...] = ()
     size_bytes: int = 0
+    mcp_tools: tuple[str, ...] = ()
+    allow_external: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -401,6 +403,8 @@ class ArtifactCreate:
     turn_id: str | None = None
     message_id: str | None = None
     source: str = "manual"
+    mcp_tools: tuple[str, ...] = ()
+    allow_external: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -412,6 +416,7 @@ class ArtifactDraft:
     description: str
     sha256: str
     size_bytes: int
+    mcp_tools: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

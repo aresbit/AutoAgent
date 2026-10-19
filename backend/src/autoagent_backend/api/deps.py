@@ -14,6 +14,7 @@ from ..domain.errors import Unauthorized
 
 if TYPE_CHECKING:
     from ..application.artifact_service import ArtifactService
+    from ..application.artifact_tool_service import ArtifactToolService
     from ..application.mcp_service import McpService
     from ..application.session_service import SessionService
     from ..application.settings_service import SettingsService
@@ -65,6 +66,10 @@ def get_workspace_service(request: Request) -> WorkspaceService:
 
 def get_artifact_service(request: Request) -> ArtifactService:
     return get_container(request).artifact_service
+
+
+def get_artifact_tool_service(request: Request) -> ArtifactToolService:
+    return get_container(request).artifact_tool_service
 
 
 def extract_token(request: Request) -> str | None:

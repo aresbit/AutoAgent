@@ -1,6 +1,9 @@
 import { ApiError } from "./errors";
 import type {
   ArtifactCreateInput,
+  ArtifactDiffView,
+  ArtifactToolCallInput,
+  ArtifactToolCallResult,
   ArtifactVersionView,
   ArtifactView,
   BootstrapView,
@@ -232,6 +235,8 @@ const artifacts: ArtifactView[] = [
     thumbnailUrl: null,
     revision: "v2",
     versionCount: 2,
+    mcpTools: ["search", "fetch_page"],
+    allowExternal: false,
   },
   {
     id: "artifact-dashboard",
@@ -865,6 +870,56 @@ export const mockApi = {
     artifact.revision = `v${artifact.versions.length}`;
     artifact.versionCount = artifact.versions.length;
     return structuredClone(artifact);
+  },
+
+  async updateArtifactCapabilities(id: string, mcpTools: string[]): Promise<ArtifactView> {
+    await sleep(80);
+    const artifact = findArtifact(id);
+    artifact.mcpTools = [...new Set(mcpTools.map((tool) => tool.trim()).filter(Boolean))];
+    artifact.updatedAt = now();
+    return structuredClone(artifact);
+  },
+
+  async artifactToolCall(
+    id: string,
+    input: ArtifactToolCallInput,
+  ): Promise<ArtifactToolCallResult> {
+    await sleep(180);
+    findArtifact(id);
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Mock result for ${input.name} with ${JSON.stringify(input.arguments)}`,
+        },
+      ],
+      structuredContent: { tool: input.name, arguments: input.arguments, mock: true },
+      isError: false,
+    };
+  },
+
+  async artifactDiff(id: string, from: string, to: string): Promise<ArtifactDiffView> {
+    await sleep(120);
+    findArtifact(id);
+    const body = artifactBodies[id] ?? "";
+    const changed = body.includes("Release notes")
+      ? "<p>Three fixes landed in this build.</p>"
+      : "<p>No rendered content.</p>";
+    return {
+      from,
+      to,
+      patch: [
+        `--- ${from}`,
+        `+++ ${to}`,
+        "@@ -1,3 +1,4 @@",
+        " <title>Artifact</title>",
+        `-${changed}`,
+        "+<p>Updated in this version.</p>",
+        "+<p>New paragraph added by the editor.</p>",
+        " </body>",
+      ].join("\n"),
+      truncated: false,
+    };
   },
 
   async createArtifact(input: ArtifactCreateInput): Promise<ArtifactView> {

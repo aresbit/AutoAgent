@@ -14,6 +14,7 @@ from autoagent_backend.api.routes.artifact_frame import (
     FRAME_CSP,
     FRAME_TOKEN_TTL_S,
     RESIZE_REPORTER,
+    TOOL_BRIDGE_SCRIPT,
 )
 
 from ..fixtures.panels import AUTH, TOKEN, panel_client
@@ -45,7 +46,22 @@ def _frame_url(artifact_id: str, version: str, exp: int, sig: str) -> str:
 
 
 def _injected(document: str) -> str:
-    return document.replace("</body>", RESIZE_REPORTER + "</body>", 1)
+    return document.replace(
+        "</body>", RESIZE_REPORTER + TOOL_BRIDGE_SCRIPT + "</body>", 1
+    )
+
+
+def test_bridge_scripts_are_injected_exactly_once() -> None:
+    from autoagent_backend.api.routes.artifact_frame import _inject_scripts
+
+    document = "<html><body><p>x</p></body></html>"
+    once = _inject_scripts(document)
+    twice = _inject_scripts(once)
+    assert once == twice
+    assert once.count(RESIZE_REPORTER) == 1
+    assert once.count(TOOL_BRIDGE_SCRIPT) == 1
+    assert once.index(RESIZE_REPORTER) < once.index(TOOL_BRIDGE_SCRIPT)
+    assert once.endswith("</body></html>")
 
 
 def test_frame_token_issues_scoped_url_and_serves_artifact(tmp_path: Path) -> None:
@@ -86,6 +102,10 @@ def test_frame_token_issues_scoped_url_and_serves_artifact(tmp_path: Path) -> No
         stored = container.artifact_service.version_content(artifact_id, "v1")
         assert response.text == _injected(stored)
         assert response.text.count(RESIZE_REPORTER) == 1
+        assert response.text.count(TOOL_BRIDGE_SCRIPT) == 1
+        assert "window.autoagent" in response.text
+        assert "tools/call" in response.text
+        assert "30000" in response.text
         assert TOKEN not in response.text
 
 

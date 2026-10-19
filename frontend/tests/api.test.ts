@@ -207,6 +207,47 @@ describe("artifacts API", () => {
     expect(restoreCalls[0].url).toBe("/api/artifacts/a1/versions/v1/restore");
     expect(restoreCalls[0].init?.method).toBe("POST");
   });
+
+  it("updates tool capabilities, calls a tool and reads a version diff", async () => {
+    const capabilityCalls = respond({ id: "a1", mcpTools: ["search"] });
+    await expect(
+      api.updateArtifactCapabilities("a1", ["search"]),
+    ).resolves.toMatchObject({ mcpTools: ["search"] });
+    expect(capabilityCalls[0].url).toBe("/api/artifacts/a1/capabilities");
+    expect(capabilityCalls[0].init?.method).toBe("PUT");
+    expect(bodyOf(capabilityCalls[0])).toEqual({ mcpTools: ["search"] });
+
+    const callCalls = respond({
+      content: [{ type: "text", text: "ok" }],
+      structuredContent: { ok: true },
+      isError: false,
+    });
+    await expect(
+      api.artifactToolCall("a1", {
+        name: "search",
+        arguments: { query: "hello" },
+        consent: true,
+        requestId: "r1",
+      }),
+    ).resolves.toMatchObject({ isError: false });
+    expect(callCalls[0].url).toBe("/api/artifacts/a1/tools/call");
+    expect(callCalls[0].init?.method).toBe("POST");
+    expect(bodyOf(callCalls[0])).toEqual({
+      name: "search",
+      arguments: { query: "hello" },
+      consent: true,
+      requestId: "r1",
+    });
+
+    const diffCalls = respond({ from: "v1", to: "v2", patch: "@@", truncated: true });
+    await expect(api.artifactDiff("a1", "v1", "v2")).resolves.toEqual({
+      from: "v1",
+      to: "v2",
+      patch: "@@",
+      truncated: true,
+    });
+    expect(diffCalls[0].url).toBe("/api/artifacts/a1/diff?from=v1&to=v2");
+  });
 });
 
 describe("engine config API", () => {

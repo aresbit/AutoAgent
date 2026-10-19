@@ -74,8 +74,8 @@ const theme = Object.freeze({
 })
 
 const artifact = Object.freeze({
-  open: (url: string, title?: string): Promise<boolean> =>
-    ipcRenderer.invoke('native:artifact:open', { url, title }),
+  open: (artifactId: string, version?: string, title?: string): Promise<boolean> =>
+    ipcRenderer.invoke('native:artifact:open', { artifactId, version, title }),
   close: (): Promise<boolean> => ipcRenderer.invoke('native:artifact:close'),
 })
 

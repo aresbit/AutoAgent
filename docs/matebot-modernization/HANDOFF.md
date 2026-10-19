@@ -14,9 +14,12 @@ Last updated: 2026-10-17
 | Build entry | `Makefile` (`make help`) |
 | Artifact | `release/autoagent_0.8.0_amd64.deb` |
 
-The actor mailbox files preserve each member's message history. The live LLM
-contexts/processes are not durable: after an OpenCC restart, re-spawn the same
-team names and point them at this file + the ledgers. No code state is lost.
+The actor mailbox files preserve each member's message history. The team config
+itself is session-scoped: after an OpenCC restart, run `TeamDelete`, then
+`TeamCreate` with the same name, and respawn the same member names
+(`connectors`, `gallery-2`, `shell`, `packager`, `verifier`). Point them at this
+file + the ledgers. The live LLM contexts/processes are not durable, but no
+code/ledger state is lost.
 
 ## Current milestone
 

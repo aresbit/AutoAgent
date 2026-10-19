@@ -1,5 +1,6 @@
 import { AlertTriangle, Code2, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { FrameRef } from "./bridge";
 import { Button } from "@/cds";
 import { cx } from "@/lib/cx";
 
@@ -93,6 +94,8 @@ export interface ArtifactFrameProps {
   frameUrl?: string;
   /** Switch the surrounding viewer to its source tab. */
   onShowSource?: () => void;
+  /** Expose the live iframe so the host bridge can validate message sources. */
+  frameRef?: FrameRef;
 }
 
 export function ArtifactFrame({
@@ -103,8 +106,10 @@ export function ArtifactFrame({
   maxHeight = 480,
   frameUrl,
   onShowSource,
+  frameRef: externalFrameRef,
 }: ArtifactFrameProps) {
-  const frameRef = useRef<HTMLIFrameElement | null>(null);
+  const internalFrameRef = useRef<HTMLIFrameElement | null>(null);
+  const frameRef = externalFrameRef ?? internalFrameRef;
   const [height, setHeight] = useState(minHeight);
   const [loaded, setLoaded] = useState(false);
   const [errored, setErrored] = useState(false);

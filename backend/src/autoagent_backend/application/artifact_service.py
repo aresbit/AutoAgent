@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import logging
+from collections.abc import Iterable, Sequence
 
 from ..domain.models import (
     Artifact,
@@ -11,7 +12,11 @@ from ..domain.models import (
     ArtifactVersion,
 )
 from ..domain.ports import ArtifactStorePort, ClockPort
+from .artifact_capabilities import normalize_tool_names
+from .artifact_diff import ArtifactDiff, build_artifact_diff
 from .event_bus import EventBus
+
+AUDIT = logging.getLogger("autoagent.artifacts.audit")
 
 
 class ArtifactService:
@@ -42,6 +47,37 @@ class ArtifactService:
 
     def mark_opened(self, artifact_id: str) -> Artifact:
         return self._store.mark_opened(artifact_id)
+
+    def set_capabilities(
+        self,
+        artifact_id: str,
+        mcp_tools: Iterable[str],
+        *,
+        allow_external: bool | None = None,
+    ) -> Artifact:
+        tools = normalize_tool_names(mcp_tools)
+        artifact = self._store.set_capabilities(
+            artifact_id, tools, allow_external=allow_external
+        )
+        AUDIT.info(
+            "capabilities artifact=%s outcome=ok tools=%d allow_external=%s",
+            artifact.id,
+            len(tools),
+            artifact.allow_external,
+        )
+        self._publish(artifact, "capabilities")
+        return artifact
+
+    def diff(
+        self, artifact_id: str, from_version: str, to_version: str
+    ) -> ArtifactDiff:
+        from_text = self._store.version_content(artifact_id, from_version)
+        if from_version == to_version:
+            return ArtifactDiff(from_version, to_version, "")
+        to_text = self._store.version_content(artifact_id, to_version)
+        return build_artifact_diff(
+            from_version, from_text, to_version, to_text
+        )
 
     def export(self, artifact_id: str, target_path: str) -> str:
         return self._store.export(artifact_id, target_path)

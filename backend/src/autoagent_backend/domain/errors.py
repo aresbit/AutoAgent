@@ -124,3 +124,21 @@ class ArtifactNotFound(NotFound):
 class ArtifactUnavailable(DomainError):
     code = "ARTIFACT_UNAVAILABLE"
     status_code = 503
+
+
+class ToolNotAllowed(Forbidden):
+    code = "TOOL_NOT_ALLOWED"
+
+
+class ConsentRequired(Forbidden):
+    code = "CONSENT_REQUIRED"
+
+
+class ArtifactToolRateLimited(DomainError):
+    code = "RATE_LIMITED"
+    status_code = 429
+
+
+class PayloadTooLarge(DomainError):
+    code = "PAYLOAD_TOO_LARGE"
+    status_code = 413

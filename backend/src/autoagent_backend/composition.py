@@ -35,6 +35,7 @@ from .adapters.persistence.sqlite import SqliteDatabase
 from .adapters.skills.fs_catalog import FilesystemSkillCatalog
 from .adapters.workspace.git_cli import GitCliWorkspace
 from .application.artifact_service import ArtifactService
+from .application.artifact_tool_service import ArtifactToolService
 from .application.bootstrap_service import BootstrapService
 from .application.clock import SystemClock
 from .application.engine_config_service import EngineConfigService
@@ -101,6 +102,7 @@ class Container:
     mcp_service: McpService
     workspace_service: WorkspaceService
     artifact_service: ArtifactService
+    artifact_tool_service: ArtifactToolService
     bootstrap_service: BootstrapService
     closers: list[Callable[[], None]] = field(default_factory=list)
 
@@ -225,6 +227,9 @@ def build_container(
     artifact_service = ArtifactService(
         artifact_store, events=event_bus, clock=clock
     )
+    artifact_tool_service = ArtifactToolService(
+        artifact_store, mcp_service, clock=clock
+    )
     turn_service = TurnService(
         sessions=sessions,
         turns=sessions,
@@ -272,6 +277,7 @@ def build_container(
         mcp_service=mcp_service,
         workspace_service=workspace_service,
         artifact_service=artifact_service,
+        artifact_tool_service=artifact_tool_service,
         bootstrap_service=bootstrap_service,
     )
 

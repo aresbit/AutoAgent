@@ -344,6 +344,19 @@ class ArtifactStorePort(Protocol):
 
     def mark_opened(self, artifact_id: str) -> Artifact: ...
 
+    def set_capabilities(
+        self,
+        artifact_id: str,
+        mcp_tools: tuple[str, ...],
+        allow_external: bool | None = None,
+    ) -> Artifact:
+        """Replace the artifact's MCP tool allowlist atomically.
+
+        Pre: ``mcp_tools`` entries are already validated and deduplicated;
+             ``allow_external=None`` leaves the current value unchanged.
+        Post: the returned artifact reflects the persisted manifest.
+        """
+
     def export(self, artifact_id: str, target_path: str) -> str: ...
 
     def import_archive(self, zip_path: str) -> Artifact: ...

@@ -5,11 +5,14 @@ import {
   Download,
   Eye,
   FileUp,
+  GitCompare,
   RefreshCw,
   Upload,
 } from "lucide-react";
 import {
+  useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type FormEvent,
@@ -26,6 +29,7 @@ import {
   Field,
   Input,
   SectionLabel,
+  Select,
   Skeleton,
   isComposingEvent,
 } from "@/cds";
@@ -35,8 +39,18 @@ import { errorMessage } from "@/lib/errorMessage";
 import { relativeTime, truncate } from "@/lib/format";
 import { chooseOpenPath, chooseSavePath, nativeBridge } from "@/lib/native";
 import { ArtifactFrame } from "./ArtifactFrame";
+import { DiffViewer } from "./DiffViewer";
+import { ArtifactSplitPane } from "./SplitPane";
+import { ToolConsentDialog } from "./ToolConsentDialog";
+import { useArtifactBridge } from "./useArtifactBridge";
 import { ArtifactVersionList } from "./VersionList";
-import { displayTitle, sortArtifacts, artifactVersionCount, type ChatArtifact } from "./logic";
+import {
+  artifactVersionCount,
+  displayTitle,
+  sortArtifacts,
+  versionLabel,
+  type ChatArtifact,
+} from "./logic";
 
 type PathAction = { kind: "export"; artifact: ArtifactView } | { kind: "import" };
 
@@ -68,11 +82,34 @@ export function ArtifactsPanel({
   const [pathError, setPathError] = useState<string | null>(null);
   const composing = useRef(false);
 
+  const previewFrameRef = useRef<HTMLIFrameElement | null>(null);
+  const splitLeftFrameRef = useRef<HTMLIFrameElement | null>(null);
+  const splitRightFrameRef = useRef<HTMLIFrameElement | null>(null);
+  const bridgeFrames = useMemo(
+    () => [previewFrameRef, splitLeftFrameRef, splitRightFrameRef],
+    [],
+  );
+
+  const [compareOpen, setCompareOpen] = useState(false);
+  const [compareFrom, setCompareFrom] = useState("");
+  const [compareTo, setCompareTo] = useState("");
+  const [compareMode, setCompareMode] = useState<"unified" | "split">("unified");
+
+  const bridgeState = useArtifactBridge({
+    frames: bridgeFrames,
+    artifactId: preview?.id ?? null,
+    mcpTools: preview?.mcpTools ?? [],
+    allowExternal: preview?.allowExternal === true,
+    enabled: Boolean(preview) && draft === null,
+    turnKey: `${preview?.turnId ?? ""}:${preview?.revision ?? ""}`,
+  });
+
   useEffect(() => {
     if (!request) return;
     setPreview(null);
     setDraft(request);
     setMode("preview");
+    setCompareOpen(false);
     onRequestHandled?.();
   }, [request, onRequestHandled]);
 
@@ -176,6 +213,7 @@ export function ArtifactsPanel({
     setDraft(null);
     setPreview(artifact);
     setMode("preview");
+    setCompareOpen(false);
     touch.mutate(artifact.id);
   };
 
@@ -183,6 +221,7 @@ export function ArtifactsPanel({
     setPreview(null);
     setDraft(null);
     setMode("preview");
+    setCompareOpen(false);
   };
 
   const startExport = async (artifact: ArtifactView) => {
@@ -255,6 +294,34 @@ export function ArtifactsPanel({
             : item.current,
         }))
       : fallbackArtifactVersions(preview.versions);
+
+  const openCompare = useCallback(() => {
+    if (versions.length < 2) return;
+    const to =
+      versions.find((item) => item.current)?.versionId ?? versions[0].versionId;
+    const from =
+      versions.find((item) => item.versionId !== to)?.versionId ?? to;
+    setCompareFrom(from);
+    setCompareTo(to);
+    setCompareMode("unified");
+    setCompareOpen(true);
+  }, [versions]);
+
+  const compareValid =
+    Boolean(preview) &&
+    compareFrom.length > 0 &&
+    compareTo.length > 0 &&
+    compareFrom !== compareTo;
+
+  const diffQuery = useQuery({
+    queryKey: ["artifact-diff", preview?.id, compareFrom, compareTo],
+    queryFn: () => api.artifactDiff(preview?.id ?? "", compareFrom, compareTo),
+    enabled:
+      compareOpen &&
+      compareMode === "unified" &&
+      compareValid,
+    retry: false,
+  });
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -470,6 +537,7 @@ export function ArtifactsPanel({
               minHeight={320}
               maxHeight={460}
               frameUrl={draft ? undefined : frameTokenQuery.data?.url}
+              frameRef={previewFrameRef}
               onShowSource={() => setMode("source")}
             />
           ) : (
@@ -481,13 +549,24 @@ export function ArtifactsPanel({
           {preview ? (
             <div className="flex flex-col gap-1.5">
               <div className="flex items-center justify-between gap-2">
-                <SectionLabel>Versions</SectionLabel>
-                {versionsQuery.isFetching ? (
-                  <span className="flex items-center gap-1 text-[10.5px] text-ink-3">
-                    <RefreshCw size={10} strokeWidth={2} className="animate-spin" />
-                    Refreshing
-                  </span>
-                ) : null}
+                <div className="flex items-center gap-2">
+                  <SectionLabel>Versions</SectionLabel>
+                  {versionsQuery.isFetching ? (
+                    <span className="flex items-center gap-1 text-[10.5px] text-ink-3">
+                      <RefreshCw size={10} strokeWidth={2} className="animate-spin" />
+                      Refreshing
+                    </span>
+                  ) : null}
+                </div>
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  disabled={versions.length < 2}
+                  onClick={openCompare}
+                >
+                  <GitCompare size={11} strokeWidth={2} />
+                  Compare
+                </Button>
               </div>
               <ArtifactVersionList
                 versions={versions}
@@ -511,6 +590,141 @@ export function ArtifactsPanel({
           ) : null}
         </div>
       </Dialog>
+
+      <Dialog
+        open={compareOpen}
+        onOpenChange={setCompareOpen}
+        title="Compare versions"
+        description={
+          preview
+            ? `${displayTitle(preview)} · ${versions.length} snapshots`
+            : undefined
+        }
+        width={920}
+        footer={
+          <Button variant="ghost" size="sm" onClick={() => setCompareOpen(false)}>
+            Close
+          </Button>
+        }
+      >
+        <div className="flex flex-col gap-2.5">
+          <div className="inline-flex self-start rounded-full bg-[var(--segmented-track)] p-0.5">
+            <button
+              type="button"
+              aria-pressed={compareMode === "unified"}
+              onClick={() => setCompareMode("unified")}
+              className={cx(
+                "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11.5px] font-medium transition-colors duration-150 ease-out-expo focus-visible:outline-none focus-visible:shadow-focus",
+                compareMode === "unified"
+                  ? "bg-[var(--segmented-thumb)] text-ink shadow-thumb"
+                  : "text-ink-3 hover:text-ink-2",
+              )}
+            >
+              <GitCompare size={12} strokeWidth={2} />
+              Unified diff
+            </button>
+            <button
+              type="button"
+              aria-pressed={compareMode === "split"}
+              onClick={() => setCompareMode("split")}
+              className={cx(
+                "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11.5px] font-medium transition-colors duration-150 ease-out-expo focus-visible:outline-none focus-visible:shadow-focus",
+                compareMode === "split"
+                  ? "bg-[var(--segmented-thumb)] text-ink shadow-thumb"
+                  : "text-ink-3 hover:text-ink-2",
+              )}
+            >
+              Side by side
+            </button>
+          </div>
+
+          {compareMode === "unified" ? (
+            <>
+              <div className="flex items-end gap-2">
+                <label className="flex min-w-0 flex-1 flex-col gap-1">
+                  <span className="text-[10.5px] font-medium uppercase tracking-[0.05em] text-ink-3">
+                    From
+                  </span>
+                  <Select
+                    aria-label="Diff from version"
+                    value={compareFrom}
+                    className="h-8 text-[11.5px]"
+                    onChange={(event) => setCompareFrom(event.target.value)}
+                  >
+                    {versions.map((version) => (
+                      <option key={version.versionId} value={version.versionId}>
+                        {version.versionId} · {versionLabel(version.createdAt)}
+                      </option>
+                    ))}
+                  </Select>
+                </label>
+                <label className="flex min-w-0 flex-1 flex-col gap-1">
+                  <span className="text-[10.5px] font-medium uppercase tracking-[0.05em] text-ink-3">
+                    To
+                  </span>
+                  <Select
+                    aria-label="Diff to version"
+                    value={compareTo}
+                    className="h-8 text-[11.5px]"
+                    onChange={(event) => setCompareTo(event.target.value)}
+                  >
+                    {versions.map((version) => (
+                      <option key={version.versionId} value={version.versionId}>
+                        {version.versionId} · {versionLabel(version.createdAt)}
+                      </option>
+                    ))}
+                  </Select>
+                </label>
+              </div>
+
+              {!compareValid ? (
+                <p className="text-[11.5px] text-ink-3">
+                  Select two different versions to see a diff.
+                </p>
+              ) : diffQuery.isLoading ? (
+                <Skeleton className="h-64" />
+              ) : diffQuery.isError ? (
+                <ErrorState
+                  title="Diff unavailable"
+                  message={errorMessage(
+                    diffQuery.error,
+                    "The versions could not be compared.",
+                  )}
+                  retry={() => void diffQuery.refetch()}
+                  retrying={diffQuery.isFetching}
+                />
+              ) : diffQuery.data ? (
+                <DiffViewer
+                  patch={diffQuery.data.patch}
+                  truncated={diffQuery.data.truncated}
+                  from={diffQuery.data.from}
+                  to={diffQuery.data.to}
+                />
+              ) : null}
+            </>
+          ) : preview ? (
+            <ArtifactSplitPane
+              artifactId={preview.id}
+              versions={versions}
+              leftVersion={compareFrom}
+              rightVersion={compareTo}
+              onLeftVersionChange={setCompareFrom}
+              onRightVersionChange={setCompareTo}
+              fallbackHtml={previewHtml}
+              leftFrameRef={splitLeftFrameRef}
+              rightFrameRef={splitRightFrameRef}
+            />
+          ) : null}
+        </div>
+      </Dialog>
+
+      <ToolConsentDialog
+        request={bridgeState.pendingConsent}
+        allowExternal={preview?.allowExternal === true}
+        busy={bridgeState.consentBusy}
+        error={bridgeState.consentError}
+        onDecision={bridgeState.decideConsent}
+      />
 
       <Dialog
         open={pathAction !== null}

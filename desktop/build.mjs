@@ -6,6 +6,8 @@
  *   entry.js            - AUTOAGENT_LEGACY switch (transpiled, imports kept intact)
  *   main.js             - modern lifecycle (bundled ESM)
  *   preload.cjs         - native-only preload (bundled CommonJS)
+ *   artifact-preload.cjs - minimal preload for the artifact child window
+ *   artifact-protocol.js - Electron-free protocol parser/handler for tests
  *   backend-manager.js  - standalone build so Node smoke tests can import it
  *   logging.js, paths.js - standalone helpers used by the smoke test
  *
@@ -55,6 +57,27 @@ function buildPreload() {
   ])
 }
 
+function buildArtifactPreload() {
+  run([
+    'build',
+    join(src, 'artifact-preload.ts'),
+    '--outfile', join(dist, 'artifact-preload.cjs'),
+    '--target', 'node',
+    '--format', 'cjs',
+    '--external', 'electron',
+  ])
+}
+
+function buildArtifactProtocolForTests() {
+  run([
+    'build',
+    join(src, 'native', 'artifact-protocol.ts'),
+    '--outfile', join(dist, 'artifact-protocol.js'),
+    '--target', 'node',
+    '--format', 'esm',
+  ])
+}
+
 function buildEntry() {
   run([
     'build',
@@ -91,7 +114,16 @@ function buildBackendManagerForTests() {
 }
 
 function verify() {
-  for (const name of ['entry.js', 'main.js', 'preload.cjs', 'backend-manager.js', 'logging.js', 'paths.js']) {
+  for (const name of [
+    'entry.js',
+    'main.js',
+    'preload.cjs',
+    'artifact-preload.cjs',
+    'artifact-protocol.js',
+    'backend-manager.js',
+    'logging.js',
+    'paths.js',
+  ]) {
     const file = join(dist, name)
     if (!existsSync(file)) {
       process.stderr.write(`build: expected ${file} to exist\n`)
@@ -103,6 +135,8 @@ function verify() {
 rmSync(dist, { recursive: true, force: true })
 buildMain()
 buildPreload()
+buildArtifactPreload()
+buildArtifactProtocolForTests()
 buildEntry()
 buildBackendManagerForTests()
 verify()

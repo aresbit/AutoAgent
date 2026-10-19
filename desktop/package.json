@@ -8,7 +8,7 @@
     "build": "node build.mjs",
     "build:main": "node build.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "node test/smoke.mjs",
+    "test": "node test/smoke.mjs && node --test test/artifact-protocol.test.mjs",
     "dev": "node build.mjs && node ../node_modules/electron/cli.js dist/entry.js",
     "dev:legacy": "node build.mjs && AUTOAGENT_LEGACY=1 node ../node_modules/electron/cli.js dist/entry.js"
   }

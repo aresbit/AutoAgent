@@ -276,6 +276,35 @@ export interface ArtifactView {
   versionCount?: number;
   sizeBytes?: number;
   versionRefs?: ArtifactVersionView[];
+  /** MCP tools the artifact is allowed to call through the host bridge. */
+  mcpTools?: string[];
+  /** Whether the artifact was granted access to tools with external effects. */
+  allowExternal?: boolean;
+}
+
+export interface ArtifactCapabilitiesPatch {
+  mcpTools: string[];
+}
+
+export interface ArtifactToolCallInput {
+  name: string;
+  arguments: Record<string, unknown>;
+  /** Explicit per-call user consent. The host only sends `true`. */
+  consent: true;
+  requestId?: string;
+}
+
+export interface ArtifactToolCallResult {
+  content: McpContentBlock[];
+  structuredContent?: unknown;
+  isError?: boolean;
+}
+
+export interface ArtifactDiffView {
+  from: string;
+  to: string;
+  patch: string;
+  truncated: boolean;
 }
 
 /** A short-lived URL for the backend-served artifact frame document. */

@@ -1,16 +1,25 @@
-import { app, BrowserWindow, dialog } from 'electron'
+import { app, BrowserWindow, dialog, protocol } from 'electron'
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { BackendManager, acquireSingleInstanceLock, generateToken } from './backend-manager.js'
 import { createLogger, type Logger } from './logging.js'
-import { registerArtifactWindow, type ArtifactRegistry } from './native/artifact.js'
+import {
+  registerArtifactWindow,
+  resolveArtifactPreloadPath,
+  type ArtifactRegistry,
+} from './native/artifact.js'
+import {
+  ARTIFACT_SCHEME,
+  createArtifactProtocolHandler,
+  registerArtifactScheme,
+} from './native/artifact-protocol.js'
 import { registerClipboard } from './native/clipboard.js'
 import { registerDialogs } from './native/dialogs.js'
 import { registerNotifications } from './native/notifications.js'
 import { registerShell } from './native/shell.js'
 import { registerTheme } from './native/theme.js'
 import { repoRoot, resolveAppPaths } from './paths.js'
-import { createMainWindow, registerWindowIpc, resolvePreloadPath } from './window.js'
+import { createMainWindow, registerWindowIpc } from './window.js'
 
 const STARTUP_ERROR_DIALOG_TIMEOUT_MS = 60_000
 const isWindows = process.platform === 'win32'
@@ -25,6 +34,12 @@ if (!isWindows) {
 }
 // Stable userData before ready; never the install directory.
 app.setPath('userData', paths.dataDir)
+
+// Privileged custom scheme for artifact child windows.  This must run before
+// the app is ready; `protocol.handle` is installed once the backend is up.
+registerArtifactScheme(protocol)
+
+let artifactProtocolRegistered = false
 
 const logger: Logger = createLogger(paths.desktopLogFile, {
   console: process.env.AUTOAGENT_LOG_CONSOLE === '1',
@@ -94,6 +109,14 @@ async function boot(): Promise<void> {
 
   const handle = await manager.start()
 
+  const artifactProtocolHandler = createArtifactProtocolHandler({
+    getBackend: () => (manager ? { port: manager.port, token: manager.token } : null),
+    onError: (event, detail) => logger.warn(event, { detail }),
+  })
+  // Default session (and per-artifact partitions registered by the window).
+  protocol.handle(ARTIFACT_SCHEME, artifactProtocolHandler)
+  artifactProtocolRegistered = true
+
   registerWindowIpc(() => mainWindow)
   registerDialogs(() => mainWindow)
   registerClipboard()
@@ -101,9 +124,10 @@ async function boot(): Promise<void> {
   registerNotifications()
   registerTheme()
   artifactRegistry = registerArtifactWindow({
-    preloadPath: resolvePreloadPath(),
+    preloadPath: resolveArtifactPreloadPath(),
     getParent: () => mainWindow,
-    allowedPort: () => manager?.port ?? null,
+    getBackend: () => (manager ? { port: manager.port, token: manager.token } : null),
+    protocolHandler: artifactProtocolHandler,
   })
 
   mainWindow = createMainWindow({
@@ -131,6 +155,14 @@ async function shutdown(code: number, reason = 'requested'): Promise<void> {
     try {
       artifactRegistry?.close()
       artifactRegistry = null
+    } catch {
+      // best effort
+    }
+    try {
+      if (artifactProtocolRegistered) {
+        protocol.unhandle(ARTIFACT_SCHEME)
+        artifactProtocolRegistered = false
+      }
     } catch {
       // best effort
     }

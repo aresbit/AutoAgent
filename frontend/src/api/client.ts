@@ -5,7 +5,10 @@ import { SSEParser } from "./sse";
 import type {
   ApiErrorShape,
   ArtifactCreateInput,
+  ArtifactDiffView,
   ArtifactExportResponse,
+  ArtifactToolCallInput,
+  ArtifactToolCallResult,
   ArtifactVersionView,
   ArtifactView,
   BootstrapView,
@@ -534,6 +537,38 @@ export const api = {
       : request<ArtifactView>(
           `/api/artifacts/${encodeURIComponent(id)}/versions/${encodeURIComponent(versionId)}/restore`,
           { method: "POST", body: "{}" },
+        );
+  },
+
+  updateArtifactCapabilities(
+    id: string,
+    mcpTools: string[],
+  ): Promise<ArtifactView> {
+    return useMock
+      ? mockApi.updateArtifactCapabilities(id, mcpTools)
+      : request<ArtifactView>(
+          `/api/artifacts/${encodeURIComponent(id)}/capabilities`,
+          { method: "PUT", body: JSON.stringify({ mcpTools }) },
+        );
+  },
+
+  artifactToolCall(
+    id: string,
+    input: ArtifactToolCallInput,
+  ): Promise<ArtifactToolCallResult> {
+    return useMock
+      ? mockApi.artifactToolCall(id, input)
+      : request<ArtifactToolCallResult>(
+          `/api/artifacts/${encodeURIComponent(id)}/tools/call`,
+          { method: "POST", body: JSON.stringify(input) },
+        );
+  },
+
+  artifactDiff(id: string, from: string, to: string): Promise<ArtifactDiffView> {
+    return useMock
+      ? mockApi.artifactDiff(id, from, to)
+      : request<ArtifactDiffView>(
+          `/api/artifacts/${encodeURIComponent(id)}/diff${query({ from, to })}`,
         );
   },
 

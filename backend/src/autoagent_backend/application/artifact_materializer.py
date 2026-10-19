@@ -30,6 +30,7 @@ import re
 from dataclasses import dataclass
 
 from ..domain.models import ArtifactDraft
+from .artifact_capabilities import filter_tool_names
 
 MAX_ARTIFACT_BYTES = 1024 * 1024
 MAX_ARTIFACTS_PER_TURN = 10
@@ -132,8 +133,22 @@ def materialize_artifacts(
             warnings.append("ignored an artifact that references external resources")
             continue
 
-        title = (meta.get("title") or "Artifact").strip()[:200] or "Artifact"
-        description = (meta.get("description") or "").strip()[:2000]
+        raw_title = meta.get("title")
+        raw_description = meta.get("description")
+        title = (raw_title if isinstance(raw_title, str) else "Artifact").strip()[:200]
+        title = title or "Artifact"
+        description = (
+            raw_description if isinstance(raw_description, str) else ""
+        ).strip()[:2000]
+        raw_tools = meta.get("mcpTools")
+        tools, rejected = filter_tool_names(
+            raw_tools if isinstance(raw_tools, (list, tuple)) else ()
+        )
+        if rejected:
+            warnings.append(
+                "ignored invalid mcpTools entr"
+                f"{'y' if len(rejected) == 1 else 'ies'}: {', '.join(rejected)}"
+            )
         document = build_artifact_document(title, fragment, description)
         size = len(document.encode("utf-8"))
         if size > max_bytes:
@@ -148,6 +163,7 @@ def materialize_artifacts(
                 description=description,
                 sha256=sha256_text(document),
                 size_bytes=size,
+                mcp_tools=tools,
             )
         )
     return MaterializationResult(tuple(artifacts), tuple(warnings))
@@ -223,23 +239,43 @@ def _inject_tags(html: str, meta: dict[str, object]) -> str:
     return tags + html
 
 
-def _split_frontmatter(body: str) -> tuple[dict[str, str], str]:
+def _split_frontmatter(body: str) -> tuple[dict[str, object], str]:
     lines = body.splitlines()
     if not lines or lines[0].strip() != "---":
         return {}, body
     for index in range(1, len(lines)):
         if lines[index].strip() != "---":
             continue
-        values: dict[str, str] = {}
-        for line in lines[1:index]:
+        values: dict[str, object] = {}
+        position = 1
+        while position < index:
+            line = lines[position]
+            position += 1
             if ":" not in line:
                 continue
             key, _, value = line.partition(":")
             key = key.strip().lower()
+            value = value.strip()
             if key in {"title", "description"}:
-                values[key] = _unquote(value.strip())
+                values[key] = _unquote(value)
+            elif key in {"mcptools", "mcp_tools"}:
+                if value:
+                    tools = _parse_inline_tools(value)
+                else:
+                    tools = []
+                    while position < index and lines[position].strip().startswith("-"):
+                        tools.append(_unquote(lines[position].strip()[1:].strip()))
+                        position += 1
+                values["mcpTools"] = tuple(item for item in tools if item)
         return values, "\n".join(lines[index + 1 :])
     return {}, body
+
+
+def _parse_inline_tools(value: str) -> list[str]:
+    text = value.strip()
+    if text.startswith("[") and text.endswith("]"):
+        text = text[1:-1]
+    return [_unquote(item.strip()) for item in text.split(",") if item.strip()]
 
 
 def _unquote(value: str) -> str:

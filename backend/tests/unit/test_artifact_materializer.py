@@ -95,3 +95,28 @@ def test_ignores_other_fences_and_unclosed_blocks() -> None:
 
 def test_default_limits_are_exposed() -> None:
     assert MAX_ARTIFACTS_PER_TURN >= 1
+
+
+def test_frontmatter_mcp_tools_inline_and_block() -> None:
+    inline = materialize_artifacts(
+        _fence('---\ntitle: T\nmcpTools: [echo, "search"]\n---\n<p>x</p>')
+    )
+    assert inline.artifacts[0].mcp_tools == ("echo", "search")
+
+    block = materialize_artifacts(
+        _fence("---\ntitle: T\nmcpTools:\n  - echo\n  - search\n---\n<p>x</p>")
+    )
+    assert block.artifacts[0].mcp_tools == ("echo", "search")
+
+    omitted = materialize_artifacts(_fence("<p>x</p>"))
+    assert omitted.artifacts[0].mcp_tools == ()
+
+
+def test_frontmatter_mcp_tools_rejects_invalid_and_duplicates() -> None:
+    result = materialize_artifacts(
+        _fence(
+            "---\ntitle: T\nmcpTools: [echo, echo, 'bad name']\n---\n<p>x</p>"
+        )
+    )
+    assert result.artifacts[0].mcp_tools == ("echo",)
+    assert "invalid mcpTools" in result.warnings[0]

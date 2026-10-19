@@ -276,6 +276,30 @@ def test_concurrent_create_keeps_all_records(tmp_path: Path) -> None:
     assert ids == {f"doc-{index}" for index in range(20)}
 
 
+def test_capabilities_persist_in_manifest(tmp_path: Path) -> None:
+    root = tmp_path / "artifacts"
+    store = FilesystemArtifactStore(root, FixedClock())
+    created = store.create(ArtifactCreate(html="<p>x</p>", title="Doc"))
+    assert created.mcp_tools == ()
+    assert created.allow_external is False
+
+    updated = store.set_capabilities(
+        "doc", ("echo", "search"), allow_external=True
+    )
+    assert updated.mcp_tools == ("echo", "search")
+    assert updated.allow_external is True
+
+    # A fresh store reads the persisted manifest, not in-memory state.
+    reloaded = FilesystemArtifactStore(root, FixedClock()).get("doc")
+    assert reloaded.mcp_tools == ("echo", "search")
+    assert reloaded.allow_external is True
+
+    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    record = manifest["artifacts"][0]
+    assert record["mcpTools"] == ["echo", "search"]
+    assert record["allowExternal"] is True
+
+
 def test_version_ids_are_validated(tmp_path: Path) -> None:
     store = FilesystemArtifactStore(tmp_path / "artifacts", FixedClock())
     store.create(ArtifactCreate(html="<p>x</p>", title="Doc"))

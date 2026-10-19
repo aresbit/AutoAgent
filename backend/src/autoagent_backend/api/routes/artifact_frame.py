@@ -45,6 +45,47 @@ RESIZE_REPORTER = (
     "document.documentElement)})();</script>"
 )
 
+# Host-mediated MCP bridge.  The iframe is untrusted: it never receives the
+# launch token and cannot reach the backend directly.  It only asks the parent
+# (the AutoAgent UI) to perform a JSON-RPC 2.0 ``tools/call``; the parent
+# validates ``event.source``, applies consent/allowlist policy and answers the
+# matching id.  A response that never arrives rejects after 30 seconds.
+TOOL_BRIDGE_SCRIPT = """<script>(function(){
+  var pending = {};
+  var nextId = 1;
+  window.addEventListener("message", function(event){
+    if (event.source !== window.parent) return;
+    var data = event.data;
+    if (!data || typeof data !== "object" || data.jsonrpc !== "2.0") return;
+    var entry = pending[data.id];
+    if (!entry) return;
+    delete pending[data.id];
+    clearTimeout(entry.timer);
+    if (data.error) { entry.reject(data.error); return; }
+    entry.resolve(data.result);
+  });
+  window.autoagent = {
+    callTool: function(name, args){
+      var id = nextId++;
+      return new Promise(function(resolve, reject){
+        var timer = setTimeout(function(){
+          delete pending[id];
+          reject(new Error("tool call timed out"));
+        }, 30000);
+        pending[id] = {resolve: resolve, reject: reject, timer: timer};
+        window.parent.postMessage({
+          jsonrpc: "2.0",
+          id: id,
+          method: "tools/call",
+          params: {name: name, arguments: args || {}}
+        }, "*");
+      });
+    }
+  };
+})();</script>"""
+
+_INJECTED_SCRIPTS = (RESIZE_REPORTER, TOOL_BRIDGE_SCRIPT)
+
 
 def _config(request: Request) -> BootConfig:
     config: BootConfig = request.app.state.config
@@ -56,14 +97,18 @@ def _signature(secret: str, artifact_id: str, version: str, exp: int) -> str:
     return hmac.new(secret.encode(), message, hashlib.sha256).hexdigest()
 
 
-def _inject_resize_reporter(document: str) -> str:
-    if RESIZE_REPORTER in document:
+def _inject_scripts(document: str) -> str:
+    """Inject each host bridge script at most once, just before ``</body>``."""
+
+    missing = [script for script in _INJECTED_SCRIPTS if script not in document]
+    if not missing:
         return document
+    injection = "".join(missing)
     lowered = document.lower()
     index = lowered.rfind("</body>")
     if index == -1:
-        return document + RESIZE_REPORTER
-    return document[:index] + RESIZE_REPORTER + document[index:]
+        return document + injection
+    return document[:index] + injection + document[index:]
 
 
 @router.post(
@@ -116,7 +161,7 @@ def get_artifact_frame(
 
     content = service.version_content(artifact_id, version)
     return HTMLResponse(
-        _inject_resize_reporter(content),
+        _inject_scripts(content),
         media_type="text/html; charset=utf-8",
         headers={
             "Content-Security-Policy": FRAME_CSP,

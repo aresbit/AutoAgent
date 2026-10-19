@@ -149,6 +149,8 @@ class _Record:
     turn_id: str | None = None
     message_id: str | None = None
     kind: str = "html"
+    mcp_tools: tuple[str, ...] = ()
+    allow_external: bool = False
     extra: dict[str, object] = field(default_factory=dict)
 
 
@@ -181,6 +183,8 @@ _RECORD_KNOWN = {
     "version",
     "sha256",
     "path",
+    "mcpTools",
+    "allowExternal",
 }
 _VERSION_KNOWN = {
     "versionId",
@@ -250,6 +254,8 @@ class FilesystemArtifactStore:
                     session_id=request.session_id,
                     turn_id=request.turn_id,
                     message_id=request.message_id,
+                    mcp_tools=request.mcp_tools,
+                    allow_external=request.allow_external,
                 )
                 self._save(manifest)
                 return self._to_value(record)
@@ -278,6 +284,22 @@ class FilesystemArtifactStore:
             manifest = self._load_or_refresh()
             record = self._find(manifest, _validate_id(artifact_id))
             record.last_opened_at = self._clock.now_ms()
+            self._save(manifest)
+            return self._to_value(record)
+
+    def set_capabilities(
+        self,
+        artifact_id: str,
+        mcp_tools: tuple[str, ...],
+        allow_external: bool | None = None,
+    ) -> Artifact:
+        with self._lock:
+            manifest = self._load_or_refresh()
+            record = self._find(manifest, _validate_id(artifact_id))
+            record.mcp_tools = tuple(mcp_tools)
+            if allow_external is not None:
+                record.allow_external = allow_external
+            record.updated_at = self._clock.now_ms()
             self._save(manifest)
             return self._to_value(record)
 
@@ -355,6 +377,7 @@ class FilesystemArtifactStore:
                     session_id=session_id,
                     turn_id=turn_id,
                     message_id=message_id,
+                    mcp_tools=draft.mcp_tools,
                 )
                 self._save(manifest)
                 return ArtifactMutation(
@@ -551,6 +574,8 @@ class FilesystemArtifactStore:
                 "messageId": record.message_id,
                 "kind": record.kind,
                 "sizeBytes": self._current_size(record),
+                "mcpTools": list(record.mcp_tools),
+                "allowExternal": record.allow_external,
             }
         )
         return payload
@@ -620,6 +645,8 @@ class FilesystemArtifactStore:
             turn_id=_as_optional_str(raw.get("turnId")),
             message_id=_as_optional_str(raw.get("messageId")),
             kind=str(raw.get("kind") or "html"),
+            mcp_tools=_as_tool_names(raw.get("mcpTools")),
+            allow_external=raw.get("allowExternal") is True,
             extra={
                 key: value
                 for key, value in raw.items()
@@ -800,6 +827,8 @@ class FilesystemArtifactStore:
         session_id: str | None,
         turn_id: str | None,
         message_id: str | None,
+        mcp_tools: tuple[str, ...] = (),
+        allow_external: bool = False,
     ) -> _Record:
         now = self._clock.now_ms()
         artifact_id = _unique_id(manifest.records, _slugify(title))
@@ -812,6 +841,8 @@ class FilesystemArtifactStore:
             session_id=session_id,
             turn_id=turn_id,
             message_id=message_id,
+            mcp_tools=tuple(mcp_tools),
+            allow_external=allow_external,
         )
         version = _Version(
             version_id="v1",
@@ -955,6 +986,8 @@ class FilesystemArtifactStore:
             revision=current.version_id if current is not None else "v1",
             version_refs=version_refs,
             size_bytes=current.size_bytes if current is not None else 0,
+            mcp_tools=record.mcp_tools,
+            allow_external=record.allow_external,
         )
 
     @staticmethod
@@ -1019,6 +1052,21 @@ def _as_optional_int(value: object) -> int | None:
 
 def _as_optional_str(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _as_tool_names(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    names: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        name = item.strip()
+        if name and name not in seen:
+            seen.add(name)
+            names.append(name)
+    return tuple(names)
 
 
 def _target_path(raw: str) -> Path:
